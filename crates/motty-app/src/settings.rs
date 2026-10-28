@@ -7,12 +7,14 @@
 //! the sections and the search results are the same rows.
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use gpui::{
-    Action, AnyElement, App, AppContext, AssetSource, Bounds, ClickEvent, ClipboardItem, Context,
-    FocusHandle, Focusable, Global, Hsla, KeyDownEvent, ScrollHandle, SharedString,
-    TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle, WindowOptions, div,
-    point, prelude::*, px, size, svg,
+    Action, Animation, AnimationExt, AnyElement, App, AppContext, AssetSource, Bounds, ClickEvent,
+    ClipboardItem, Context, FocusHandle, Focusable, Global, Hsla, KeyDownEvent, Keystroke,
+    ScrollHandle, SharedString, Subscription, TitlebarOptions, Window, WindowAppearance,
+    WindowBounds, WindowHandle, WindowOptions, div, ease_out_quint, point, prelude::*, px, size,
+    svg,
 };
 use motty_render::hsla;
 use motty_theme::{
@@ -28,6 +30,10 @@ const HEIGHT: f32 = 520.;
 const SIDEBAR: f32 = 197.;
 const PAD: f32 = 28.;
 const ROW_MIN: f32 = 43.;
+/// Where the first sidebar item starts, and the distance between items.
+const NAV_TOP: f32 = 84.5;
+const NAV_PITCH: f32 = 31.5;
+const NAV_HEIGHT: f32 = 29.;
 
 /// The icons and other files the UI draws, compiled in.
 pub struct Assets;
@@ -148,7 +154,20 @@ enum Control {
     Button(&'static str, Command),
     /// Text shown as is, and copied with a button.
     Copy(String),
-    Keys(Vec<SharedString>),
+    /// A shortcut that can be recorded: `row` indexes [`key_binding_rows`].
+    Shortcut {
+        row: usize,
+        caps: Vec<SharedString>,
+        custom: bool,
+    },
+    /// A `text:`/`csi:`/`esc:` binding: `ix` indexes [`sequences`].
+    Sequence {
+        ix: usize,
+        caps: Vec<SharedString>,
+        payload: String,
+    },
+    /// Buttons for the whole list: add a sequence, reset everything.
+    BindingTools,
     Info(SharedString),
 }
 
@@ -231,6 +250,55 @@ pub struct SettingsWindow {
     status: Option<(bool, String)>,
     /// The line last copied.
     copied: Option<String>,
+    /// What the next keystroke is recorded for.
+    recording: Option<Record>,
+    /// A sequence binding's text being typed: its index and the text.
+    editing: Option<(usize, String)>,
+    /// "Reset to Default" asks once more before it clears every binding.
+    confirm_reset: bool,
+    /// The section shown before the current one, and a count bumped on each
+    /// switch, which restarts the transition.
+    previous: Section,
+    epoch: usize,
+    _intercept: Subscription,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Record {
+    /// A new chord for `key_binding_rows()[row]`.
+    Action(usize),
+    /// A new chord for an existing sequence binding.
+    Sequence(usize),
+    /// The chord for a sequence binding being added.
+    NewSequence,
+}
+
+/// The `keybind` lines that type text: (trigger, payload).
+fn sequences(config: &Config) -> Vec<(String, String)> {
+    config
+        .keybinds
+        .iter()
+        .filter(|k| {
+            ["text:", "csi:", "esc:"]
+                .iter()
+                .any(|p| k.action.starts_with(p))
+        })
+        .map(|k| (k.trigger.clone(), k.action.clone()))
+        .collect()
+}
+
+/// Key caps for a config trigger (`cmd+shift+t`).
+fn trigger_caps(trigger: &str) -> Vec<SharedString> {
+    let gpui_form = trigger.replace('+', "-");
+    let gpui_form = if trigger.ends_with("++") {
+        format!("{}+", &gpui_form[..gpui_form.len() - 2])
+    } else {
+        gpui_form
+    };
+    match Keystroke::parse_with_os(&gpui_form, gpui::OperatingSystem::Mac) {
+        Ok(k) => keycaps_of(&k),
+        Err(_) => vec![trigger.to_owned().into()],
+    }
 }
 
 struct Open(WindowHandle<SettingsWindow>);
@@ -242,7 +310,7 @@ pub fn open(section: Option<Section>, cx: &mut App) {
         && handle
             .update(cx, |this, window, cx| {
                 if let Some(section) = section {
-                    this.section = section;
+                    this.show_section(section);
                 }
                 window.activate_window();
                 cx.notify();
@@ -284,6 +352,24 @@ impl SettingsWindow {
     fn new(section: Section, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // While a shortcut is being recorded, every key in this window is
+        // taken before any binding (⌘N would otherwise open a window).
+        let window_id = window.window_handle().window_id();
+        let this = cx.entity().downgrade();
+        let intercept = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() != window_id {
+                return;
+            }
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            if this.read(cx).recording.is_none() {
+                return;
+            }
+            let ks = event.keystroke.clone();
+            this.update(cx, |this, cx| this.record(&ks, cx));
+            cx.stop_propagation();
+        });
         // Changes made elsewhere (the file, the welcome guide) show up when
         // the window comes back to the front.
         cx.observe_window_activation(window, |this, window, cx| {
@@ -326,7 +412,159 @@ impl SettingsWindow {
             scroll: ScrollHandle::new(),
             status: None,
             copied: None,
+            recording: None,
+            editing: None,
+            confirm_reset: false,
+            previous: section,
+            epoch: 0,
+            _intercept: intercept,
         }
+    }
+
+    fn show_section(&mut self, section: Section) {
+        if section != self.section {
+            self.previous = self.section;
+            self.section = section;
+            self.epoch += 1;
+        }
+        self.query.clear();
+        self.recording = None;
+        self.editing = None;
+        self.confirm_reset = false;
+        self.scroll.scroll_to_item(0);
+    }
+
+    /// Binds `row`'s action to exactly `chords`.
+    fn set_shortcut(&mut self, row: usize, chords: Vec<String>, cx: &mut Context<Self>) {
+        let Some((_, title, action)) = key_binding_rows().into_iter().nth(row) else {
+            return;
+        };
+        let name = crate::actions::config_name(&*action);
+        let defaults = crate::actions::default_chords(&*action);
+        match motty_theme::config::save_keybinds(&name, &defaults, &chords) {
+            Ok(_) => self.after_keybind_save(cx),
+            Err(e) => {
+                self.status = Some((false, format!("Couldn't save {title}: {e}")));
+            }
+        }
+    }
+
+    /// Replaces the sequence binding `old` (or adds one) with `new`.
+    fn set_sequence(
+        &mut self,
+        old: Option<(String, String)>,
+        new: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        let result = motty_theme::config::edit(|src| {
+            let mut out = String::new();
+            let mut replaced = false;
+            for line in src.lines() {
+                let is_old = old.as_ref().is_some_and(|(t, a)| {
+                    let parsed = line
+                        .trim_start()
+                        .strip_prefix("keybind")
+                        .map(str::trim_start)
+                        .and_then(|r| r.strip_prefix('='))
+                        .map(|v| v.trim().trim_matches('"'))
+                        .and_then(motty_theme::config::Keybind::parse);
+                    parsed.is_some_and(|k| k.trigger == *t && k.action == *a)
+                });
+                if is_old {
+                    if let Some((t, a)) = &new
+                        && !replaced
+                    {
+                        out.push_str(&format!("keybind = \"{t}={a}\"\n"));
+                        replaced = true;
+                    }
+                    continue;
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            if !replaced && let Some((t, a)) = &new {
+                out.push_str(&format!("keybind = \"{t}={a}\"\n"));
+            }
+            out
+        });
+        match result {
+            Ok(_) => self.after_keybind_save(cx),
+            Err(e) => self.status = Some((false, format!("Couldn't save config.toml: {e}"))),
+        }
+    }
+
+    fn after_keybind_save(&mut self, cx: &mut Context<Self>) {
+        crate::workspace::reload_all(cx);
+        self.config = crate::load_config();
+        // The keymap changed under the menus too.
+        crate::menus::set(cx);
+        cx.notify();
+    }
+
+    /// The next keystroke while recording.
+    fn record(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
+        let Some(target) = self.recording else {
+            return;
+        };
+        let m = &ks.modifiers;
+        let plain = !(m.platform || m.control || m.alt || m.shift || m.function);
+        if plain && ks.key == "escape" {
+            self.recording = None;
+            return cx.notify();
+        }
+        if plain && matches!(ks.key.as_str(), "backspace" | "delete") {
+            self.recording = None;
+            self.status = None;
+            match target {
+                Record::Action(row) => self.set_shortcut(row, Vec::new(), cx),
+                Record::Sequence(ix) => {
+                    let old = sequences(&self.config).get(ix).cloned();
+                    self.set_sequence(old, None, cx);
+                }
+                Record::NewSequence => {}
+            }
+            return cx.notify();
+        }
+        let function_key = ks.key.len() > 1
+            && ks.key.starts_with('f')
+            && ks.key[1..].chars().all(|c| c.is_ascii_digit());
+        if !(m.platform || m.control || m.alt || function_key) {
+            self.status = Some((
+                false,
+                "Shortcuts need ⌘, ⌃ or ⌥ (or a function key).".into(),
+            ));
+            return cx.notify();
+        }
+        let chord = crate::actions::config_chord(ks);
+        let caps = keycaps_of(ks).concat();
+        // Whoever had the chord loses it: the config's line wins.
+        let taken = self.rows(cx).into_iter().find_map(|r| match &r.control {
+            Control::Shortcut { row, caps: c, .. }
+                if c.concat() == caps && Record::Action(*row) != target =>
+            {
+                Some(r.title.clone())
+            }
+            _ => None,
+        });
+        self.status = taken.map(|t| (true, format!("{caps} no longer runs {t}.")));
+        self.recording = None;
+        match target {
+            Record::Action(row) => self.set_shortcut(row, vec![chord], cx),
+            Record::Sequence(ix) => {
+                let old = sequences(&self.config).get(ix).cloned();
+                let payload = old.as_ref().map(|(_, a)| a.clone()).unwrap_or_default();
+                self.set_sequence(old, Some((chord, payload)), cx);
+            }
+            Record::NewSequence => {
+                self.set_sequence(None, Some((chord.clone(), "text:".into())), cx);
+                let ix = sequences(&self.config)
+                    .iter()
+                    .position(|(t, _)| *t == chord)
+                    .unwrap_or(0);
+                self.editing = Some((ix, "text:".into()));
+            }
+        }
+        cx.notify();
     }
 
     /// Saves one key and applies it everywhere.
@@ -418,6 +656,30 @@ impl SettingsWindow {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
+        if let Some((ix, text)) = self.editing.as_mut() {
+            let ix = *ix;
+            match ks.key.as_str() {
+                "escape" => self.editing = None,
+                "enter" => {
+                    let text = text.clone();
+                    self.editing = None;
+                    let old = sequences(&self.config).get(ix).cloned();
+                    if let Some((trigger, _)) = old.clone() {
+                        self.set_sequence(old, Some((trigger, text)), cx);
+                    }
+                }
+                "backspace" => {
+                    text.pop();
+                }
+                _ if m.platform || m.control => return,
+                _ => match ks.key_char.as_deref() {
+                    Some(c) if !c.chars().any(char::is_control) => text.push_str(c),
+                    _ => return,
+                },
+            }
+            cx.stop_propagation();
+            return cx.notify();
+        }
         if m.platform && ks.key == "w" {
             window.remove_window();
             return;
@@ -858,15 +1120,58 @@ impl SettingsWindow {
         ));
 
         // Key bindings
+        rows.push(row(
+            KeyBindings,
+            "Shortcuts",
+            "Click a shortcut to change it",
+            Some("Esc cancels, ⌫ removes it. Saved to config.toml."),
+            Control::BindingTools,
+        ));
         let keymap = cx.key_bindings();
         let keymap = keymap.borrow();
-        for (group, title, action) in key_binding_rows() {
+        for (ix, (group, title, action)) in key_binding_rows().into_iter().enumerate() {
             let caps = keymap
                 .bindings_for_action(&*action)
                 .last()
                 .and_then(|b| b.keystrokes().first().map(|k| keycaps_of(k.inner())))
                 .unwrap_or_default();
-            rows.push(row(KeyBindings, group, title, None, Control::Keys(caps)));
+            let name = crate::actions::config_name(&*action);
+            let defaults = crate::actions::default_chords(&*action);
+            let custom = c.keybinds.iter().any(|k| {
+                k.action.eq_ignore_ascii_case(&name)
+                    || (k.action == "unbind"
+                        && defaults.iter().any(|d| d.eq_ignore_ascii_case(&k.trigger)))
+            });
+            rows.push(row(
+                KeyBindings,
+                group,
+                title,
+                None,
+                Control::Shortcut {
+                    row: ix,
+                    caps,
+                    custom,
+                },
+            ));
+        }
+        drop(keymap);
+        for (ix, (trigger, payload)) in sequences(c).into_iter().enumerate() {
+            let title = if payload.starts_with("text:") {
+                "Send Text"
+            } else {
+                "Send Sequence"
+            };
+            rows.push(row(
+                KeyBindings,
+                "Text / Sequence",
+                title,
+                None,
+                Control::Sequence {
+                    ix,
+                    caps: trigger_caps(&trigger),
+                    payload,
+                },
+            ));
         }
 
         // Advanced
@@ -1083,16 +1388,14 @@ impl Render for SettingsWindow {
             .collect();
 
         let nav = Section::ALL.into_iter().map(|section| {
-            let selected = !searching && section == self.section;
             div()
                 .id(section.title())
-                .h(px(29.))
-                .mt(px(2.5))
+                .h(px(NAV_HEIGHT))
+                .mt(px(NAV_PITCH - NAV_HEIGHT))
                 .pl(px(20.))
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .when(selected, |d| d.bg(c.selected))
                 .child(
                     svg()
                         .path(section.icon())
@@ -1101,9 +1404,7 @@ impl Render for SettingsWindow {
                 )
                 .child(div().text_color(c.text).child(section.title()))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.section = section;
-                    this.query.clear();
-                    this.scroll.scroll_to_item(0);
+                    this.show_section(section);
                     cx.notify();
                 }))
         });
@@ -1134,7 +1435,31 @@ impl Render for SettingsWindow {
             } else {
                 div().text_color(c.secondary).child("Search")
             });
+        // The selection slides from the last section to this one.
+        let index = |s: Section| Section::ALL.iter().position(|x| *x == s).unwrap_or(0) as f32;
+        let (from, to) = (index(self.previous), index(self.section));
+        // Nothing moves when the window first opens.
+        let animate = self.epoch > 0;
+        let highlight = (!searching).then(|| {
+            let bar = div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .h(px(NAV_HEIGHT))
+                .bg(c.selected)
+                .top(px(NAV_TOP + NAV_PITCH * to));
+            if !animate {
+                return bar.into_any_element();
+            }
+            bar.with_animation(
+                ("nav-highlight", self.epoch),
+                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                move |el, t| el.top(px(NAV_TOP + NAV_PITCH * (from + (to - from) * t))),
+            )
+            .into_any_element()
+        });
         let sidebar = div()
+            .relative()
             .w(px(SIDEBAR))
             .flex_none()
             .h_full()
@@ -1143,6 +1468,7 @@ impl Render for SettingsWindow {
             .border_color(c.separator)
             .flex()
             .flex_col()
+            .children(highlight)
             .child(search)
             .children(nav);
 
@@ -1212,7 +1538,20 @@ impl Render for SettingsWindow {
             .px(px(PAD))
             .pt(px(10.))
             .pb(px(PAD))
-            .children(content)
+            .child({
+                let body = div().flex().flex_col().children(content);
+                if animate {
+                    // A new section rises into place as it fades in.
+                    body.with_animation(
+                        ("section", self.epoch),
+                        Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+                        |el, t| el.opacity(t).mt(px(12. * (1. - t))),
+                    )
+                    .into_any_element()
+                } else {
+                    body.into_any_element()
+                }
+            })
             .when(empty, |d| {
                 d.child(
                     div()
@@ -1242,6 +1581,71 @@ impl Render for SettingsWindow {
 }
 
 impl SettingsWindow {
+    /// Key caps that record a new chord when clicked.
+    fn recorder(
+        &self,
+        id: (&'static str, usize),
+        caps: Vec<SharedString>,
+        recording: bool,
+        target: Record,
+        c: &Colors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let accent = hsla(Rgba::rgb(0x047afe));
+        div()
+            .id(id)
+            .min_w(px(76.))
+            .h(px(26.))
+            .px(px(4.))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(4.))
+            .rounded(px(6.))
+            .border(px(if recording { 1.5 } else { 0. }))
+            .border_color(accent)
+            .hover(|s| s.bg(c.selected))
+            .when(recording, |d| {
+                d.justify_center()
+                    .px(px(8.))
+                    .text_size(px(12.))
+                    .text_color(accent)
+                    .child("Type shortcut…")
+            })
+            .when(!recording && caps.is_empty(), |d| {
+                d.text_color(c.secondary).pr(px(8.)).child("—")
+            })
+            .when(!recording, |d| {
+                d.children(caps.into_iter().map(|cap| {
+                    div()
+                        .min_w(px(21.))
+                        .h(px(20.))
+                        .px(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.))
+                        .border(px(0.5))
+                        .border_color(c.control_border)
+                        .bg(c.control)
+                        .text_size(px(11.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(c.secondary)
+                        .child(cap)
+                }))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.editing = None;
+                this.recording = if this.recording == Some(target) {
+                    None
+                } else {
+                    Some(target)
+                };
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }))
+    }
+
     fn render_row(
         &self,
         ix: usize,
@@ -1500,29 +1904,193 @@ impl SettingsWindow {
                     )
                     .into_any_element()
             }
-            Control::Keys(caps) => div()
-                .flex_none()
-                .flex()
-                .gap(px(4.))
-                .when(caps.is_empty(), |d| d.text_color(c.secondary).child("—"))
-                .children(caps.into_iter().map(|cap| {
-                    div()
-                        .min_w(px(21.))
-                        .h(px(20.))
-                        .px(px(4.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .border(px(0.5))
-                        .border_color(c.control_border)
-                        .bg(c.control)
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(c.secondary)
-                        .child(cap)
-                }))
-                .into_any_element(),
+            Control::Shortcut { row, caps, custom } => {
+                let recording = self.recording == Some(Record::Action(row));
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .when(custom, |d| {
+                        d.child(
+                            div()
+                                .id(("reset", ix))
+                                .px(px(6.))
+                                .h(px(20.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .text_size(px(11.))
+                                .text_color(c.secondary)
+                                .hover(|s| s.bg(c.selected))
+                                .child("Reset")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let Some((.., action)) =
+                                        key_binding_rows().into_iter().nth(row)
+                                    else {
+                                        return;
+                                    };
+                                    let defaults = crate::actions::default_chords(&*action);
+                                    this.set_shortcut(row, defaults, cx);
+                                })),
+                        )
+                    })
+                    .child(self.recorder(
+                        ("shortcut", ix),
+                        caps,
+                        recording,
+                        Record::Action(row),
+                        c,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
+            Control::Sequence {
+                ix: seq,
+                caps,
+                payload,
+            } => {
+                let recording = self.recording == Some(Record::Sequence(seq));
+                let editing = self
+                    .editing
+                    .as_ref()
+                    .filter(|(i, _)| *i == seq)
+                    .map(|(_, t)| t.clone());
+                let shown = editing.clone().unwrap_or_else(|| payload.clone());
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(self.recorder(
+                        ("seq-keys", ix),
+                        caps,
+                        recording,
+                        Record::Sequence(seq),
+                        c,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id(("seq-text", ix))
+                            .w(px(150.))
+                            .h(px(26.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(c.control)
+                            .border(px(if editing.is_some() { 1.5 } else { 0.5 }))
+                            .border_color(if editing.is_some() {
+                                hsla(Rgba::rgb(0x047afe))
+                            } else {
+                                c.control_border
+                            })
+                            .font_family("Menlo")
+                            .text_size(px(11.5))
+                            .child(div().min_w_0().truncate().child(SharedString::from(shown)))
+                            .when(editing.is_some(), |d| {
+                                d.child(div().w(px(1.5)).h(px(14.)).bg(hsla(Rgba::rgb(0x047afe))))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.recording = None;
+                                this.editing = Some((seq, payload.clone()));
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("seq-delete", ix))
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .text_color(c.secondary)
+                            .hover(|s| s.bg(c.selected))
+                            .child("✕")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let old = sequences(&this.config).get(seq).cloned();
+                                this.editing = None;
+                                this.set_sequence(old, None, cx);
+                            })),
+                    )
+                    .into_any_element()
+            }
+            Control::BindingTools => {
+                let adding = self.recording == Some(Record::NewSequence);
+                div()
+                    .flex_none()
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id(("add-sequence", ix))
+                            .h(px(26.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(c.control)
+                            .border(px(0.5))
+                            .border_color(c.control_border)
+                            .shadow_xs()
+                            .child(if adding {
+                                "Press keys…"
+                            } else {
+                                "+ Text Shortcut"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.editing = None;
+                                this.recording = Some(Record::NewSequence);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("reset-all", ix))
+                            .h(px(26.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(c.control)
+                            .border(px(0.5))
+                            .border_color(c.control_border)
+                            .shadow_xs()
+                            .when(self.confirm_reset, |d| d.text_color(c.error))
+                            .child(if self.confirm_reset {
+                                "Reset All?"
+                            } else {
+                                "Reset to Default"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if !this.confirm_reset {
+                                    this.confirm_reset = true;
+                                    return cx.notify();
+                                }
+                                this.confirm_reset = false;
+                                match motty_theme::config::edit(
+                                    motty_theme::config::reset_keybinds_in,
+                                ) {
+                                    Ok(_) => {
+                                        this.status = Some((
+                                            true,
+                                            "Every shortcut is back to its default.".into(),
+                                        ));
+                                        this.after_keybind_save(cx);
+                                    }
+                                    Err(e) => {
+                                        this.status =
+                                            Some((false, format!("Couldn't save config.toml: {e}")))
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            }
             Control::Info(text) => div()
                 .flex_none()
                 .text_color(c.secondary)

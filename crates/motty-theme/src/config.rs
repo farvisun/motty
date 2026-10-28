@@ -542,6 +542,90 @@ pub fn remove_in(src: &str, key: &str) -> String {
     out
 }
 
+/// `src` with `action`'s `keybind` lines replaced so that exactly `chords`
+/// run it: chords not among `defaults` are bound, and defaults not among
+/// `chords` are unbound. Binding the defaults again leaves no lines at all.
+/// Chords are compared as written, so callers pass one spelling.
+pub fn set_keybinds_in(src: &str, action: &str, defaults: &[String], chords: &[String]) -> String {
+    let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+    let mut lines: Vec<String> = src
+        .lines()
+        .filter(|l| {
+            let Some(value) = keybind_value(l) else {
+                return true;
+            };
+            let Some(kb) = Keybind::parse(&value) else {
+                return true;
+            };
+            let own = same(&kb.action, action);
+            let unbinds_default =
+                same(&kb.action, "unbind") && defaults.iter().any(|d| same(d, &kb.trigger));
+            !(own || unbinds_default)
+        })
+        .map(str::to_owned)
+        .collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    for d in defaults {
+        if !chords.iter().any(|c| same(c, d)) {
+            lines.push(format!("keybind = {d}=unbind"));
+        }
+    }
+    for c in chords {
+        if !defaults.iter().any(|d| same(c, d)) {
+            lines.push(format!("keybind = {c}={action}"));
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The value of a `keybind = …` line, unquoted.
+fn keybind_value(line: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix("keybind")?.trim_start();
+    let value = rest.strip_prefix('=')?.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+    Some(value.to_owned())
+}
+
+/// Applies [`set_keybinds_in`] to Motty's config.toml.
+pub fn save_keybinds(
+    action: &str,
+    defaults: &[String],
+    chords: &[String],
+) -> std::io::Result<PathBuf> {
+    edit(|src| set_keybinds_in(src, action, defaults, chords))
+}
+
+/// `src` with every `keybind` line removed: all shortcuts back to default.
+pub fn reset_keybinds_in(src: &str) -> String {
+    remove_in(src, "keybind")
+}
+
+/// Rewrites Motty's config.toml through `f`, starting from Otty's (or a
+/// header) when Motty has none yet.
+pub fn edit(f: impl FnOnce(&str) -> String) -> std::io::Result<PathBuf> {
+    let path = motty_dir().join("config.toml");
+    let src = match std::fs::read_to_string(&path) {
+        Ok(src) => src,
+        Err(_) => match std::fs::read_to_string(otty_dir().join("config.toml")) {
+            Ok(otty) => format!("# Started from Otty's config.toml.\n{otty}"),
+            Err(_) => "# Motty settings: https://docs.otty.sh/reference/configuration\n".into(),
+        },
+    };
+    let out = f(&src);
+    std::fs::create_dir_all(motty_dir())?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, out)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
 /// Writes `pairs` into Motty's own config.toml. The first time, an Otty
 /// config being read is copied over first, so nothing it set is lost.
 pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
@@ -553,25 +637,16 @@ pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
 /// Sets each key to its value, or removes it for `None`, in Motty's own
 /// config.toml (see [`save_values`]).
 pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf> {
-    let path = motty_dir().join("config.toml");
-    let mut src = match std::fs::read_to_string(&path) {
-        Ok(src) => src,
-        Err(_) => match std::fs::read_to_string(otty_dir().join("config.toml")) {
-            Ok(otty) => format!("# Started from Otty's config.toml.\n{otty}"),
-            Err(_) => "# Motty settings: https://docs.otty.sh/reference/configuration\n".into(),
-        },
-    };
-    for (key, value) in changes {
-        src = match value {
-            Some(value) => set_in(&src, key, value),
-            None => remove_in(&src, key),
-        };
-    }
-    std::fs::create_dir_all(motty_dir())?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, src)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(path)
+    edit(|src| {
+        let mut src = src.to_owned();
+        for (key, value) in changes {
+            src = match value {
+                Some(value) => set_in(&src, key, value),
+                None => remove_in(&src, key),
+            };
+        }
+        src
+    })
 }
 
 const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
@@ -864,5 +939,32 @@ mod tests {
         let src = "theme = \"A\"\nfont-size = 12\n# theme = \"B\"\ntheme=\"C\"\n";
         assert_eq!(remove_in(src, "theme"), "font-size = 12\n# theme = \"B\"\n");
         assert_eq!(remove_in("theme-dark = 1\n", "theme"), "theme-dark = 1\n");
+    }
+
+    #[test]
+    fn keybind_lines_follow_the_wanted_chords() {
+        let defaults = vec!["cmd+t".to_string()];
+        let src = "font-size = 12\nkeybind = cmd+k=clear\n";
+        // Rebind: the new chord runs it, the default stops.
+        let out = set_keybinds_in(src, "new_tab", &defaults, &["cmd+y".into()]);
+        assert_eq!(
+            out,
+            "font-size = 12\nkeybind = cmd+k=clear\nkeybind = cmd+t=unbind\nkeybind = cmd+y=new_tab\n"
+        );
+        let config = Config::parse(&out);
+        assert_eq!(config.keybinds.len(), 3);
+        // Back to the default: no lines left for it.
+        let back = set_keybinds_in(&out, "new_tab", &defaults, &defaults);
+        assert_eq!(back, src);
+        // No shortcut at all.
+        let none = set_keybinds_in(src, "new_tab", &defaults, &[]);
+        assert!(none.ends_with("keybind = cmd+t=unbind\n"));
+        // Quoted lines count too.
+        let quoted = "keybind = \"cmd+y=new_tab\"\n";
+        assert_eq!(
+            set_keybinds_in(quoted, "new_tab", &defaults, &defaults),
+            "\n"
+        );
+        assert_eq!(reset_keybinds_in(&out), "font-size = 12\n");
     }
 }

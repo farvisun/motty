@@ -298,6 +298,52 @@ pub fn bind_keys(cx: &mut App, keybinds: &[Keybind]) -> Vec<String> {
 
 /// A config trigger (`cmd+shift+t`, `opt+left`, `cmd++`) as a GPUI
 /// keystroke in canonical modifier order.
+/// A keystroke as `keybind` lines spell it: `ctrl+alt+shift+cmd+t`.
+pub fn config_chord(ks: &gpui::Keystroke) -> String {
+    let m = &ks.modifiers;
+    let mut parts: Vec<&str> = [
+        (m.control, "ctrl"),
+        (m.alt, "alt"),
+        (m.shift, "shift"),
+        (m.platform, "cmd"),
+        (m.function, "fn"),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, name)| name)
+    .collect();
+    parts.push(&ks.key);
+    parts.join("+")
+}
+
+/// The chords that run `action` when the config says nothing about it.
+pub fn default_chords(action: &dyn Action) -> Vec<String> {
+    defaults()
+        .into_iter()
+        .filter(|d| d.action.partial_eq(action))
+        .filter_map(|d| gpui::Keystroke::parse(d.keys).ok())
+        .map(|ks| config_chord(&ks))
+        .collect()
+}
+
+/// The name a `keybind` line uses for `action`: `motty::NewTab` → `new_tab`.
+pub fn config_name(action: &dyn Action) -> String {
+    let name = action.name();
+    let name = name.rsplit("::").next().unwrap_or(name);
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn chord(trigger: &str) -> anyhow::Result<String> {
     let trigger = trigger.trim().to_lowercase();
     let (mods, key) = split_chord(&trigger, '+');
@@ -530,5 +576,16 @@ mod tests {
         assert_eq!(unescape(r"hi\n"), "hi\n");
         assert_eq!(unescape(r"\x1b[A\e"), "\x1b[A\x1b");
         assert_eq!(unescape(r"a\xZZ\\"), "a\\xZZ\\");
+    }
+
+    #[test]
+    fn names_and_default_chords_for_config_lines() {
+        assert_eq!(config_name(&NewTab), "new_tab");
+        assert_eq!(config_name(&ActivateTab1), "activate_tab1");
+        assert_eq!(default_chords(&NewTab), vec!["cmd+t".to_string()]);
+        let ks = gpui::Keystroke::parse("cmd-shift-t").unwrap();
+        assert_eq!(config_chord(&ks), "shift+cmd+t");
+        // What we write parses back to the same binding.
+        assert_eq!(chord("shift+cmd+t").unwrap(), normalize("cmd-shift-t"));
     }
 }
