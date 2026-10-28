@@ -2,7 +2,9 @@
 //! shows its target at the bottom left; ⌘-click opens it, ⌘⇧-click reveals
 //! a path in Finder (or copies a URL).
 
-use gpui::{ClipboardItem, Context, Modifiers, Pixels, Point, SharedString, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Context, Modifiers, Pixels, Point, SharedString, div, prelude::*, px, relative,
+};
 use motty_render::hsla;
 use motty_term::links::{self, Link, Target};
 use motty_theme::{Config, LinkClick, LinkShiftClick, Rgba};
@@ -95,33 +97,25 @@ impl TerminalView {
         true
     }
 
-    /// The hovered link's target, at the pane's bottom left.
+    /// The hovered link's target in a dark label at the pane's bottom left,
+    /// measured from Otty (28pt tall, 12.5pt in from the edges).
     pub(super) fn render_link_status(&self) -> Option<impl IntoElement> {
         let link = self.hovered_link.as_ref()?;
-        let dark = self.style.dark;
-        let ink = |a: f32| {
-            let v = if dark { 1. } else { 0. };
-            hsla(Rgba {
-                r: v,
-                g: v,
-                b: v,
-                a,
-            })
-        };
         Some(
             div()
                 .absolute()
-                .left(px(6.))
-                .bottom(px(6.))
-                .max_w(px(600.))
-                .px(px(8.))
-                .py(px(3.))
-                .rounded(px(5.))
-                .border(px(0.5))
-                .border_color(ink(0.15))
-                .bg(hsla(self.style.panel_background))
-                .text_size(px(11.))
-                .text_color(ink(0.7))
+                .left(px(12.5))
+                .bottom(px(12.5))
+                .max_w(relative(0.9))
+                .h(px(28.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .bg(hsla(Rgba::rgb(0x464645)))
+                .font(self.style.font.clone())
+                .text_size(self.style.font_size)
+                .text_color(gpui::white())
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .child(SharedString::from(link.target.display())),
