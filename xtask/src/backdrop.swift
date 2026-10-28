@@ -5,7 +5,8 @@ import AppKit
 // window under test so behind-window materials blur a known color and
 // nothing else on screen ends up in the capture. Each CGWindowID read from
 // stdin re-orders the backdrop directly below that window (activating an app
-// raises all of its windows over the backdrop).
+// raises all of its windows over the backdrop). Prints `ready <CGWindowID>`
+// once the window is up.
 let a = CommandLine.arguments
 guard a.count == 6, let x = Double(a[1]), let y = Double(a[2]), let w = Double(a[3]), let h = Double(a[4]),
       let rgb = UInt32(a[5], radix: 16) else {
@@ -23,7 +24,7 @@ window.isOpaque = true
 window.hasShadow = false
 window.title = "motty-backdrop"
 window.orderFrontRegardless()
-print("ready")
+print("ready \(window.windowNumber)")
 fflush(stdout)
 DispatchQueue.global().async {
     while let line = readLine() {

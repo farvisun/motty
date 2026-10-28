@@ -100,14 +100,19 @@ fn find_window(owner: &str, title: &str) -> Result<String> {
     bail!("no {owner} window titled {title:?}")
 }
 
-/// Set when a backdrop is up: captures then take the window's screen rect,
-/// so behind-window materials show what they blur.
-static CAPTURE_RECT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The backdrop's window id while one is up (0 otherwise): captures then take
+/// the window's screen rect, so behind-window materials show what they blur.
+static BACKDROP_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn capture(window_id: &str, out: &Path) -> Result<()> {
-    if CAPTURE_RECT.load(std::sync::atomic::Ordering::Relaxed) {
+    let backdrop = BACKDROP_ID.load(std::sync::atomic::Ordering::Relaxed);
+    if backdrop != 0 {
+        // The screen rect, composited from the window and the backdrop only.
         let (x, y, w, h) = BOUNDS;
-        run(Command::new("screencapture").args(["-x", "-R", &format!("{x},{y},{w},{h}")]).arg(out))?;
+        run(Command::new(swift_tool("rectshot")?)
+            .args([x, y, w, h].map(|v| v.to_string()))
+            .arg(out)
+            .args([window_id.to_owned(), backdrop.to_string()]))?;
     } else {
         run(Command::new("screencapture").args(["-x", "-o", "-l", window_id]).arg(out))?;
     }
@@ -150,15 +155,16 @@ impl Backdrop {
         let mut stdout = std::io::BufReader::new(child.stdout.take().context("backdrop stdout")?);
         let mut line = String::new();
         std::io::BufRead::read_line(&mut stdout, &mut line)?;
+        let id = line.trim().strip_prefix("ready ").and_then(|id| id.parse().ok()).context("backdrop window id")?;
         *BACKDROP_IO.lock().unwrap() = Some((child.stdin.take().context("backdrop stdin")?, stdout));
-        CAPTURE_RECT.store(true, std::sync::atomic::Ordering::Relaxed);
+        BACKDROP_ID.store(id, std::sync::atomic::Ordering::Relaxed);
         Ok(Self(child))
     }
 }
 
 impl Drop for Backdrop {
     fn drop(&mut self) {
-        CAPTURE_RECT.store(false, std::sync::atomic::Ordering::Relaxed);
+        BACKDROP_ID.store(0, std::sync::atomic::Ordering::Relaxed);
         *BACKDROP_IO.lock().unwrap() = None;
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -344,9 +350,11 @@ fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
         capture(window_id, out)?;
         let img = load(out)?;
         let s = scale_of(&img) as f32;
-        let p = img.get_pixel((39. * s) as u32, (16. * s) as u32);
-        let saturation = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
-        if saturation > 40 {
+        // The close light is red only when the window is key (and present: a
+        // saturated backdrop alone must not pass). Sampled above its center,
+        // where the edited dot sits while a command runs.
+        let p = img.get_pixel((16. * s) as u32, (12.5 * s) as u32);
+        if p[0] > 200 && p[1] < 140 && p[2] < 140 {
             return Ok(());
         }
         pause(500);
