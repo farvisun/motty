@@ -26,6 +26,10 @@ pub struct Config {
     pub details_panel_width: Option<f32>,
     pub option_as_meta: bool,
     pub scrollback: Option<usize>,
+    /// Inject Motty's prompt marks and cwd reporting into the shell.
+    pub shell_integration: bool,
+    /// Shell names (`zsh`, `fish`) to leave alone.
+    pub shell_integration_disabled_shells: Vec<String>,
     pub shell: Option<String>,
     /// `cursor-style`: the shape programs get until they ask for another.
     pub cursor_style: CursorStyle,
@@ -109,6 +113,7 @@ impl Config {
         let mut out = Config {
             ligatures: true,
             sidebar_visible: true,
+            shell_integration: true,
             ..Default::default()
         };
         let (entries, mut warnings) = parse_entries(src);
@@ -161,6 +166,15 @@ impl Config {
                     out.scrollback = value.as_integer().map(|i| i.max(0) as usize)
                 }
                 "shell" => out.shell = str_of(value),
+                "shell-integration" => out.shell_integration = value.as_bool().unwrap_or(true),
+                "shell-integration-disabled-shells" => {
+                    out.shell_integration_disabled_shells = value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect();
+                }
                 "cursor-style" => match value.as_str() {
                     Some("block") => out.cursor_style = CursorStyle::Block,
                     Some("bar") => out.cursor_style = CursorStyle::Bar,

@@ -39,6 +39,14 @@ registered automatically. Saving a config or theme file applies it to open windo
 | `unfocused-split-opacity` | Opacity of split panes without focus (default `0.6`) |
 | `scrollback-lines`, `shell` | Behaviour |
 
+## Shell integration
+
+zsh and fish started by Motty load a small script (Motty's own, injected through `ZDOTDIR` or
+`XDG_DATA_DIRS` and undone before your startup files run) that reports prompts, commands with
+their exit status (OSC 133) and the working directory (OSC 7). Programs can also send OSC 9 /
+OSC 777 notifications and OSC 9;4 progress. Turn it off with `shell-integration = false`, or
+per shell with `shell-integration-disabled-shells = ["fish"]`. bash support is still to come.
+
 ## Splits
 
 | Keys | Action |

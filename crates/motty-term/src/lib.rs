@@ -19,6 +19,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 mod graphemes;
 pub mod input;
 mod pty_loop;
+pub mod shell;
 
 use pty_loop::{LoopSender, Msg, PtyLoop};
 
@@ -44,6 +45,18 @@ pub enum SessionEvent {
     TextAreaSizeRequest(Arc<dyn Fn(WindowSize) -> String + Send + Sync>),
     CursorBlinkingChange,
     Exited(Option<i32>),
+    /// A command run from an integrated shell finished.
+    CommandFinished {
+        exit: Option<i32>,
+        duration: Option<std::time::Duration>,
+    },
+    /// OSC 9 / OSC 777 desktop notification.
+    Notification {
+        title: Option<String>,
+        body: String,
+    },
+    /// The shell reported a new cwd or progress; see [`Session::shell`].
+    ShellChanged,
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -58,6 +71,11 @@ impl std::fmt::Debug for SessionEvent {
             Self::TextAreaSizeRequest(_) => f.write_str("TextAreaSizeRequest"),
             Self::CursorBlinkingChange => f.write_str("CursorBlinkingChange"),
             Self::Exited(code) => write!(f, "Exited({code:?})"),
+            Self::CommandFinished { exit, duration } => {
+                write!(f, "CommandFinished({exit:?}, {duration:?})")
+            }
+            Self::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
+            Self::ShellChanged => f.write_str("ShellChanged"),
         }
     }
 }
@@ -67,6 +85,12 @@ pub struct EventProxy {
     tx: async_channel::Sender<SessionEvent>,
     wakeup_pending: Arc<AtomicBool>,
     pty_tx: Arc<std::sync::OnceLock<LoopSender>>,
+}
+
+impl EventProxy {
+    fn send_session_event(&self, event: SessionEvent) {
+        let _ = self.tx.try_send(event);
+    }
 }
 
 impl EventListener for EventProxy {
@@ -154,6 +178,7 @@ pub struct Session {
     pid: u32,
     /// PTY master, kept for foreground-process queries. Owned by the event loop.
     master_fd: RawFd,
+    shell: Arc<std::sync::Mutex<shell::ShellState>>,
 }
 
 impl Session {
@@ -202,7 +227,8 @@ impl Session {
             ..Default::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));
-        let (pty_loop, pty_tx) = PtyLoop::new(pty, term.clone(), proxy)?;
+        let shell = Arc::new(std::sync::Mutex::new(shell::ShellState::default()));
+        let (pty_loop, pty_tx) = PtyLoop::new(pty, term.clone(), proxy, shell.clone())?;
         let _ = pty_tx_cell.set(pty_tx.clone());
         pty_loop.spawn();
 
@@ -214,6 +240,7 @@ impl Session {
                 size,
                 pid,
                 master_fd,
+                shell,
             },
             rx,
         ))
@@ -296,6 +323,11 @@ impl Session {
     pub fn is_busy(&self) -> bool {
         let shell = self.shell_pid();
         self.foreground_pid().is_some_and(|pgid| pgid != shell) || first_child(shell).is_some()
+    }
+
+    /// What shell integration has reported (cwd, command blocks).
+    pub fn shell(&self) -> std::sync::MutexGuard<'_, shell::ShellState> {
+        self.shell.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Working directory of the foreground process.

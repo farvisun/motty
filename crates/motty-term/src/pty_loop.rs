@@ -17,8 +17,11 @@ use alacritty_terminal::tty::{self, EventedPty, EventedReadWrite};
 use alacritty_terminal::vte::ansi;
 use polling::{Event as PollEvent, Events, PollMode, Poller};
 
+use alacritty_terminal::term::TermMode;
+
 use crate::graphemes::{Cluster, Graphemes};
-use crate::{EventProxy, Terminal};
+use crate::shell::{OscSniffer, ShellOsc, ShellState};
+use crate::{EventProxy, SessionEvent, Terminal};
 
 /// Poller keys alacritty's `Pty::register` uses (crate-private there).
 const PTY_READ_WRITE_TOKEN: usize = 0;
@@ -58,6 +61,10 @@ pub struct PtyLoop {
     proxy: EventProxy,
     parser: ansi::Processor,
     cluster: Cluster,
+    /// Runs beside `parser` to catch the shell-integration OSCs it drops.
+    osc_parser: alacritty_terminal::vte::Parser,
+    sniffer: OscSniffer,
+    shell: Arc<std::sync::Mutex<ShellState>>,
     /// Input waiting for the PTY to accept it, and how much of the front
     /// chunk was written.
     pending: VecDeque<Cow<'static, [u8]>>,
@@ -69,6 +76,7 @@ impl PtyLoop {
         pty: tty::Pty,
         terminal: Arc<FairMutex<Terminal>>,
         proxy: EventProxy,
+        shell: Arc<std::sync::Mutex<ShellState>>,
     ) -> std::io::Result<(Self, LoopSender)> {
         let poller = Arc::new(Poller::new()?);
         let (tx, rx) = mpsc::channel();
@@ -84,6 +92,9 @@ impl PtyLoop {
             proxy,
             parser: ansi::Processor::new(),
             cluster: Cluster::default(),
+            osc_parser: alacritty_terminal::vte::Parser::new(),
+            sniffer: OscSniffer::default(),
+            shell,
             pending: VecDeque::new(),
             written: 0,
         };
@@ -194,11 +205,24 @@ impl PtyLoop {
                 Err(e) => return Err(e),
             };
             let term = terminal.get_or_insert_with(|| self.terminal.lock_unfair());
-            let mut handler = Graphemes {
-                term: &mut **term,
-                cluster: &mut self.cluster,
-            };
-            self.parser.advance(&mut handler, &buf[..n]);
+            // Feed the VT parser up to each shell-integration OSC, so that is
+            // recorded where the cursor is at that point.
+            let mut pos = 0;
+            while pos < n {
+                let end = pos
+                    + self
+                        .osc_parser
+                        .advance_until_terminated(&mut self.sniffer, &buf[pos..n]);
+                let mut handler = Graphemes {
+                    term: &mut **term,
+                    cluster: &mut self.cluster,
+                };
+                self.parser.advance(&mut handler, &buf[pos..end]);
+                pos = end;
+                if let Some(osc) = self.sniffer.take() {
+                    record_osc(osc, term, &self.shell, &self.proxy);
+                }
+            }
             processed += n;
             if processed >= MAX_LOCKED_READ {
                 break;
@@ -230,5 +254,45 @@ impl PtyLoop {
             }
         }
         Ok(())
+    }
+}
+
+/// Applies a shell-integration OSC at the cursor and tells the UI.
+fn record_osc(
+    osc: ShellOsc,
+    term: &Terminal,
+    shell: &std::sync::Mutex<ShellState>,
+    proxy: &EventProxy,
+) {
+    let event = match &osc {
+        ShellOsc::Notify { title, body } => Some(SessionEvent::Notification {
+            title: title.clone(),
+            body: body.clone(),
+        }),
+        ShellOsc::Progress(_) | ShellOsc::Cwd(_) => Some(SessionEvent::ShellChanged),
+        _ => None,
+    };
+    // Full-screen programs own the alternate screen; marks there would
+    // point into the wrong grid.
+    if matches!(osc, ShellOsc::Cwd(_) | ShellOsc::Progress(_))
+        || !term.mode().contains(TermMode::ALT_SCREEN)
+    {
+        let grid = term.grid();
+        let cursor = grid.cursor.point;
+        let row = grid.lines_pushed() + cursor.line.0.max(0) as u64;
+        let finished =
+            shell
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .apply(&osc, row, cursor.column.0);
+        if let Some(block) = finished {
+            proxy.send_session_event(SessionEvent::CommandFinished {
+                exit: block.exit,
+                duration: block.duration(),
+            });
+        }
+    }
+    if let Some(event) = event {
+        proxy.send_session_event(event);
     }
 }

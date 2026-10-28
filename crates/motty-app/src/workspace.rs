@@ -109,8 +109,15 @@ fn spawn_shell(
     cwd: Option<std::path::PathBuf>,
     size: GridSize,
 ) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
+    // Commands from `-e` run as they are; the user's shell gets integration.
+    let env = if command.is_none() {
+        crate::shell_integration::env(config, &crate::shell_integration::login_shell(config))
+    } else {
+        Default::default()
+    };
     let session = SessionConfig {
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
+        env,
         working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),
         cursor_style: cursor_style(config),
@@ -259,6 +266,12 @@ impl Workspace {
             |this, terminal, event, window, cx| match event {
                 TerminalEvent::TitleChanged => cx.notify(),
                 TerminalEvent::Exited => this.close_pane(terminal, window, cx),
+                TerminalEvent::CommandFinished { exit, duration } => {
+                    tracing::debug!(?exit, ?duration, "command finished");
+                }
+                TerminalEvent::Notification { title, body } => {
+                    tracing::debug!(?title, body, "notification");
+                }
             },
         );
         self.pane_subscriptions

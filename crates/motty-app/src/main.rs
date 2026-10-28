@@ -2,6 +2,7 @@ mod actions;
 mod fonts;
 mod materials;
 mod panes;
+mod shell_integration;
 mod terminal_view;
 mod titlebar;
 mod workspace;

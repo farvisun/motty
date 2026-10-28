@@ -24,6 +24,16 @@ use crate::actions::*;
 pub enum TerminalEvent {
     TitleChanged,
     Exited,
+    /// A command run from an integrated shell finished.
+    CommandFinished {
+        exit: Option<i32>,
+        duration: Option<std::time::Duration>,
+    },
+    /// OSC 9 / OSC 777 desktop notification.
+    Notification {
+        title: Option<String>,
+        body: String,
+    },
 }
 
 pub struct TerminalView {
@@ -150,7 +160,13 @@ impl TerminalView {
     /// Re-reads the foreground process; returns whether anything changed.
     pub fn refresh_process(&mut self) -> bool {
         let process = self.session.shell_name();
-        let cwd = self.session.foreground_cwd();
+        // The shell's own report (OSC 7) also covers remote shells.
+        let cwd = self
+            .session
+            .shell()
+            .cwd
+            .clone()
+            .or_else(|| self.session.foreground_cwd());
         let busy = self.session.is_busy();
         let changed = process != self.process || cwd != self.cwd || busy != self.busy;
         self.process = process;
@@ -250,6 +266,18 @@ impl TerminalView {
             }
             SessionEvent::CursorBlinkingChange => cx.notify(),
             SessionEvent::Exited(_) => cx.emit(TerminalEvent::Exited),
+            SessionEvent::CommandFinished { exit, duration } => {
+                self.refresh_process();
+                cx.emit(TerminalEvent::CommandFinished { exit, duration });
+            }
+            SessionEvent::Notification { title, body } => {
+                cx.emit(TerminalEvent::Notification { title, body })
+            }
+            SessionEvent::ShellChanged => {
+                if self.refresh_process() {
+                    cx.emit(TerminalEvent::TitleChanged);
+                }
+            }
         }
     }
 
