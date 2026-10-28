@@ -9,6 +9,7 @@ use gpui::{
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
+use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
 use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
@@ -77,10 +78,23 @@ pub fn spawn_shell(
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
         working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),
+        cursor_style: cursor_style(config),
         ..Default::default()
     };
     let initial = GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 16. };
     Session::spawn(session, initial)
+}
+
+/// `cursor-style` and the blink policy's starting state, as the terminal's
+/// default cursor.
+fn cursor_style(config: &Config) -> CursorStyle {
+    let shape = match config.cursor_style {
+        motty_theme::CursorStyle::Block => CursorShape::Block,
+        motty_theme::CursorStyle::Bar => CursorShape::Beam,
+        motty_theme::CursorStyle::Underline => CursorShape::Underline,
+        motty_theme::CursorStyle::BlockHollow => CursorShape::HollowBlock,
+    };
+    CursorStyle { shape, blinking: config.cursor_blink.initial() }
 }
 
 pub fn terminal_style(config: &Config, theme: &Theme, cx: &App) -> TerminalStyle {

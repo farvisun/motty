@@ -15,6 +15,7 @@ use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
 use motty_term::alacritty_terminal::vte::ansi::Rgb;
 use motty_term::input::{self, KeyInput, MouseAction, Mods};
+use motty_theme::CursorBlink;
 use motty_term::{Session, SessionEvent};
 
 use crate::actions::{Clear, Copy, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, SelectAll};
@@ -43,11 +44,13 @@ pub struct TerminalView {
     selecting: bool,
     /// IME composition in progress.
     marked_text: Option<SharedString>,
-    blink: Option<CursorBlink>,
+    /// `None` when the cursor never blinks (`always_off`).
+    blink: Option<BlinkState>,
+    blink_policy: CursorBlink,
     _events: Task<()>,
 }
 
-struct CursorBlink {
+struct BlinkState {
     visible: bool,
     /// Bumped on input so the blink restarts from "visible".
     epoch: usize,
@@ -64,7 +67,7 @@ impl TerminalView {
         events: async_channel::Receiver<SessionEvent>,
         style: TerminalStyle,
         option_as_meta: bool,
-        cursor_blink: bool,
+        cursor_blink: CursorBlink,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -90,7 +93,9 @@ impl TerminalView {
             scroll_remainder: 0.,
             selecting: false,
             marked_text: None,
-            blink: cursor_blink.then(|| CursorBlink { visible: true, epoch: 0, _task: Self::blink_task(cx) }),
+            blink: (cursor_blink != CursorBlink::AlwaysOff)
+                .then(|| BlinkState { visible: true, epoch: 0, _task: Self::blink_task(cx) }),
+            blink_policy: cursor_blink,
             _events: task,
         }
     }
@@ -101,10 +106,17 @@ impl TerminalView {
             loop {
                 cx.background_executor().timer(BLINK_INTERVAL).await;
                 let alive = this.update(cx, |view, cx| {
+                    // Programs turn blinking on and off (DECSCUSR, DECSET 12);
+                    // the policy decides whether that counts.
+                    let wanted = view.blink_policy.resolve(view.session.term.lock().cursor_style().blinking);
                     let Some(blink) = view.blink.as_mut() else { return };
-                    if blink.epoch != seen_epoch {
-                        // Input happened since the last tick: stay visible one interval.
+                    if !wanted || blink.epoch != seen_epoch {
+                        // Not blinking, or input happened since the last tick:
+                        // stay visible, repainting only if that changes anything.
                         seen_epoch = blink.epoch;
+                        if blink.visible {
+                            return;
+                        }
                         blink.visible = true;
                     } else {
                         blink.visible = !blink.visible;

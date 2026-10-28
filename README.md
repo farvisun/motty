@@ -31,7 +31,9 @@ registered automatically.
 | `font-family`, `font-size`, `font-ligatures` (`off`, `calt`, `dlig`) | Terminal font |
 | `foreground`, `background`, `palette-0`…`palette-15` | Terminal colors when no `theme` is set (a theme's own colors win, as in Otty) |
 | `macos-option-as-alt` | Send Option+key as Esc-prefixed (default `false`) |
-| `cursor-style-blink` | `default_off` (default), `default_on`, `always_off`, `always_on` |
+| `cursor-style` | `block` (default), `bar`, `underline`, `block_hollow`; programs may switch it |
+| `cursor-style-blink` | `default_off` (default) and `default_on` let programs turn blinking on or off; `always_off` and `always_on` don't |
+| `cursor-color`, `cursor-text` | Cursor colors for themes that don't set their own |
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
 | `scrollback-lines`, `shell` | Behaviour |
 
@@ -53,4 +55,7 @@ Bundled JetBrains Mono is under the [SIL Open Font License](crates/motty-app/ass
 
 With Otty installed, `cargo xtask parity` renders `xtask/fixtures/render.sh` in both apps at
 the same window bounds, captures both windows and prints per-region diff stats; images land
-in `target/parity/`. Add `--tabs` to compare a three-tab sidebar. Captures are local only.
+in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--theme NAME` to switch both
+apps to a theme, `--backdrop RRGGBB` to put a solid color behind the window (for materials), and
+`--set key=value` (repeatable) to change a config key in both apps. Otty's config is restored
+byte for byte afterwards. Captures are local only.

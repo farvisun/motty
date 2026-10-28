@@ -625,14 +625,18 @@ fn build_cursor(
             (Some(quad), text)
         }
         CursorShape::Beam => (Some(fill(Bounds::new(full.origin, size(thickness, full.size.height)), hsla(style.cursor_bar))), None),
+        // Otty's underline is twice the bar's thickness; its hollow block
+        // strokes at the bar's.
         CursorShape::Underline => (
             Some(fill(
-                Bounds::new(point(x, y + metrics.line_height - thickness), size(full.size.width, thickness)),
+                Bounds::new(point(x, y + metrics.line_height - thickness * 2.), size(full.size.width, thickness * 2.)),
                 hsla(style.cursor_underline),
             )),
             None,
         ),
-        CursorShape::HollowBlock => (Some(outline(full, hsla(style.cursor), gpui::BorderStyle::Solid)), None),
+        CursorShape::HollowBlock => {
+            (Some(outline(full, hsla(style.cursor), gpui::BorderStyle::Solid).border_widths(thickness)), None)
+        }
         CursorShape::Hidden => (None, None),
     }
 }

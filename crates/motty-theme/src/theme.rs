@@ -62,6 +62,10 @@ pub struct CursorColors {
     pub block_text: Option<Rgba>,
     pub bar: Rgba,
     pub underline: Rgba,
+    /// Whether the theme set the base color and text itself; the config's
+    /// `cursor-color` and `cursor-text` only fill in when it didn't.
+    pub color_themed: bool,
+    pub text_themed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -451,6 +455,8 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         block_text: s("cursor.block").color("text").or(cursor_text),
         bar: s("cursor.bar").color("color").unwrap_or(cursor_color),
         underline: s("cursor.underline").color("color").unwrap_or(cursor_color),
+        color_themed: cur.color("color").or_else(|| term.color("cursor")).is_some(),
+        text_themed: cursor_text.is_some(),
     };
 
     let pan = s("panel");

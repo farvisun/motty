@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             metrics(Path::new(&args[1]), left)
         }
         _ => {
-            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
+            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
             std::process::exit(2);
         }
     }
@@ -191,21 +191,23 @@ fn tabs_title() -> String {
     }
 }
 
-/// Switches Otty to another theme for one capture. Dropping it writes the
-/// user's config.toml back byte for byte (the CLI may reformat it) and
-/// reloads, so the user's setup is restored even when the capture fails.
-struct OttyTheme {
+/// Temporarily changes Otty's config (a theme, `--set` keys) for a parity
+/// run; Motty reads the same file. Dropping it writes the user's
+/// config.toml back byte for byte (the CLI may reformat it) and reloads, so
+/// the user's setup is restored even when the capture fails.
+struct OttyConfig {
     path: PathBuf,
     original: Vec<u8>,
 }
 
-impl OttyTheme {
-    fn switch(theme: &str) -> Result<Self> {
+impl OttyConfig {
+    fn apply(theme: Option<&str>, sets: &[(String, String)]) -> Result<Self> {
         let path = PathBuf::from(run(Command::new(OTTY_CLI).args(["config", "path"]))?.trim());
         let original = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let guard = Self { path, original };
-        for key in ["theme", "theme-dark"] {
-            run(Command::new(OTTY_CLI).args(["config", "set", key, theme]))?;
+        let themes = theme.into_iter().flat_map(|t| [("theme", t), ("theme-dark", t)]);
+        for (key, value) in themes.chain(sets.iter().map(|(k, v)| (k.as_str(), v.as_str()))) {
+            run(Command::new(OTTY_CLI).args(["config", "set", key, value]))?;
         }
         run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
         pause(1000);
@@ -213,7 +215,7 @@ impl OttyTheme {
     }
 }
 
-impl Drop for OttyTheme {
+impl Drop for OttyConfig {
     fn drop(&mut self) {
         if let Err(e) = std::fs::write(&self.path, &self.original) {
             eprintln!("could not restore {}: {e}", self.path.display());
@@ -423,12 +425,22 @@ fn parity(args: &[String]) -> Result<()> {
     let tabs = args.iter().any(|a| a == "--tabs");
     let theme = args.iter().position(|a| a == "--theme").and_then(|i| args.get(i + 1)).cloned();
     let backdrop = args.iter().position(|a| a == "--backdrop").and_then(|i| args.get(i + 1));
+    // `--set key=value` (repeatable) changes a config key in both apps.
+    let sets: Vec<(String, String)> = args
+        .windows(2)
+        .filter(|w| w[0] == "--set")
+        .map(|w| w[1].split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())).context("--set wants key=value"))
+        .collect::<Result<_>>()?;
     let _backdrop = backdrop.map(|c| Backdrop::show(c)).transpose()?;
-    {
-        let _restore = theme.as_deref().map(OttyTheme::switch).transpose()?;
-        capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
+    let mut restore = (theme.is_some() || !sets.is_empty()).then(|| OttyConfig::apply(theme.as_deref(), &sets)).transpose()?;
+    capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
+    // Without `--set`, Motty gets the theme as a flag, so the user's config
+    // can be back before Motty starts.
+    if sets.is_empty() {
+        restore = None;
     }
     capture_motty(release, &fixture, tabs, theme.as_deref(), &motty).context("capturing Motty")?;
+    drop(restore);
     println!("captured {} and {}", otty.display(), motty.display());
     diff(&otty, &motty, Some(&dir.join("diff.png")))?;
     for (name, img) in [("otty", &otty), ("motty", &motty)] {

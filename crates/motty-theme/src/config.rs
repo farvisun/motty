@@ -23,7 +23,12 @@ pub struct Config {
     pub option_as_meta: bool,
     pub scrollback: Option<usize>,
     pub shell: Option<String>,
-    pub cursor_blink: bool,
+    /// `cursor-style`: the shape programs get until they ask for another.
+    pub cursor_style: CursorStyle,
+    pub cursor_blink: CursorBlink,
+    /// `cursor-color` and `cursor-text`, for themes that don't set them.
+    pub cursor_color: Option<Rgba>,
+    pub cursor_text: Option<Rgba>,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
@@ -31,6 +36,43 @@ pub struct Config {
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+/// `cursor-style` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorStyle {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+    BlockHollow,
+}
+
+/// `cursor-style-blink`: whether the cursor blinks before a program asks
+/// (`default_*`), or whatever programs ask (`always_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorBlink {
+    #[default]
+    DefaultOff,
+    DefaultOn,
+    AlwaysOff,
+    AlwaysOn,
+}
+
+impl CursorBlink {
+    /// Blinking before any program asks.
+    pub fn initial(self) -> bool {
+        matches!(self, Self::DefaultOn | Self::AlwaysOn)
+    }
+
+    /// Blinking, given what the running program asked for.
+    pub fn resolve(self, requested: bool) -> bool {
+        match self {
+            Self::AlwaysOn => true,
+            Self::AlwaysOff => false,
+            Self::DefaultOn | Self::DefaultOff => requested,
+        }
+    }
 }
 
 pub fn motty_dir() -> PathBuf {
@@ -72,6 +114,8 @@ impl Config {
             }
             None => None,
         };
+        // Unknown enum values (`color_of` holds `warn` for the whole loop).
+        let mut unknown = Vec::new();
         for (key, value) in &entries {
             let key = key.as_str();
             match key {
@@ -94,10 +138,22 @@ impl Config {
                 }
                 "scrollback" | "scrollback-lines" => out.scrollback = value.as_integer().map(|i| i.max(0) as usize),
                 "shell" => out.shell = str_of(value),
-                // `default_off`, `default_on`, `always_off` or `always_on`.
-                "cursor-style-blink" | "cursor-blink" => {
-                    out.cursor_blink = value.as_bool().unwrap_or_else(|| value.as_str().is_some_and(|v| v.ends_with("_on")))
-                }
+                "cursor-style" => match value.as_str() {
+                    Some("block") => out.cursor_style = CursorStyle::Block,
+                    Some("bar") => out.cursor_style = CursorStyle::Bar,
+                    Some("underline") => out.cursor_style = CursorStyle::Underline,
+                    Some("block_hollow") => out.cursor_style = CursorStyle::BlockHollow,
+                    _ => unknown.push(format!("config.toml {key}: unknown cursor style {value}")),
+                },
+                "cursor-style-blink" | "cursor-blink" => match (value.as_bool(), value.as_str()) {
+                    (Some(true), _) | (_, Some("default_on")) => out.cursor_blink = CursorBlink::DefaultOn,
+                    (Some(false), _) | (_, Some("default_off")) => out.cursor_blink = CursorBlink::DefaultOff,
+                    (_, Some("always_on")) => out.cursor_blink = CursorBlink::AlwaysOn,
+                    (_, Some("always_off")) => out.cursor_blink = CursorBlink::AlwaysOff,
+                    _ => unknown.push(format!("config.toml {key}: unknown blink policy {value}")),
+                },
+                "cursor-color" => out.cursor_color = color_of(key, value),
+                "cursor-text" => out.cursor_text = color_of(key, value),
                 "window-hide-dirty-indicator" => out.hide_dirty_indicator = value.as_bool().unwrap_or(false),
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
                 k if k.starts_with("palette-") => {
@@ -108,6 +164,7 @@ impl Config {
                 _ => {}
             }
         }
+        warnings.extend(unknown);
         out.warnings = warnings;
         out
     }
@@ -138,7 +195,26 @@ impl Config {
         if name.is_none() {
             self.apply_overrides(&mut parsed.theme);
         }
+        self.apply_cursor(&mut parsed.theme);
         parsed
+    }
+
+    /// Otty uses `cursor-color` and `cursor-text` only where the theme has no
+    /// cursor color of its own (Paper turns red, Nord keeps its own).
+    fn apply_cursor(&self, theme: &mut Theme) {
+        let c = &mut theme.cursor;
+        if let Some(color) = self.cursor_color.filter(|_| !c.color_themed) {
+            for shape in [&mut c.block, &mut c.bar, &mut c.underline] {
+                if *shape == c.color {
+                    *shape = color;
+                }
+            }
+            c.color = color;
+        }
+        if let Some(text) = self.cursor_text.filter(|_| !c.text_themed) {
+            c.block_text = c.block_text.or(Some(text));
+            c.text = Some(text);
+        }
     }
 
     fn apply_overrides(&self, theme: &mut Theme) {
@@ -289,12 +365,20 @@ mod tests {
     #[test]
     fn otty_enum_values_and_defaults() {
         let d = Config::parse("");
-        assert!(d.ligatures && !d.option_as_meta && !d.cursor_blink);
+        assert!(d.ligatures && !d.option_as_meta && d.cursor_blink == CursorBlink::DefaultOff);
+        assert_eq!(d.cursor_style, CursorStyle::Block);
         let cfg = Config::parse(
             "font-ligatures = \"off\"\nmacos-option-as-alt = \"left\"\ncursor-style-blink = \"default_on\"\nwindow-hide-dirty-indicator = true\n",
         );
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
-        assert!(!cfg.ligatures && cfg.option_as_meta && cfg.cursor_blink && cfg.hide_dirty_indicator);
+        assert!(!cfg.ligatures && cfg.option_as_meta && cfg.cursor_blink == CursorBlink::DefaultOn && cfg.hide_dirty_indicator);
+        let cursor = Config::parse(
+            "cursor-style = \"block_hollow\"\ncursor-style-blink = \"always_off\"\ncursor-color = \"#ff0000\"\n",
+        );
+        assert!(cursor.warnings.is_empty(), "{:?}", cursor.warnings);
+        assert_eq!((cursor.cursor_style, cursor.cursor_blink), (CursorStyle::BlockHollow, CursorBlink::AlwaysOff));
+        assert_eq!(cursor.cursor_color.map(|c| c.r), Some(1.));
+        assert!(!CursorBlink::AlwaysOff.resolve(true) && CursorBlink::DefaultOff.resolve(true));
         // A later file (config.local.toml) overrides earlier keys.
         assert!(!Config::parse("macos-option-as-alt = true\nmacos-option-as-alt = \"false\"\n").option_as_meta);
     }
@@ -314,6 +398,19 @@ mod tests {
         assert_ne!(themed.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
         let bare = Config::parse("background = \"#ff0000\"\n");
         assert_eq!(bare.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
+    }
+
+    #[test]
+    fn config_cursor_color_fills_in_for_themes_without_one() {
+        let base = "[meta]\nname='x'\n[terminal]\nforeground='#ffffff'\nbackground='#000000'\npalette=['#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000','#000000']\n";
+        let cfg = Config::parse("cursor-color = \"#ff0000\"\ncursor-text = \"#00ff00\"\n");
+        let mut plain = theme::parse(base).unwrap().theme;
+        cfg.apply_cursor(&mut plain);
+        assert_eq!((plain.cursor.block, plain.cursor.bar), (Rgba::rgb(0xff0000), Rgba::rgb(0xff0000)));
+        assert_eq!(plain.cursor.block_text, Some(Rgba::rgb(0x00ff00)));
+        let mut themed = theme::parse(&format!("{base}cursor = '#0000ff'\n")).unwrap().theme;
+        cfg.apply_cursor(&mut themed);
+        assert_eq!(themed.cursor.block, Rgba::rgb(0x0000ff));
     }
 
     #[test]

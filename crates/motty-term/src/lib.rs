@@ -15,6 +15,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
+use alacritty_terminal::vte::ansi::CursorStyle;
 
 pub mod input;
 
@@ -135,6 +136,8 @@ pub struct SessionConfig {
     pub working_directory: Option<PathBuf>,
     pub env: HashMap<String, String>,
     pub scrollback: usize,
+    /// Shape and blinking until the program asks for another (DECSCUSR).
+    pub cursor_style: CursorStyle,
 }
 
 pub struct Session {
@@ -172,6 +175,7 @@ impl Session {
 
         let term_config = term::Config {
             scrolling_history: if config.scrollback == 0 { 10_000 } else { config.scrollback },
+            default_cursor_style: config.cursor_style,
             ..Default::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));
