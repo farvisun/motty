@@ -33,6 +33,8 @@ pub struct WindowState {
     /// x, y, width, height in points.
     pub bounds: [f32; 4],
     pub sidebar_visible: bool,
+    #[serde(default)]
+    pub details_visible: bool,
     pub active: usize,
     pub tabs: Vec<TabState>,
 }

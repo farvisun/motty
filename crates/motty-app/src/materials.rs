@@ -19,6 +19,10 @@ pub enum Region {
     Sidebar {
         width: f32,
     },
+    /// Full-height column on the right edge (the details panel).
+    DetailsPanel {
+        width: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -153,6 +157,14 @@ mod mac {
                 ),
                 NSAutoresizingMaskOptions::ViewHeightSizable
                     | NSAutoresizingMaskOptions::ViewMaxXMargin,
+            ),
+            Region::DetailsPanel { width } => (
+                NSRect::new(
+                    NSPoint::new(bounds.size.width - width as f64, 0.),
+                    NSSize::new(width as f64, bounds.size.height),
+                ),
+                NSAutoresizingMaskOptions::ViewHeightSizable
+                    | NSAutoresizingMaskOptions::ViewMinXMargin,
             ),
         }
     }

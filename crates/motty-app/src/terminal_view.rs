@@ -709,6 +709,16 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
+                if let Some(cwd) = &this.cwd {
+                    cx.write_to_clipboard(ClipboardItem::new_string(cwd.display().to_string()));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &RevealInFinder, _, cx| {
+                if let Some(cwd) = &this.cwd {
+                    cx.reveal_path(cwd);
+                }
+            }))
             .on_action(cx.listener(|this, a: &SendText, window, cx| {
                 if this.read_only {
                     window.play_system_bell();

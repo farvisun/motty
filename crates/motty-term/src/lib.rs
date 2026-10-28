@@ -329,6 +329,29 @@ impl Session {
         process_name(self.shell_pid())
     }
 
+    /// The shell and every process under it, parents before children.
+    pub fn processes(&self) -> Vec<ProcessInfo> {
+        let mut out = Vec::new();
+        let mut queue = vec![self.shell_pid()];
+        while let Some(pid) = queue.pop() {
+            if out.len() >= 64 {
+                break;
+            }
+            let Some(name) = process_name(pid) else {
+                continue;
+            };
+            out.push(ProcessInfo {
+                pid,
+                name,
+                started: process_start(pid),
+            });
+            let mut children = children(pid);
+            children.reverse();
+            queue.extend(children);
+        }
+        out
+    }
+
     /// Whether the shell is running a command rather than waiting at a
     /// prompt. Non-interactive shells keep children in their own process
     /// group, so child processes are checked as well as the foreground group.
@@ -443,6 +466,52 @@ fn process_cwd(pid: i32) -> Option<PathBuf> {
     // SAFETY: the kernel NUL-terminates vip_path.
     let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
     Some(PathBuf::from(path.to_string_lossy().into_owned()))
+}
+
+/// A process running in a pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: i32,
+    pub name: String,
+    pub started: Option<std::time::SystemTime>,
+}
+
+#[cfg(target_os = "macos")]
+fn process_start(pid: i32) -> Option<std::time::SystemTime> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: `info` is a properly sized, writable proc_bsdinfo.
+    let n =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    (n == size).then(|| {
+        std::time::UNIX_EPOCH
+            + std::time::Duration::new(info.pbi_start_tvsec, info.pbi_start_tvusec as u32 * 1000)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn children(pid: i32) -> Vec<i32> {
+    let mut buf = [0 as libc::pid_t; 64];
+    let size = std::mem::size_of_val(&buf) as i32;
+    // SAFETY: the buffer is valid for `size` bytes.
+    let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr().cast(), size) };
+    let mut pids: Vec<i32> = buf[..n.clamp(0, 64) as usize]
+        .iter()
+        .copied()
+        .filter(|&p| p > 0)
+        .collect();
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_start(_pid: i32) -> Option<std::time::SystemTime> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn children(_pid: i32) -> Vec<i32> {
+    Vec::new()
 }
 
 #[cfg(target_os = "macos")]

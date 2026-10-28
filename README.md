@@ -116,6 +116,21 @@ cycles them. ⌘J opens straight to Current. ↩ switches, reopens, `cd`s, conne
 command or opens the file; hold ⌘ to see ⌘1–⌘9 for the first nine. A path typed from `/` or `~`
 gets its own row.
 
+## Details panel
+
+⌘⇧R (or the button at the titlebar's right end) opens a panel about the focused pane:
+
+- **Info**: the working directory with Copy Path, Reveal in Finder and Open in… (your
+  `open-with-app = "Name|bundle.id"` entries, else VS Code, Cursor, Zed or Xcode when installed),
+  the processes running in the pane, and the TCP ports they listen on (click to open).
+- **Outline**: the pane's commands, newest last; click one to scroll to it.
+- **Git**: branch, lines added and removed, the remote, and staged, unstaged and untracked files.
+- **Files**: a tree of the working directory (↑ goes up a folder; the eye shows dotfiles).
+
+The `details_info`, `details_outline`, `details_git` and `details_files` actions open a tab
+directly. The panel's width is `details-panel-width`, and whether it's open is kept with the
+session.
+
 ## Find
 
 ⌘F opens the find bar on the focused pane: it searches the screen and scrollback as you type,

@@ -25,6 +25,7 @@ use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
+mod details;
 mod open_quickly;
 mod palette;
 mod picker;
@@ -117,6 +118,8 @@ pub struct Workspace {
     native_state: Option<(WindowBackgroundAppearance, bool)>,
     /// The tabs sidebar (`sidebar-visible`, ⌘⇧L).
     sidebar_visible: bool,
+    /// The details panel (⌘⇧R) and what it shows.
+    details: details::Details,
     /// The pointer is over the window: Otty shows its titlebar buttons then.
     pointer_inside: bool,
     _subscriptions: Vec<Subscription>,
@@ -250,6 +253,7 @@ impl Workspace {
                     if changed {
                         cx.notify();
                     }
+                    this.refresh_details(false, cx);
                 });
                 if alive.is_err() {
                     break;
@@ -288,6 +292,7 @@ impl Workspace {
             window_title: String::new(),
             palette: None,
             open_quickly: None,
+            details: Default::default(),
             backdrops: Backdrops::default(),
             native_state: None,
             sidebar_visible,
@@ -335,6 +340,7 @@ impl Workspace {
                 f32::from(b.size.height),
             ],
             sidebar_visible: self.sidebar_visible,
+            details_visible: self.details.visible,
             active: self.active,
             tabs: self
                 .tabs
@@ -348,6 +354,7 @@ impl Workspace {
     /// with its scrollback.
     fn restore(&mut self, state: &WindowState, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = state.sidebar_visible;
+        self.details.visible = state.details_visible;
         for tab in &state.tabs {
             match self.restore_tab(tab, &crate::recovery::read_scrollback, window, cx) {
                 Ok(tab) => self.tabs.push(tab),
@@ -1013,8 +1020,13 @@ impl Workspace {
         } else {
             0.
         };
+        let details = if self.details.visible {
+            self.details_width()
+        } else {
+            0.
+        };
         gpui::size(
-            (viewport.width - px(sidebar + m.left + m.right)).max(px(0.)),
+            (viewport.width - px(sidebar + details + m.left + m.right)).max(px(0.)),
             (viewport.height - px(TITLEBAR_RESERVE + m.top + m.bottom)).max(px(0.)),
         )
     }
@@ -1187,9 +1199,6 @@ impl Workspace {
         &self,
         cx: &mut Context<Self>,
     ) -> (Option<AnyElement>, Option<AnyElement>) {
-        if !self.pointer_inside {
-            return (None, None);
-        }
         let t = &self.theme;
         let icon = hsla(native_label(t, 0.5, 0.55));
         let highlight = hsla(native_label(t, 0.08, 0.1));
@@ -1230,20 +1239,30 @@ impl Workspace {
                     .child(titlebar::panel(icon, icon, false))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             );
-        let details = div()
-            .absolute()
-            .top(px(titlebar::TOP))
-            .right(px(titlebar::DETAILS_RIGHT))
-            .child(
-                button("details-panel", titlebar::BUTTON).child(titlebar::panel(
-                    icon,
-                    hsla(native_tertiary_label(t)),
-                    true,
-                )),
-            );
+        // With the details panel open, its toggle stays at the strip's end.
+        let details = (self.pointer_inside || self.details.visible).then(|| {
+            div()
+                .absolute()
+                .top(px(titlebar::TOP))
+                .right(px(titlebar::DETAILS_RIGHT))
+                .child(
+                    button("details-panel", titlebar::BUTTON)
+                        .child(titlebar::panel(
+                            icon,
+                            if self.details.visible {
+                                icon
+                            } else {
+                                hsla(native_tertiary_label(t))
+                            },
+                            true,
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_details(cx))),
+                )
+                .into_any_element()
+        });
         (
-            Some(group.into_any_element()),
-            Some(details.into_any_element()),
+            self.pointer_inside.then(|| group.into_any_element()),
+            details,
         )
     }
 
@@ -1319,6 +1338,14 @@ impl Workspace {
                 material: t.sidebar.material,
             });
         }
+        if self.details.visible && t.details_panel.material != t.window.material {
+            wanted.push(Backdrop {
+                region: Region::DetailsPanel {
+                    width: self.details_width(),
+                },
+                material: t.details_panel.material,
+            });
+        }
         wanted
     }
 }
@@ -1326,7 +1353,14 @@ impl Workspace {
 /// Motty draws its own materials, so the window only needs to be see-through
 /// when the theme uses one.
 pub fn background_appearance(t: &Theme) -> WindowBackgroundAppearance {
-    if t.window.material == Material::None && t.sidebar.material == Material::None {
+    if [
+        t.window.material,
+        t.sidebar.material,
+        t.details_panel.material,
+    ]
+    .iter()
+    .all(|m| *m == Material::None)
+    {
         WindowBackgroundAppearance::Opaque
     } else {
         WindowBackgroundAppearance::Transparent
@@ -1444,6 +1478,7 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = self.sidebar_visible.then(|| self.render_sidebar(cx));
+        let details = self.details.visible.then(|| self.render_details(cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
         let t = &self.theme;
         let c = &t.container;
@@ -1509,7 +1544,9 @@ impl Render for Workspace {
             .absolute()
             .top_0()
             .left_0()
-            .right(px(if self.sidebar_visible {
+            .right(px(if self.details.visible {
+                0.
+            } else if self.sidebar_visible {
                 TITLE_RIGHT_INSET
             } else {
                 COLLAPSED_TITLE_RIGHT_INSET
@@ -1679,6 +1716,19 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::reopen_closed_tab))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(|this, _: &ToggleDetailsPanel, _, cx| this.toggle_details(cx)))
+            .on_action(cx.listener(|this, _: &DetailsInfo, _, cx| {
+                this.show_details_tab(details::DetailsTab::Info, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DetailsOutline, _, cx| {
+                this.show_details_tab(details::DetailsTab::Outline, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DetailsGit, _, cx| {
+                this.show_details_tab(details::DetailsTab::Git, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DetailsFiles, _, cx| {
+                this.show_details_tab(details::DetailsTab::Files, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenQuickly, window, cx| {
                 this.show_open_quickly(open_quickly::Filter::All, window, cx)
             }))
@@ -1714,6 +1764,7 @@ impl Render for Workspace {
             .font_family(self.ui_font.clone())
             .children(sidebar)
             .child(main)
+            .children(details)
             .children(titlebar_buttons)
             .children(details_button)
             .children(self.render_mode_pill(cx))
