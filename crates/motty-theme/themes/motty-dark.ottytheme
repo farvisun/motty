@@ -1,0 +1,45 @@
+# Motty Dark — Motty's default dark theme.
+# Uses the same format as .ottytheme files: only [meta] and [terminal] are
+# required; every other section is derived when omitted.
+
+[meta]
+name        = "Motty Dark"
+author      = "Motty"
+mode        = "dark"
+description = "Neutral graphite with a soft teal accent."
+
+[terminal]
+foreground           = "#E6E8EB"
+background           = "#16181C"
+cursor               = "#E6E8EB"
+cursor-text          = "#16181C"
+selection-background = "#33475B"
+palette = [
+    "#22252B", "#F07178", "#A6D189", "#EBCB8B",
+    "#7AA2F7", "#C49BE8", "#6CCFC0", "#C8CCD4",
+    "#5C626E", "#FF8F96", "#BEE3A3", "#F5DCA6",
+    "#9DBBFF", "#D7B6F5", "#8EE3D6", "#FFFFFF",
+]
+
+[token]
+foreground = "#E6E8EB"
+secondary  = "#B4B9C2"
+tertiary   = "#6E7480"
+accent     = "#6CCFC0"
+radius     = 6
+font-mono  = ["JetBrains Mono", "SF Mono", "Menlo", "monospace"]
+font-size  = 13
+
+[panel]
+background = "#16181C"
+surface    = "#1F2227"
+border     = "#2A2E35"
+
+[sidebar]
+background   = "#1B1E22"
+border-right = "1px solid #2A2E35"
+
+[tab.active]
+background  = "#262A30"
+foreground  = "#FFFFFF"
+font-weight = 500

@@ -1,0 +1,44 @@
+# Motty Light — Motty's default light theme.
+
+[meta]
+name        = "Motty Light"
+author      = "Motty"
+mode        = "light"
+description = "Warm off-white with ink-blue accents."
+
+[terminal]
+foreground           = "#1F2328"
+background           = "#FBFAF8"
+cursor               = "#1F2328"
+cursor-text          = "#FBFAF8"
+selection-background = "#D5E3F2"
+palette = [
+    "#1F2328", "#C2413A", "#2F7A45", "#9A6A12",
+    "#2F5FA8", "#7A4BA0", "#227A82", "#BDBAB3",
+    "#7D7A73", "#D9625B", "#4F9A64", "#B8862E",
+    "#5281C6", "#9A70BD", "#4C9AA1", "#ECEAE5",
+]
+
+[token]
+foreground = "#1F2328"
+secondary  = "#57606A"
+tertiary   = "#9198A1"
+accent     = "#2F5FA8"
+radius     = 6
+font-mono  = ["JetBrains Mono", "SF Mono", "Menlo", "monospace"]
+font-size  = 13
+
+[panel]
+background = "#FBFAF8"
+surface    = "#FFFFFF"
+border     = "#E6E3DD"
+
+[sidebar]
+background   = "#F4F2EE"
+border-right = "1px solid #E6E3DD"
+
+[tab.active]
+background  = "#FFFFFF"
+foreground  = "#1F2328"
+font-weight = 500
+shadow      = "0 1px 2px rgba(0,0,0,0.06)"

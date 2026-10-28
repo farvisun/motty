@@ -1,0 +1,251 @@
+//! `config.toml`: flat kebab-case keys, compatible with Otty's config file.
+//! Unknown keys are preserved so settings written back keep them.
+
+use std::path::{Path, PathBuf};
+
+use crate::css::{self, Rgba};
+use crate::theme::{self, Mode, ParsedTheme, Theme};
+
+#[derive(Clone, Debug, Default)]
+pub struct Config {
+    pub theme: Option<String>,
+    pub theme_dark: Option<String>,
+    pub foreground: Option<Rgba>,
+    pub background: Option<Rgba>,
+    pub palette: [Option<Rgba>; 16],
+    pub font_family: Option<String>,
+    pub font_size: Option<f32>,
+    pub ligatures: bool,
+    pub sidebar_width: Option<f32>,
+    pub details_panel_width: Option<f32>,
+    pub option_as_meta: bool,
+    pub scrollback: Option<usize>,
+    pub shell: Option<String>,
+    pub cursor_blink: bool,
+    /// Where the config was read from, if anywhere.
+    pub path: Option<PathBuf>,
+    pub warnings: Vec<String>,
+}
+
+pub fn motty_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".config/motty")
+}
+
+pub fn otty_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".config/otty")
+}
+
+impl Config {
+    /// Motty's own config wins; otherwise an existing Otty config is read as-is.
+    pub fn load() -> Self {
+        for dir in [motty_dir(), otty_dir()] {
+            let path = dir.join("config.toml");
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                let mut cfg = Self::parse(&src);
+                cfg.path = Some(path);
+                return cfg;
+            }
+        }
+        Self::parse("")
+    }
+
+    pub fn parse(src: &str) -> Self {
+        let mut cfg = Config { ligatures: true, option_as_meta: true, cursor_blink: true, ..Default::default() };
+        let table: toml::Table = match toml::from_str(src) {
+            Ok(t) => t,
+            Err(e) => {
+                cfg.warnings.push(format!("config.toml: {e}"));
+                return cfg;
+            }
+        };
+        let mut warnings = Vec::new();
+        let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
+        let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
+        let num_of = |v: &toml::Value| v.as_float().map(|f| f as f32).or_else(|| v.as_integer().map(|i| i as f32));
+        let mut color_of = |k: &str, v: &toml::Value| match v.as_str().map(css::parse_color) {
+            Some(Ok(c)) => Some(c),
+            Some(Err(e)) => {
+                warn(k, e.0);
+                None
+            }
+            None => None,
+        };
+        let mut out = cfg.clone();
+        for (key, value) in &table {
+            match key.as_str() {
+                "theme" => out.theme = str_of(value),
+                "theme-dark" => out.theme_dark = str_of(value),
+                "foreground" => out.foreground = color_of(key, value),
+                "background" => out.background = color_of(key, value),
+                "font-family" => out.font_family = str_of(value),
+                "font-size" => out.font_size = num_of(value),
+                "font-ligatures" => out.ligatures = value.as_bool().unwrap_or(true),
+                "sidebar-width" => out.sidebar_width = num_of(value),
+                "details-panel-width" => out.details_panel_width = num_of(value),
+                "option-as-meta" => out.option_as_meta = value.as_bool().unwrap_or(true),
+                "scrollback" | "scrollback-lines" => out.scrollback = value.as_integer().map(|i| i.max(0) as usize),
+                "shell" => out.shell = str_of(value),
+                "cursor-blink" => out.cursor_blink = value.as_bool().unwrap_or(true),
+                k if k.starts_with("palette-") => match k["palette-".len()..].parse::<usize>() {
+                    Ok(i) if i < 16 => out.palette[i] = color_of(key, value),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        out.warnings = warnings;
+        out
+    }
+
+    /// The theme name for the given system appearance.
+    pub fn theme_name(&self, mode: Mode) -> Option<&str> {
+        match mode {
+            Mode::Dark => self.theme_dark.as_deref().or(self.theme.as_deref()),
+            Mode::Light => self.theme.as_deref(),
+        }
+    }
+
+    /// Loads the active theme and applies config color overrides. Overrides
+    /// belong to the light/default `theme`, so they are skipped when a
+    /// separate `theme-dark` is active.
+    pub fn resolve_theme(&self, appearance: Mode) -> ParsedTheme {
+        let name = self.theme_name(appearance);
+        let mut parsed = name
+            .map(|n| match find_theme(n) {
+                Some(p) => p,
+                None => {
+                    let mut fallback = builtin(appearance);
+                    fallback.warnings.push(format!("theme {n:?} not found"));
+                    fallback
+                }
+            })
+            .unwrap_or_else(|| builtin(appearance));
+        let using_dark_variant = appearance == Mode::Dark && self.theme_dark.is_some();
+        if !using_dark_variant {
+            self.apply_overrides(&mut parsed.theme);
+        }
+        parsed
+    }
+
+    fn apply_overrides(&self, theme: &mut Theme) {
+        if let Some(fg) = self.foreground {
+            theme.terminal.foreground = fg;
+        }
+        if let Some(bg) = self.background {
+            theme.terminal.background = bg;
+        }
+        for (i, c) in self.palette.iter().enumerate() {
+            if let Some(c) = c {
+                theme.terminal.palette[i] = *c;
+            }
+        }
+    }
+}
+
+const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
+const MOTTY_LIGHT: &str = include_str!("../themes/motty-light.ottytheme");
+
+pub fn builtin(mode: Mode) -> ParsedTheme {
+    theme::parse(if mode == Mode::Dark { MOTTY_DARK } else { MOTTY_LIGHT }).expect("built-in theme parses")
+}
+
+pub fn theme_dirs() -> Vec<PathBuf> {
+    vec![motty_dir().join("themes"), otty_dir().join("themes")]
+}
+
+/// Finds a theme by `[meta] name` or file stem, case-insensitively.
+pub fn find_theme(name: &str) -> Option<ParsedTheme> {
+    let wanted = normalize(name);
+    for builtin_src in [MOTTY_DARK, MOTTY_LIGHT] {
+        if let Ok(p) = theme::parse(builtin_src)
+            && normalize(&p.theme.meta.name) == wanted
+        {
+            return Some(p);
+        }
+    }
+    for dir in theme_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| is_theme_file(p)).collect();
+        paths.sort();
+        // File stems are cheap to check first; fall back to parsing names.
+        if let Some(p) = paths.iter().find(|p| p.file_stem().is_some_and(|s| normalize(&s.to_string_lossy()) == wanted))
+            && let Some(t) = load_file(p)
+        {
+            return Some(t);
+        }
+        for p in &paths {
+            if let Some(t) = load_file(p)
+                && normalize(&t.theme.meta.name) == wanted
+            {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+pub fn list_themes() -> Vec<(String, Mode, Option<PathBuf>)> {
+    let mut out: Vec<(String, Mode, Option<PathBuf>)> = [MOTTY_DARK, MOTTY_LIGHT]
+        .iter()
+        .filter_map(|s| theme::parse(s).ok())
+        .map(|p| (p.theme.meta.name, p.theme.meta.mode, None))
+        .collect();
+    for dir in theme_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for path in entries.flatten().map(|e| e.path()).filter(|p| is_theme_file(p)) {
+            if let Some(t) = load_file(&path)
+                && !out.iter().any(|(n, ..)| normalize(n) == normalize(&t.theme.meta.name))
+            {
+                out.push((t.theme.meta.name, t.theme.meta.mode, Some(path)));
+            }
+        }
+    }
+    out.sort_by_key(|(n, ..)| n.to_lowercase());
+    out
+}
+
+fn is_theme_file(p: &Path) -> bool {
+    matches!(p.extension().and_then(|e| e.to_str()), Some("ottytheme" | "toml"))
+}
+
+fn load_file(p: &Path) -> Option<ParsedTheme> {
+    theme::parse(&std::fs::read_to_string(p).ok()?).ok()
+}
+
+fn normalize(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_otty_style_config() {
+        let cfg = Config::parse(
+            "theme = \"Paper\"\ntheme-dark = \"Nord\"\nforeground = \"#1a1a1a\"\npalette-1 = \"#a33a3a\"\nsidebar-width = 225\nprivilege-caffeinate-agent-processing = true\n",
+        );
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.theme_name(Mode::Light), Some("Paper"));
+        assert_eq!(cfg.theme_name(Mode::Dark), Some("Nord"));
+        assert_eq!(cfg.palette[1], Some(Rgba::rgb(0xa33a3a)));
+        assert_eq!(cfg.sidebar_width, Some(225.));
+    }
+
+    #[test]
+    fn builtins_parse_cleanly() {
+        for mode in [Mode::Dark, Mode::Light] {
+            let t = builtin(mode);
+            assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+            assert_eq!(t.theme.meta.mode, mode);
+        }
+    }
+
+    #[test]
+    fn missing_theme_falls_back_with_warning() {
+        let cfg = Config::parse("theme = \"Does Not Exist 123\"\n");
+        let t = cfg.resolve_theme(Mode::Light);
+        assert_eq!(t.theme.meta.name, "Motty Light");
+        assert_eq!(t.warnings.len(), 1);
+    }
+}
