@@ -10,3 +10,6 @@ anyhow.workspace = true
 async-channel = "2"
 libc = "0.2"
 tracing.workspace = true
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+polling = "3.8"

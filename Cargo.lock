@@ -2838,7 +2838,10 @@ dependencies = [
  "anyhow",
  "async-channel",
  "libc",
+ "polling",
  "tracing",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 //! A terminal session: PTY + child process + VT state, with parsing done on
-//! alacritty's PTY reader thread. UI layers hold a [`Session`] and receive
+//! our PTY reader thread ([`pty_loop`]). UI layers hold a [`Session`] and receive
 //! [`SessionEvent`]s; content wakeups are coalesced so a flood of output
 //! produces at most one pending notification.
 
@@ -10,14 +10,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
+mod graphemes;
 pub mod input;
+mod pty_loop;
+
+use pty_loop::{LoopSender, Msg, PtyLoop};
 
 pub use alacritty_terminal;
 
@@ -63,7 +66,7 @@ impl std::fmt::Debug for SessionEvent {
 pub struct EventProxy {
     tx: async_channel::Sender<SessionEvent>,
     wakeup_pending: Arc<AtomicBool>,
-    pty_tx: Arc<std::sync::OnceLock<EventLoopSender>>,
+    pty_tx: Arc<std::sync::OnceLock<LoopSender>>,
 }
 
 impl EventListener for EventProxy {
@@ -79,7 +82,7 @@ impl EventListener for EventProxy {
             Event::PtyWrite(text) => {
                 tracing::trace!(?text, "pty reply");
                 if let Some(tx) = self.pty_tx.get() {
-                    let _ = tx.send(Msg::Input(text.into_bytes().into()));
+                    tx.send(Msg::Input(text.into_bytes().into()));
                 }
                 return;
             }
@@ -145,7 +148,7 @@ pub struct SessionConfig {
 
 pub struct Session {
     pub term: Arc<FairMutex<Terminal>>,
-    pty_tx: EventLoopSender,
+    pty_tx: LoopSender,
     wakeup_pending: Arc<AtomicBool>,
     size: GridSize,
     pid: u32,
@@ -199,10 +202,9 @@ impl Session {
             ..Default::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)?;
-        let pty_tx = event_loop.channel();
+        let (pty_loop, pty_tx) = PtyLoop::new(pty, term.clone(), proxy)?;
         let _ = pty_tx_cell.set(pty_tx.clone());
-        event_loop.spawn();
+        pty_loop.spawn();
 
         Ok((
             Self {
@@ -238,7 +240,7 @@ impl Session {
         let bytes = bytes.into();
         tracing::trace!(bytes = ?String::from_utf8_lossy(&bytes), "pty write");
         if !bytes.is_empty() {
-            let _ = self.pty_tx.send(Msg::Input(bytes));
+            self.pty_tx.send(Msg::Input(bytes));
         }
     }
 
@@ -252,7 +254,7 @@ impl Session {
         }
         self.size = size;
         self.term.lock().resize(size);
-        let _ = self.pty_tx.send(Msg::Resize(size.window_size()));
+        self.pty_tx.send(Msg::Resize(size.window_size()));
     }
 
     pub fn pid(&self) -> u32 {
@@ -359,6 +361,6 @@ fn process_cwd(_pid: i32) -> Option<PathBuf> {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.pty_tx.send(Msg::Shutdown);
+        self.pty_tx.send(Msg::Shutdown);
     }
 }
