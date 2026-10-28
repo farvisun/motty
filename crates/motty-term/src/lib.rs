@@ -19,6 +19,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 
 mod graphemes;
 pub mod input;
+pub mod links;
 mod pty_loop;
 pub mod search;
 pub mod shell;

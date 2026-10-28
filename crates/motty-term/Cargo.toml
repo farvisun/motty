@@ -13,3 +13,4 @@ tracing.workspace = true
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 polling = "3.8"
+regex = "1"

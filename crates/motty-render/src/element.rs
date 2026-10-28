@@ -137,6 +137,8 @@ pub struct TerminalElement {
     preedit: Option<SharedString>,
     /// Sorted, non-overlapping.
     highlights: Vec<Highlight>,
+    /// A link under the pointer, underlined (OSC 8 links always are).
+    underline: Option<(GridPoint, GridPoint)>,
 }
 
 impl TerminalElement {
@@ -158,6 +160,7 @@ impl TerminalElement {
             on_paint: None,
             preedit: None,
             highlights: Vec::new(),
+            underline: None,
         }
     }
 
@@ -173,6 +176,12 @@ impl TerminalElement {
     /// Search matches, sorted and non-overlapping.
     pub fn highlights(mut self, highlights: Vec<Highlight>) -> Self {
         self.highlights = highlights;
+        self
+    }
+
+    /// Underlines the cells from start to end (inclusive).
+    pub fn underline(mut self, range: Option<(GridPoint, GridPoint)>) -> Self {
+        self.underline = range;
         self
     }
 
@@ -393,7 +402,14 @@ impl TerminalElement {
                 rows.push(Vec::with_capacity(cols_n));
             }
             let cell = indexed.cell;
-            let flags = cell.flags;
+            let mut flags = cell.flags;
+            if cell.hyperlink().is_some()
+                || self
+                    .underline
+                    .is_some_and(|(a, b)| (a..=b).contains(&indexed.point))
+            {
+                flags |= Flags::UNDERLINE;
+            }
             let mut fg = style.resolve(dim_color(cell.fg, flags), colors);
             if flags.contains(Flags::DIM) && !matches!(cell.fg, Color::Named(n) if (n as usize) < 8)
             {

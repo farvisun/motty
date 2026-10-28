@@ -2,6 +2,6 @@ pub mod config;
 pub mod css;
 pub mod theme;
 
-pub use config::{Config, CursorBlink, CursorStyle};
+pub use config::{Config, CursorBlink, CursorStyle, LinkClick, LinkShiftClick};
 pub use css::{Border, Edges, Rgba, Shadow};
 pub use theme::{Material, Mode, ParsedTheme, Theme};

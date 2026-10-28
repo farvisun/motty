@@ -23,6 +23,9 @@ use motty_theme::CursorBlink;
 use crate::actions::*;
 
 mod find;
+mod links;
+
+pub use links::LinkOptions;
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -73,6 +76,11 @@ pub struct TerminalView {
     find: Option<find::Find>,
     /// The last query and options, restored when the bar reopens.
     last_find: (String, SearchOptions),
+    link_options: LinkOptions,
+    /// The link under the pointer while ⌘ is held.
+    hovered_link: Option<motty_term::links::Link>,
+    /// Last pointer position over the pane, for ⌘ presses without a move.
+    pointer: Option<gpui::Point<Pixels>>,
     _events: Task<()>,
 }
 
@@ -132,6 +140,9 @@ impl TerminalView {
             blink_policy: cursor_blink,
             find: None,
             last_find: Default::default(),
+            link_options: LinkOptions::default(),
+            hovered_link: None,
+            pointer: None,
             _events: task,
         }
     }
@@ -408,6 +419,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        if self.click_link(&event.modifiers, cx) {
+            return;
+        }
         if self.report_mouse(
             input::MouseButton::Left,
             MouseAction::Press,
@@ -436,6 +450,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.update_hovered_link(Some(event.position), &event.modifiers, cx);
         if event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -612,6 +627,7 @@ impl Render for TerminalView {
         )
         .preedit(self.marked_text.clone())
         .highlights(self.find_highlights())
+        .underline(self.hovered_link.as_ref().map(|l| (l.start, l.end)))
         .on_paint(move |bounds, window, cx| {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
         });
@@ -621,7 +637,22 @@ impl Render for TerminalView {
             .track_focus(&self.focus_handle)
             .relative()
             .size_full()
-            .cursor(gpui::CursorStyle::IBeam)
+            .cursor(if self.hovered_link.is_some() {
+                gpui::CursorStyle::PointingHand
+            } else {
+                gpui::CursorStyle::IBeam
+            })
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.update_hovered_link(None, &event.modifiers, cx)
+                },
+            ))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.pointer = None;
+                    this.update_hovered_link(None, &gpui::Modifiers::default(), cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
@@ -666,6 +697,7 @@ impl Render for TerminalView {
                 cx.listener(|this, _: &FindPrevious, window, cx| this.find_step(false, window, cx)),
             )
             .child(element)
+            .children(self.render_link_status())
             .children(self.render_find_bar(cx))
     }
 }

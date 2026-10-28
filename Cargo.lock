@@ -2963,6 +2963,7 @@ dependencies = [
  "async-channel",
  "libc",
  "polling",
+ "regex",
  "tracing",
  "unicode-segmentation",
  "unicode-width",

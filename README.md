@@ -81,6 +81,14 @@ highlights every match and counts them. ↩ / ⌘G go to the next match, ⇧↩ 
 Esc closes. `Aa` matches case, `ab` whole words, `.*` treats the query as a Rust regex. A
 one-line selection seeds the query.
 
+## Links
+
+Hold ⌘ to underline the URL or file path under the pointer (`path:line:column` too; relative
+paths resolve against the shell's directory) and see its target at the bottom left. ⌘-click
+opens it; ⌘⇧-click reveals a path in Finder or copies a URL. OSC 8 hyperlinks are always
+underlined. Config: `link-detection = off`, `link-cmd-click = open | copy | nothing`,
+`link-cmd-shift-click = reveal-finder | open-system-default`.
+
 ## Notifications
 
 OSC 9 and OSC 777 notifications show as macOS notifications when their pane isn't the one in

@@ -283,6 +283,7 @@ impl Workspace {
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
             let mut view = TerminalView::new(id, session, events, style, meta, blink, window, cx);
+            view.set_link_options(crate::terminal_view::LinkOptions::from_config(&self.config));
             view.refresh_process();
             view
         });
@@ -600,8 +601,10 @@ impl Workspace {
             cursor_style(&self.config),
         );
         let scrollback = self.config.scrollback.unwrap_or(10_000);
+        let links = crate::terminal_view::LinkOptions::from_config(&self.config);
         for view in self.tabs.iter().flat_map(|tab| tab.root.leaves()) {
             view.update(cx, |t, cx| {
+                t.set_link_options(links);
                 t.apply_config(meta, blink, cursor, scrollback, cx)
             });
         }

@@ -39,6 +39,11 @@ pub struct Config {
     pub cursor_text: Option<Rgba>,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
+    /// `link-detection`: find URLs and paths under the pointer (OSC 8
+    /// links work either way).
+    pub link_detection: bool,
+    pub link_cmd_click: LinkClick,
+    pub link_cmd_shift_click: LinkShiftClick,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
     /// Where the config was read from, if anywhere.
@@ -54,6 +59,23 @@ pub enum CursorStyle {
     Bar,
     Underline,
     BlockHollow,
+}
+
+/// `link-cmd-click`: what ⌘-click on a link does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkClick {
+    #[default]
+    Open,
+    Copy,
+    Nothing,
+}
+
+/// `link-cmd-shift-click`: what ⌘⇧-click on a path does (URLs are copied).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkShiftClick {
+    #[default]
+    RevealFinder,
+    OpenSystemDefault,
 }
 
 /// `cursor-style-blink`: whether the cursor blinks before a program asks
@@ -114,6 +136,7 @@ impl Config {
             ligatures: true,
             sidebar_visible: true,
             shell_integration: true,
+            link_detection: true,
             ..Default::default()
         };
         let (entries, mut warnings) = parse_entries(src);
@@ -198,6 +221,24 @@ impl Config {
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }
+                "link-detection" => {
+                    out.link_detection = value.as_bool().unwrap_or(value.as_str() != Some("off"))
+                }
+                "link-cmd-click" => match value.as_str() {
+                    Some("open") => out.link_cmd_click = LinkClick::Open,
+                    Some("copy") => out.link_cmd_click = LinkClick::Copy,
+                    Some("nothing") => out.link_cmd_click = LinkClick::Nothing,
+                    _ => unknown.push(format!("config.toml {key}: unknown action {value}")),
+                },
+                "link-cmd-shift-click" => match value.as_str() {
+                    Some("reveal-finder") => {
+                        out.link_cmd_shift_click = LinkShiftClick::RevealFinder
+                    }
+                    Some("open-system-default") => {
+                        out.link_cmd_shift_click = LinkShiftClick::OpenSystemDefault
+                    }
+                    _ => unknown.push(format!("config.toml {key}: unknown action {value}")),
+                },
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
                 k if k.starts_with("palette-") => {
                     if let Ok(i @ 0..16) = k["palette-".len()..].parse::<usize>() {

@@ -1,0 +1,130 @@
+//! Links under the pointer: holding ⌘ underlines the URL or path there and
+//! shows its target at the bottom left; ⌘-click opens it, ⌘⇧-click reveals
+//! a path in Finder (or copies a URL).
+
+use gpui::{ClipboardItem, Context, Modifiers, Pixels, Point, SharedString, div, prelude::*, px};
+use motty_render::hsla;
+use motty_term::links::{self, Link, Target};
+use motty_theme::{Config, LinkClick, LinkShiftClick, Rgba};
+
+use super::TerminalView;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LinkOptions {
+    pub detection: bool,
+    pub click: LinkClick,
+    pub shift_click: LinkShiftClick,
+}
+
+impl LinkOptions {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            detection: config.link_detection,
+            click: config.link_cmd_click,
+            shift_click: config.link_cmd_shift_click,
+        }
+    }
+}
+
+impl TerminalView {
+    pub fn set_link_options(&mut self, options: LinkOptions) {
+        self.link_options = options;
+    }
+
+    /// Re-checks the link under the pointer, after it moved or ⌘ changed.
+    pub(super) fn update_hovered_link(
+        &mut self,
+        position: Option<Point<Pixels>>,
+        modifiers: &Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if position.is_some() {
+            self.pointer = position;
+        }
+        let link = self
+            .pointer
+            .filter(|_| modifiers.platform)
+            .and_then(|pos| self.link_at(pos));
+        if link != self.hovered_link {
+            self.hovered_link = link;
+            cx.notify();
+        }
+    }
+
+    fn link_at(&self, pos: Point<Pixels>) -> Option<Link> {
+        let layout = self.layout.get()?;
+        // Only over the grid itself.
+        let (x, y) = (pos.x - layout.origin.x, pos.y - layout.origin.y);
+        if x < px(0.)
+            || y < px(0.)
+            || x >= layout.cell_width * layout.cols as f32
+            || y >= layout.line_height * layout.rows as f32
+        {
+            return None;
+        }
+        let (.., point, _) = self.hit(pos)?;
+        let term = self.session.term.lock();
+        let link = links::link_at(&*term, point, self.cwd.as_deref())?;
+        (link.explicit || self.link_options.detection).then_some(link)
+    }
+
+    /// ⌘-click (or ⌘⇧-click) on the hovered link; false when there's none.
+    pub(super) fn click_link(&mut self, modifiers: &Modifiers, cx: &mut Context<Self>) -> bool {
+        let Some(link) = self.hovered_link.clone().filter(|_| modifiers.platform) else {
+            return false;
+        };
+        match (&link.target, modifiers.shift) {
+            (Target::Url(url), true) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
+            }
+            (Target::Path { path, .. }, true) => match self.link_options.shift_click {
+                LinkShiftClick::RevealFinder => cx.reveal_path(path),
+                LinkShiftClick::OpenSystemDefault => cx.open_with_system(path),
+            },
+            (target, false) => match self.link_options.click {
+                LinkClick::Open => match target {
+                    Target::Url(url) => cx.open_url(url),
+                    Target::Path { path, .. } => cx.open_with_system(path),
+                },
+                LinkClick::Copy => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(target.display()))
+                }
+                LinkClick::Nothing => {}
+            },
+        }
+        true
+    }
+
+    /// The hovered link's target, at the pane's bottom left.
+    pub(super) fn render_link_status(&self) -> Option<impl IntoElement> {
+        let link = self.hovered_link.as_ref()?;
+        let dark = self.style.dark;
+        let ink = |a: f32| {
+            let v = if dark { 1. } else { 0. };
+            hsla(Rgba {
+                r: v,
+                g: v,
+                b: v,
+                a,
+            })
+        };
+        Some(
+            div()
+                .absolute()
+                .left(px(6.))
+                .bottom(px(6.))
+                .max_w(px(600.))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .border(px(0.5))
+                .border_color(ink(0.15))
+                .bg(hsla(self.style.panel_background))
+                .text_size(px(11.))
+                .text_color(ink(0.7))
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .child(SharedString::from(link.target.display())),
+        )
+    }
+}
