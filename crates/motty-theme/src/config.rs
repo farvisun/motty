@@ -120,9 +120,9 @@ impl Config {
         }
     }
 
-    /// Loads the active theme and applies config color overrides. Overrides
-    /// belong to the light/default `theme`, so they are skipped when a
-    /// separate `theme-dark` is active.
+    /// Loads the active theme. Like Otty, a theme's own terminal colors win:
+    /// the config's `foreground`, `background` and `palette-N` only color the
+    /// built-in theme used when no theme is configured.
     pub fn resolve_theme(&self, appearance: Mode) -> ParsedTheme {
         let name = self.theme_name(appearance);
         let mut parsed = name
@@ -135,8 +135,7 @@ impl Config {
                 }
             })
             .unwrap_or_else(|| builtin(appearance));
-        let using_dark_variant = appearance == Mode::Dark && self.theme_dark.is_some();
-        if !using_dark_variant {
+        if name.is_none() {
             self.apply_overrides(&mut parsed.theme);
         }
         parsed
@@ -307,6 +306,14 @@ mod tests {
             assert!(t.warnings.is_empty(), "{:?}", t.warnings);
             assert_eq!(t.theme.meta.mode, mode);
         }
+    }
+
+    #[test]
+    fn theme_colors_beat_config_colors() {
+        let themed = Config::parse("theme = \"Motty Light\"\nbackground = \"#ff0000\"\n");
+        assert_ne!(themed.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
+        let bare = Config::parse("background = \"#ff0000\"\n");
+        assert_eq!(bare.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
     }
 
     #[test]

@@ -29,7 +29,7 @@ registered automatically.
 |---|---|
 | `theme`, `theme-dark` | Theme names for light and dark system appearance |
 | `font-family`, `font-size`, `font-ligatures` (`off`, `calt`, `dlig`) | Terminal font |
-| `foreground`, `background`, `palette-0`…`palette-15` | Color overrides for `theme` |
+| `foreground`, `background`, `palette-0`…`palette-15` | Terminal colors when no `theme` is set (a theme's own colors win, as in Otty) |
 | `macos-option-as-alt` | Send Option+key as Esc-prefixed (default `false`) |
 | `cursor-style-blink` | `default_off` (default), `default_on`, `always_off`, `always_on` |
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
