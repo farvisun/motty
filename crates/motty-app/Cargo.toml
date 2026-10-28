@@ -14,6 +14,7 @@ path = "src/main.rs"
 gpui.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit"] }
 anyhow.workspace = true
+libc = "0.2"
 async-channel = "2"
 dirs.workspace = true
 motty-ipc.workspace = true

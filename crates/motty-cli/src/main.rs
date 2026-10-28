@@ -3,6 +3,7 @@
 //! Inside a Motty pane, `$MOTTY_SOCKET` and `$MOTTY_PANE_ID` are set, so
 //! commands act on the pane they run in unless `--pane` says otherwise.
 
+mod agent;
 mod mcp;
 
 use std::process::ExitCode;
@@ -140,6 +141,14 @@ enum Command {
     /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
     /// `claude mcp add motty -- motty mcp`.
     Mcp,
+    /// Report a coding agent's hook event to Motty (what Motty's installed
+    /// hooks run). Custom agents use `motty state:<name> state=…`.
+    #[command(hide = true)]
+    Hook {
+        agent: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -170,7 +179,15 @@ fn argv(command: Vec<String>) -> Option<Vec<String>> {
 }
 
 fn main() -> ExitCode {
+    // `motty state:myagent state=processing …`, as Otty spells it.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(name) = args.get(1).and_then(|a| a.strip_prefix("state:")) {
+        return agent::state(name, &args[2..]);
+    }
     let cli = Cli::parse();
+    if let Command::Hook { agent, args } = &cli.command {
+        return agent::hook(agent, args);
+    }
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
@@ -200,8 +217,20 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 print(&serde_json::to_value(&panes)?);
             } else {
                 for p in panes {
+                    // `[claude: awaiting] Approve Bash: rm -rf target/`
+                    let state = match (&p.agent, &p.badge) {
+                        (Some(a), Some(b)) => format!("  [{a}: {b}]"),
+                        (Some(a), None) => format!("  [{a}]"),
+                        (None, Some(b)) => format!("  [{b}]"),
+                        (None, None) => String::new(),
+                    };
+                    let status = p
+                        .status
+                        .as_deref()
+                        .map(|s| format!(" {s}"))
+                        .unwrap_or_default();
                     println!(
-                        "{:>4}  w{} t{}  {}{:<10}  {}",
+                        "{:>4}  w{} t{}  {}{:<10}  {}{state}{status}",
                         p.id,
                         p.window,
                         p.tab,
@@ -384,7 +413,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Close { pane: id } => {
             let _: Value = client.call(method::CLOSE, &pane(id))?;
         }
-        Command::Mcp => unreachable!("handled above"),
+        Command::Mcp | Command::Hook { .. } => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)
 }

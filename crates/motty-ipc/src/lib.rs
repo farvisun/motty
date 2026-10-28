@@ -51,6 +51,57 @@ pub mod method {
     pub const QUIT: &str = "quit";
     pub const ACTION: &str = "action";
     pub const LIST_ACTIONS: &str = "list-actions";
+    pub const AGENT_STATE: &str = "agent-state";
+}
+
+/// What a coding agent is doing, as its hooks report it.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentState {
+    /// A turn started.
+    Processing,
+    /// Waiting for the user's approval or answer.
+    Awaiting,
+    /// The turn finished.
+    Idle,
+    /// The turn failed.
+    Error,
+    /// The session ended; the agent is gone.
+    Ended,
+}
+
+impl AgentState {
+    /// Otty's spellings (`state=processing`), plus a few aliases.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "processing" | "working" | "running" | "busy" => Self::Processing,
+            "awaiting" | "awaiting-input" | "blocked" | "waiting" => Self::Awaiting,
+            "idle" | "done" | "finished" | "complete" => Self::Idle,
+            "error" | "failed" => Self::Error,
+            "ended" | "exit" | "exited" => Self::Ended,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentStateParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// The agent's id: `claude`, `codex`, or a custom one.
+    pub agent: String,
+    pub state: AgentState,
+    /// The agent's process; finds the pane when `pane` isn't known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Display name; defaults to the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// What it's doing or needs, in a few words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +122,15 @@ pub struct PaneInfo {
     pub rows: u16,
     /// The shell reports prompts and commands (OSC 133).
     pub shell_integration: bool,
+    /// The coding agent that reported from this pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The tab badge: running, awaiting, done, finished or error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    /// What the agent is doing or needs, or how the last command went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 /// Which pane a request is about; `None` means the focused one.

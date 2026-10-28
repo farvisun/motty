@@ -141,6 +141,7 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::SET_MODE => parse(request.params).and_then(|p| set_mode(p, cx)),
         method::ACTION => parse(request.params).and_then(|p| action(p, cx)),
         method::LIST_ACTIONS => Ok(json!(action_names(cx))),
+        method::AGENT_STATE => parse(request.params).and_then(|p| agent_state(p, cx)),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
@@ -224,6 +225,13 @@ fn list_panes(cx: &App) -> Vec<PaneInfo> {
                 cols: size.cols,
                 rows: size.rows,
                 shell_integration: session.shell().integrated,
+                agent: v.status.as_ref().and_then(|s| s.agent.clone()),
+                badge: v
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.badge)
+                    .map(|b| b.name().to_owned()),
+                status: v.status.as_ref().and_then(|s| s.message.clone()),
             });
         }
     }
@@ -329,6 +337,23 @@ fn close(p: PaneRef, cx: &mut App) -> anyhow::Result<Value> {
         workspace.close_pane_entity(&view, window, cx)
     })?;
     Ok(Value::Null)
+}
+
+/// A coding agent's hook reported its state.
+fn agent_state(p: motty_ipc::AgentStateParams, cx: &mut App) -> anyhow::Result<Value> {
+    for handle in workspaces(cx) {
+        let Ok(workspace) = handle.read(cx) else {
+            continue;
+        };
+        let Some(view) = workspace.pane_for_agent(p.pane.pane, p.agent_pid, cx) else {
+            continue;
+        };
+        handle.update(cx, |workspace, window, cx| {
+            workspace.agent_state(&view, p, window, cx)
+        })?;
+        return Ok(Value::Null);
+    }
+    bail!("no tab found for that agent")
 }
 
 fn set_mode(p: SetModeParams, cx: &mut App) -> anyhow::Result<Value> {

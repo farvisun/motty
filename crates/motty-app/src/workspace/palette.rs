@@ -57,7 +57,12 @@ impl Command {
 }
 
 /// Everything the palette offers, in display order.
-fn commands(sidebar_visible: bool, details_visible: bool, target: &TerminalView) -> Vec<Command> {
+fn commands(
+    sidebar_visible: bool,
+    details_visible: bool,
+    inbox: bool,
+    target: &TerminalView,
+) -> Vec<Command> {
     let mode = target.mode();
     let mut list = Vec::new();
     if target.cwd.is_some() {
@@ -68,6 +73,8 @@ fn commands(sidebar_visible: bool, details_visible: bool, target: &TerminalView)
     }
     list.extend([
         Command::new("View", "Toggle Tabs Panel", ToggleTabsPanel).checked(sidebar_visible),
+        Command::new("View", "Toggle Inbox", ToggleInbox).checked(inbox),
+        Command::new("Shell", "New File Editor", NewFileEditor),
         Command::new("View", "Toggle Details Panel", ToggleDetailsPanel).checked(details_visible),
         Command::new("View", "Details: Info", DetailsInfo),
         Command::new("View", "Details: Outline", DetailsOutline),
@@ -213,6 +220,7 @@ impl Workspace {
             commands(
                 self.sidebar_visible,
                 self.details.visible,
+                self.inbox,
                 palette.target.read(cx),
             ),
             &palette.query,

@@ -8,9 +8,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Entity, EntityId, FocusHandle, Focusable, FontWeight,
-    MouseButton, SharedString, Subscription, Task, Window, WindowAppearance,
-    WindowBackgroundAppearance, div, point, prelude::*, px,
+    Animation, AnimationExt, AnyElement, App, BoxShadow, Context, Entity, EntityId, FocusHandle,
+    Focusable, FontWeight, Hsla, MouseButton, SharedString, Subscription, Task, Transformation,
+    Window, WindowAppearance, WindowBackgroundAppearance, div, percentage, point, prelude::*, px,
+    svg,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -18,6 +19,7 @@ use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
 use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
+use crate::agents::Badge;
 use crate::editor::FileEditor;
 use crate::materials::{Backdrop, Backdrops, Region};
 use crate::panes::{Direction, Pane, PaneStyle};
@@ -31,6 +33,7 @@ mod files;
 mod new_menu;
 mod open_quickly;
 mod palette;
+mod status;
 mod welcome;
 
 pub(crate) use palette::keycaps;
@@ -96,6 +99,8 @@ struct Tab {
     content: Content,
     /// A divider follows this tab in the sidebar.
     divider: bool,
+    /// Last opened, looked at or reported on: Inbox orders by it.
+    updated: std::time::SystemTime,
 }
 
 enum Content {
@@ -120,6 +125,7 @@ impl Tab {
                 zoomed: false,
             }),
             divider: false,
+            updated: std::time::SystemTime::now(),
         }
     }
 
@@ -127,6 +133,7 @@ impl Tab {
         Self {
             content: Content::Editor(editor),
             divider: false,
+            updated: std::time::SystemTime::now(),
         }
     }
 
@@ -182,6 +189,8 @@ pub struct Workspace {
     pointer_inside: bool,
     /// The new-tab menu is open; its button stays pressed.
     new_menu_open: bool,
+    /// The bell turned the sidebar into Inbox.
+    inbox: bool,
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -373,6 +382,7 @@ impl Workspace {
             sidebar_visible,
             pointer_inside: false,
             new_menu_open: false,
+            inbox: false,
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
             next_split: 0,
@@ -472,6 +482,7 @@ impl Workspace {
                 zoomed: state.zoomed,
             }),
             divider: state.divider,
+            updated: std::time::SystemTime::now(),
         })
     }
 
@@ -587,6 +598,7 @@ impl Workspace {
                 TerminalEvent::CommandFinished { exit, duration } => {
                     tracing::debug!(?exit, ?duration, "command finished");
                     crate::ipc::command_finished(terminal, *exit, *duration, cx);
+                    this.command_status(terminal, *exit, window, cx);
                 }
                 TerminalEvent::Notification { title, body } => {
                     // Only for panes the user can't see right now.
@@ -843,8 +855,13 @@ impl Workspace {
     }
 
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get(ix) else { return };
+        let Some(tab) = self.tabs.get_mut(ix) else {
+            return;
+        };
+        tab.updated = std::time::SystemTime::now();
         self.active = ix;
+        self.clear_seen(ix, cx);
+        let tab = &self.tabs[ix];
         let focus = match &tab.content {
             Content::Terminals(t) => t.focused.focus_handle(cx),
             Content::Editor(e) => e.focus_handle(cx),
@@ -1221,153 +1238,381 @@ impl Workspace {
             .text_size(px(10.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(hsla(t.token.tertiary))
-            .child("TABS")
+            .child(if self.inbox { "INBOX" } else { "TABS" })
             .child(list_icon(hsla(t.token.tertiary)));
 
-        let tabs: Vec<AnyElement> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(ix, tab)| {
-                let (title, process) = match &tab.content {
-                    Content::Terminals(terms) => {
-                        let view = terms.focused.read(cx);
-                        // With splits, Otty counts the panes instead.
-                        let panes = terms.root.leaves().len();
-                        let process = if panes > 1 {
-                            panes.to_string()
-                        } else {
-                            view.process.clone().unwrap_or_default()
-                        };
-                        (view.display_title(), process)
+        let list: Vec<AnyElement> = if self.inbox {
+            self.inbox_rows(cx)
+        } else {
+            self.tabs
+                .iter()
+                .enumerate()
+                .map(|(ix, tab)| {
+                    let card = self.render_tab_card(ix, None, cx);
+                    if !tab.divider {
+                        return card;
                     }
-                    // Otty marks unsaved changes with a star.
-                    Content::Editor(editor) => {
-                        let editor = editor.read(cx);
-                        let star = if editor.is_dirty() { "*" } else { "" };
-                        (format!("{}{star}", editor.title()), String::new())
-                    }
-                };
-                let active = ix == self.active;
-                let style = if active {
-                    &t.tabs.active
-                } else {
-                    &t.tabs.normal
-                };
-                let hover_bg = t.tabs.hover.background;
-                let card = div()
-                    .id(("tab", ix))
-                    .relative()
-                    .h(px(style.height.unwrap_or(TAB_HEIGHT)))
-                    .px(px(style.padding.left))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .rounded(px(style.radius))
-                    .bg(hsla(style.background))
-                    // GPUI paints a shadow under the whole box, where it would
-                    // show through a translucent fill; CSS (and Otty) only
-                    // draw it outside, so translucent cards go without.
-                    .when(style.background.a >= 1., |d| {
-                        d.shadow(shadows(&style.shadow))
-                    })
-                    .text_color(hsla(style.foreground))
-                    .text_size(px(style.font_size))
-                    .font_weight(FontWeight(style.font_weight))
-                    .when(!active, |d| d.hover(move |s| s.bg(hsla(hover_bg))))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.activate(ix, window, cx);
-                        }),
-                    )
-                    // `indicator = "bar"`: Otty puts it 8pt into the card,
-                    // centered, under the start of the title.
-                    .when(style.indicator_bar, |d| {
-                        let h = style.height.unwrap_or(TAB_HEIGHT);
-                        d.child(
+                    // Insert Divider: a hairline inset from the cards, in the
+                    // middle of a gap.
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(card)
+                        .child(
                             div()
-                                .absolute()
-                                .left(px(8.))
-                                .top(px((h - 16.) / 2.))
-                                .w(px(6.))
-                                .h(px(16.))
-                                .bg(hsla(style.indicator)),
+                                .mt(px(TAB_GAP + DIVIDER_SPACE))
+                                .mb(px(DIVIDER_SPACE))
+                                .mx(px(DIVIDER_INSET))
+                                .h(px(1.))
+                                .bg(hsla(native_label(t, 0.1, 0.12))),
                         )
-                    })
-                    // Otty's title baseline is half a point below the card's center.
-                    .child(div().flex_1().min_w_0().pt(px(1.)).truncate().child(title))
-                    .child(
-                        // The label column keeps room for six characters, so
-                        // titles truncate at the same place for any process.
-                        // It ends half a point inside the card's padding.
-                        div()
-                            .flex_none()
-                            .mr(px(0.5))
-                            .min_w(px(LABEL_COLUMNS * LABEL_PITCH))
-                            .flex()
-                            .justify_end()
-                            .font_family(self.mono_font.clone())
-                            .text_size(px(LABEL_FONT_SIZE))
-                            .text_color(hsla(if active {
-                                native_tertiary_label(t)
-                            } else {
-                                t.token.tertiary
-                            }))
-                            .child(tracked(&process, LABEL_PITCH)),
-                    );
-                let card = card
-                    .children(
-                        style
-                            .border
-                            .as_ref()
-                            .and_then(|b| tab_border(t, b, style.radius)),
-                    )
-                    .into_any_element();
-                if !tab.divider {
-                    return card;
-                }
-                // Insert Divider: a hairline inset from the cards, in the
-                // middle of a gap.
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(card)
-                    .child(
-                        div()
-                            .mt(px(TAB_GAP + DIVIDER_SPACE))
-                            .mb(px(DIVIDER_SPACE))
-                            .mx(px(DIVIDER_INSET))
-                            .h(px(1.))
-                            .bg(hsla(native_label(t, 0.1, 0.12))),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+                        .into_any_element()
+                })
+                .collect()
+        };
 
         sidebar
             .child(header)
             .child(
                 // The list's top edge clips the outer half of the first card's
                 // border, as in Otty.
-                div().overflow_hidden().child(
-                    div()
-                        .pl(px(t.sidebar.padding.left))
-                        .pr(px(t.sidebar.padding.right))
-                        .pb(px(1.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(TAB_GAP))
-                        .children(tabs),
-                ),
+                div()
+                    .id("tab-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .pl(px(t.sidebar.padding.left))
+                            .pr(px(t.sidebar.padding.right))
+                            .pb(px(1.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(TAB_GAP))
+                            .children(list),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// What a tab's card shows: its title, the process (or pane count),
+    /// the most pressing badge of its panes and that pane's status line.
+    fn tab_summary(&self, tab: &Tab, cx: &App) -> TabSummary {
+        match &tab.content {
+            Content::Terminals(terms) => {
+                let view = terms.focused.read(cx);
+                // With splits, Otty counts the panes instead.
+                let panes = terms.root.leaves();
+                let process = if panes.len() > 1 {
+                    panes.len().to_string()
+                } else {
+                    view.process.clone().unwrap_or_default()
+                };
+                let mut summary = TabSummary {
+                    title: view.display_title(),
+                    process,
+                    badge: None,
+                    line: None,
+                    running: false,
+                };
+                let mut best = usize::MAX;
+                for pane in panes {
+                    let pane = pane.read(cx);
+                    summary.running |= pane.busy;
+                    let Some(status) = &pane.status else { continue };
+                    let rank = status.badge.map_or(9, badge_rank);
+                    if rank < best || summary.line.is_none() {
+                        if rank < best {
+                            best = rank;
+                            summary.badge = status.badge;
+                        }
+                        summary.line = status.message.clone().or_else(|| status.agent.clone());
+                    }
+                    summary.running |= status.in_turn;
+                }
+                summary
+            }
+            // Otty marks unsaved changes with a star.
+            Content::Editor(editor) => {
+                let editor = editor.read(cx);
+                let dirty = editor.is_dirty();
+                TabSummary {
+                    title: format!("{}{}", editor.title(), if dirty { "*" } else { "" }),
+                    process: String::new(),
+                    badge: None,
+                    line: dirty.then(|| "Unsaved changes".to_owned()),
+                    running: false,
+                }
+            }
+        }
+    }
+
+    /// A tab's card in the sidebar; Inbox adds a line about what it's doing.
+    fn render_tab_card(
+        &self,
+        ix: usize,
+        line: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = &self.theme;
+        let summary = self.tab_summary(&self.tabs[ix], cx);
+        let active = ix == self.active;
+        let style = if active {
+            &t.tabs.active
+        } else {
+            &t.tabs.normal
+        };
+        let hover_bg = t.tabs.hover.background;
+        let height = style.height.unwrap_or(TAB_HEIGHT);
+        let label_color = hsla(if active {
+            native_tertiary_label(t)
+        } else {
+            t.token.tertiary
+        });
+        let label = match summary.badge {
+            Some(badge) => badge_icon(badge, ix, t),
+            None => tracked(&summary.process, LABEL_PITCH).into_any_element(),
+        };
+        let title = div()
+            .flex_1()
+            .min_w_0()
+            .pt(px(1.))
+            .truncate()
+            .child(summary.title);
+        let title = match &line {
+            None => title.into_any_element(),
+            Some(line) => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(title)
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(label_color)
+                        .child(line.clone()),
+                )
+                .into_any_element(),
+        };
+        let card = div()
+            .id(("tab", ix))
+            .relative()
+            .flex_none()
+            .when(line.is_none(), |d| d.h(px(height)))
+            .when(line.is_some(), |d| d.min_h(px(height)).py(px(7.)))
+            .px(px(style.padding.left))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .rounded(px(style.radius))
+            .bg(hsla(style.background))
+            // GPUI paints a shadow under the whole box, where it would
+            // show through a translucent fill; CSS (and Otty) only
+            // draw it outside, so translucent cards go without.
+            .when(style.background.a >= 1., |d| {
+                d.shadow(shadows(&style.shadow))
+            })
+            .text_color(hsla(style.foreground))
+            .text_size(px(style.font_size))
+            .font_weight(FontWeight(style.font_weight))
+            .when(!active, |d| d.hover(move |s| s.bg(hsla(hover_bg))))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.activate(ix, window, cx);
+                }),
+            )
+            // `indicator = "bar"`: Otty puts it 8pt into the card,
+            // centered, under the start of the title.
+            .when(style.indicator_bar, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .top(px((height - 16.) / 2.))
+                        .w(px(6.))
+                        .h(px(16.))
+                        .bg(hsla(style.indicator)),
+                )
+            })
+            // Otty's title baseline is half a point below the card's center.
+            .child(title)
+            .child(
+                // The label column keeps room for six characters, so
+                // titles truncate at the same place for any process.
+                // It ends half a point inside the card's padding.
+                div()
+                    .flex_none()
+                    .mr(px(0.5))
+                    .min_w(px(LABEL_COLUMNS * LABEL_PITCH))
+                    .flex()
+                    .justify_end()
+                    .font_family(self.mono_font.clone())
+                    .text_size(px(LABEL_FONT_SIZE))
+                    .text_color(label_color)
+                    .child(label),
+            );
+        card.children(
+            style
+                .border
+                .as_ref()
+                .and_then(|b| tab_border(t, b, style.radius)),
+        )
+        .into_any_element()
+    }
+
+    /// Inbox: tabs that need you, then running ones, then the rest by when
+    /// they were last active, each with a line on what it's doing.
+    fn inbox_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = &self.theme;
+        let now = std::time::SystemTime::now();
+        let today = days_ago(now, now);
+        let mut groups: [InboxGroup; 5] = [
+            ("Needs You", Vec::new()),
+            ("Running", Vec::new()),
+            ("Today", Vec::new()),
+            ("Yesterday", Vec::new()),
+            ("Earlier", Vec::new()),
+        ];
+        let mut order: Vec<usize> = (0..self.tabs.len()).collect();
+        order.sort_by_key(|&ix| std::cmp::Reverse(self.tabs[ix].updated));
+        for ix in order {
+            let summary = self.tab_summary(&self.tabs[ix], cx);
+            let group = match summary.badge {
+                Some(b) if b.needs_you() || b == Badge::Finished => 0,
+                Some(Badge::Running) => 1,
+                _ if summary.running => 1,
+                _ => match today - days_ago(self.tabs[ix].updated, now) {
+                    0 => 2,
+                    1 => 3,
+                    _ => 4,
+                },
+            };
+            let line = summary.line.or_else(|| {
+                Some(
+                    match summary.badge? {
+                        Badge::Awaiting => "Needs your input",
+                        Badge::Error => "Failed",
+                        Badge::Done => "Finished",
+                        Badge::Running => "Working…",
+                        Badge::Finished => "Command finished",
+                    }
+                    .to_owned(),
+                )
+            });
+            groups[group].1.push((ix, line));
+        }
+        let heading = |name: &'static str| {
+            div()
+                .pt(px(8.))
+                .pl(px(SIDEBAR_TEXT_INSET))
+                .text_size(px(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hsla(t.token.tertiary))
+                .child(name.to_uppercase())
+                .into_any_element()
+        };
+        let mut rows = Vec::new();
+        for (name, tabs) in groups {
+            if tabs.is_empty() {
+                continue;
+            }
+            rows.push(heading(name));
+            for (ix, line) in tabs {
+                rows.push(self.render_tab_card(ix, line, cx));
+            }
+        }
+        rows
+    }
+}
+
+/// Whole days since the epoch in local time, roughly: enough to tell
+/// today from yesterday.
+/// An Inbox heading and its tabs, each with its line.
+type InboxGroup = (&'static str, Vec<(usize, Option<String>)>);
+
+fn days_ago(time: std::time::SystemTime, _now: std::time::SystemTime) -> i64 {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    (secs + local_offset_secs()) / 86_400
+}
+
+/// The local time zone's offset from UTC.
+fn local_offset_secs() -> i64 {
+    // SAFETY: localtime_r writes into the struct we pass.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        tm.tm_gmtoff
+    }
+}
+
+struct TabSummary {
+    title: String,
+    process: String,
+    badge: Option<Badge>,
+    line: Option<String>,
+    /// A command or an agent's turn is under way.
+    running: bool,
+}
+
+/// Which badge a tab shows when its panes have several: the one most in
+/// need of the user.
+fn badge_rank(badge: Badge) -> usize {
+    match badge {
+        Badge::Awaiting => 0,
+        Badge::Error => 1,
+        Badge::Done => 2,
+        Badge::Running => 3,
+        Badge::Finished => 4,
+    }
+}
+
+/// Otty's tab badges: a spinner, a hand, a check, an accent dot, a
+/// triangle.
+fn badge_icon(badge: Badge, ix: usize, t: &Theme) -> AnyElement {
+    let icon = |path: &'static str, color: Hsla| {
+        svg().path(path).flex_none().size(px(12.)).text_color(color)
+    };
+    match badge {
+        Badge::Running => icon("icons/loader-circle.svg", hsla(t.token.tertiary))
+            .with_animation(
+                ("tab-spinner", ix),
+                Animation::new(Duration::from_millis(900)).repeat(),
+                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+            )
+            .into_any_element(),
+        Badge::Awaiting => icon("icons/hand.svg", gpui::rgb(0xff9500).into()).into_any_element(),
+        Badge::Error => {
+            icon("icons/triangle-alert.svg", gpui::rgb(0xff3b30).into()).into_any_element()
+        }
+        Badge::Done => icon("icons/check.svg", gpui::rgb(0x34c759).into()).into_any_element(),
+        Badge::Finished => div()
+            .flex_none()
+            .size(px(7.))
+            .mt(px(1.))
+            .rounded_full()
+            .bg(hsla(t.token.accent))
+            .into_any_element(),
     }
 }
 
 impl Workspace {
+    fn toggle_inbox(&mut self, _: &ToggleInbox, _: &mut Window, cx: &mut Context<Self>) {
+        self.inbox = !self.inbox;
+        // Inbox lives in the sidebar.
+        self.sidebar_visible |= self.inbox;
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
@@ -1437,7 +1682,14 @@ impl Workspace {
                             ),
                     ),
             )
-            .child(button("notifications", titlebar::BUTTON).child(titlebar::bell(icon)))
+            .child(
+                button("notifications", titlebar::BUTTON)
+                    .when(self.inbox, |d| d.bg(highlight))
+                    .child(titlebar::bell(icon))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_inbox(&ToggleInbox, window, cx)
+                    })),
+            )
             .child(
                 button("tabs-panel", titlebar::BUTTON)
                     .child(titlebar::panel(icon, icon, false))
@@ -1866,6 +2118,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_file_editor))
+            .on_action(cx.listener(Self::toggle_inbox))
             .on_mouse_move(cx.listener(Self::drag_divider))
             .on_mouse_up(
                 MouseButton::Left,

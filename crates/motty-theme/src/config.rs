@@ -55,9 +55,45 @@ pub struct Config {
     pub autocomplete: Autocomplete,
     /// `keybind = <trigger>=<action>` entries, in file order.
     pub keybinds: Vec<Keybind>,
+    /// The `privilege-*` keys for tab badges and agent notifications.
+    pub badges: Badges,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+/// What marks a tab and what posts a notification (Otty's `privilege-*`
+/// keys; all on except keeping the Mac awake).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Badges {
+    /// `privilege-badge-exit-status`: a dot or triangle after a command.
+    pub exit_status: bool,
+    /// `privilege-badge-agent-processing`
+    pub agent_processing: bool,
+    /// `privilege-badge-agent-task-complete`
+    pub agent_complete: bool,
+    /// `privilege-badge-agent-awaiting-input`
+    pub agent_awaiting: bool,
+    /// `privilege-notify-agent-task-complete`
+    pub notify_complete: bool,
+    /// `privilege-notify-agent-awaiting-input`
+    pub notify_awaiting: bool,
+    /// `privilege-caffeinate-agent-processing`
+    pub caffeinate: bool,
+}
+
+impl Default for Badges {
+    fn default() -> Self {
+        Self {
+            exit_status: true,
+            agent_processing: true,
+            agent_complete: true,
+            agent_awaiting: true,
+            notify_complete: true,
+            notify_awaiting: true,
+            caffeinate: false,
+        }
+    }
 }
 
 /// Inline suggestions from the commands run before.
@@ -305,6 +341,27 @@ impl Config {
                 },
                 "cursor-color" => out.cursor_color = color_of(key, value),
                 "cursor-text" => out.cursor_text = color_of(key, value),
+                "privilege-badge-exit-status"
+                | "privilege-badge-agent-processing"
+                | "privilege-badge-agent-task-complete"
+                | "privilege-badge-agent-awaiting-input"
+                | "privilege-notify-agent-task-complete"
+                | "privilege-notify-agent-awaiting-input"
+                | "privilege-caffeinate-agent-processing" => match value.as_bool() {
+                    Some(on) => {
+                        let b = &mut out.badges;
+                        *match key {
+                            "privilege-badge-exit-status" => &mut b.exit_status,
+                            "privilege-badge-agent-processing" => &mut b.agent_processing,
+                            "privilege-badge-agent-task-complete" => &mut b.agent_complete,
+                            "privilege-badge-agent-awaiting-input" => &mut b.agent_awaiting,
+                            "privilege-notify-agent-task-complete" => &mut b.notify_complete,
+                            "privilege-notify-agent-awaiting-input" => &mut b.notify_awaiting,
+                            _ => &mut b.caffeinate,
+                        } = on;
+                    }
+                    None => unknown.push(format!("config.toml {key}: expected true or false")),
+                },
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }

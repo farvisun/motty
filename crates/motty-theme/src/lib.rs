@@ -3,7 +3,7 @@ pub mod css;
 pub mod theme;
 
 pub use config::{
-    AcceptKey, Autocomplete, Config, CursorBlink, CursorStyle, LinkClick, LinkShiftClick,
+    AcceptKey, Autocomplete, Badges, Config, CursorBlink, CursorStyle, LinkClick, LinkShiftClick,
     RightClick,
 };
 pub use css::{Border, Edges, Rgba, Shadow};

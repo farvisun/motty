@@ -70,6 +70,8 @@ pub struct TerminalView {
     pub process: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
     pub busy: bool,
+    /// The agent's state, or how the last command went, for the tab.
+    pub status: Option<crate::agents::Status>,
     option_as_meta: bool,
     /// Fractional lines carried between precise (trackpad) scroll events.
     scroll_remainder: f32,
@@ -149,6 +151,7 @@ impl TerminalView {
             process: None,
             cwd: None,
             busy: false,
+            status: None,
             option_as_meta,
             scroll_remainder: 0.,
             selecting: false,

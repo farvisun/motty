@@ -2911,6 +2911,7 @@ dependencies = [
  "dirs 6.0.0",
  "gpui-pre",
  "gpui-pre-platform",
+ "libc",
  "motty-ipc",
  "motty-render",
  "motty-term",
@@ -2925,6 +2926,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
 ]
 
 [[package]]

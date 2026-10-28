@@ -75,6 +75,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Open Files Quickly…", OpenFilesQuickly),
             MenuItem::separator(),
             MenuItem::action("Tabs Panel", ToggleTabsPanel),
+            MenuItem::action("Inbox", ToggleInbox),
             MenuItem::action("Details Panel", ToggleDetailsPanel),
             MenuItem::submenu(Menu::new("Details").items([
                 MenuItem::action("Info", DetailsInfo),

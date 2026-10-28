@@ -1,4 +1,5 @@
 mod actions;
+mod agents;
 mod editor;
 mod folders;
 mod fonts;

@@ -60,6 +60,7 @@ actions!(
         Cut,
         Save,
         NewFileEditor,
+        ToggleInbox,
         ScrollToTop,
         ScrollToBottom,
         ScrollPageUp,

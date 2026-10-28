@@ -60,7 +60,11 @@ impl AssetSource for Assets {
             "keyboard",
             "wrench",
             "search",
-            "chevron-down"
+            "chevron-down",
+            "loader-circle",
+            "check",
+            "hand",
+            "triangle-alert"
         )
         .map(Cow::Borrowed))
     }
