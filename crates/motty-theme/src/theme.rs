@@ -458,9 +458,12 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     };
 
     let win = s("window");
+    // A section with a material and no background of its own is see-through:
+    // the material is its fill.
+    let window_material = win.material("material").unwrap_or_default();
     let window = WindowStyle {
-        background: win.color("background").unwrap_or(background),
-        material: win.material("material").unwrap_or_default(),
+        background: win.color("background").unwrap_or(if window_material == Material::None { background } else { Rgba::TRANSPARENT }),
+        material: window_material,
         radius: win.num("radius").unwrap_or(12.),
         unfocused_opacity: s("window.unfocused").num("opacity").unwrap_or(1.),
     };
@@ -484,11 +487,13 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         if let Some(r) = sec.num("padding-right") {
             padding.right = r;
         }
+        let material = sec.material("material").or(base.map(|b| b.material)).unwrap_or_default();
+        let unset_background = if material == Material::None { panel.background } else { Rgba::TRANSPARENT };
         SidePanel {
-            background: sec.color("background").or(base.map(|b| b.background)).unwrap_or(panel.background),
+            background: sec.color("background").or(base.map(|b| b.background)).unwrap_or(unset_background),
             border: sec.border("border-right").or_else(|| base.map(|b| b.border.clone())).unwrap_or(default_side_border.clone()),
             width: sec.num("width").or(base.map(|b| b.width)).unwrap_or(default_width),
-            material: sec.material("material").or(base.map(|b| b.material)).unwrap_or_default(),
+            material,
             padding,
         }
     };
@@ -665,6 +670,16 @@ palette = ["#000000","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff"
         assert_eq!(t.tabs.active.background.a, 0.16);
         assert_eq!(t.tabs.hover.foreground, Rgba::rgb(0x888888));
         assert_eq!(t.container.margin.top, 4.);
+    }
+
+    #[test]
+    fn material_sections_without_background_are_transparent() {
+        let t = parse(&format!("{MINIMAL}\n[window]\nmaterial = \"glass\"\n[sidebar]\nmaterial = \"vibrancy-thin\"\n")).unwrap().theme;
+        assert_eq!(t.window.background.a, 0.);
+        assert_eq!(t.sidebar.background.a, 0.);
+        let plain = parse(MINIMAL).unwrap().theme;
+        assert_eq!(plain.window.background.a, 1.);
+        assert_eq!(plain.sidebar.background.a, 1.);
     }
 
     #[test]
