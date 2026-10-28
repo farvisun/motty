@@ -1,4 +1,5 @@
-//! Native backdrop materials behind regions of the window.
+//! Native backdrop materials behind regions of the window, and the theme's
+//! light or dark appearance for native chrome.
 //!
 //! GPUI offers one window-wide blur. Otty themes put materials on single
 //! regions (`[window]`, `[sidebar]`, `[titlebar]`), so Motty inserts its own
@@ -28,7 +29,8 @@ pub struct Backdrop {
 #[derive(Default)]
 pub struct Backdrops {
     installed: Vec<Backdrop>,
-    dark: bool,
+    /// Appearance last applied; `None` until the first sync.
+    dark: Option<bool>,
     #[cfg(target_os = "macos")]
     views: Vec<objc2::rc::Retained<objc2_app_kit::NSView>>,
 }
@@ -36,14 +38,15 @@ pub struct Backdrops {
 impl Backdrops {
     /// Installs `wanted` (bottom-most first), replacing what was there when it
     /// changed. Cheap to call every frame.
-    /// `dark` gives the materials the dark appearance.
+    /// `dark` gives the materials and the traffic lights the dark appearance.
     pub fn sync(&mut self, window: &Window, wanted: &[Backdrop], dark: bool) {
         let wanted: Vec<Backdrop> = wanted.iter().copied().filter(|b| b.material != Material::None).collect();
-        if wanted == self.installed && dark == self.dark {
+        if wanted == self.installed && Some(dark) == self.dark {
             return;
         }
         #[cfg(target_os = "macos")]
         {
+            mac::set_titlebar_appearance(window, dark);
             for view in self.views.drain(..) {
                 view.removeFromSuperview();
             }
@@ -55,7 +58,7 @@ impl Backdrops {
         #[cfg(not(target_os = "macos"))]
         let _ = window;
         self.installed = wanted;
-        self.dark = dark;
+        self.dark = Some(dark);
     }
 }
 
@@ -66,7 +69,7 @@ mod mac {
     use objc2::runtime::AnyClass;
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode,
-        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowButton, NSWindowOrderingMode,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -74,12 +77,29 @@ mod mac {
     use super::{Backdrop, Region};
     use motty_theme::Material;
 
+    /// GPUI's NSView for the window.
+    fn gpui_view(window: &gpui::Window) -> Option<&NSView> {
+        MainThreadMarker::new()?;
+        let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw() else { return None };
+        // SAFETY: GPUI's AppKit handle points at its live NSView, which
+        // outlives this borrow of the window, and we are on the main thread.
+        Some(unsafe { handle.ns_view.cast::<NSView>().as_ref() })
+    }
+
+    /// Gives the traffic lights the theme's appearance, as Otty does, by
+    /// setting it on their container. The window keeps the system appearance,
+    /// so GPUI still sees system light/dark changes.
+    pub fn set_titlebar_appearance(window: &gpui::Window, dark: bool) {
+        let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) else { return };
+        let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else { return };
+        if let Some(container) = unsafe { close.superview() } {
+            set_appearance(&container, dark);
+        }
+    }
+
     pub fn install(window: &gpui::Window, backdrops: &[Backdrop], dark: bool) -> Option<Vec<Retained<NSView>>> {
         let mtm = MainThreadMarker::new()?;
-        let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw() else { return None };
-        // SAFETY: GPUI's AppKit handle points at its live NSView, and we are
-        // on the main thread.
-        let gpui_view: &NSView = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+        let gpui_view = gpui_view(window)?;
         let content = unsafe { gpui_view.superview() }?;
         let bounds = content.bounds();
         let mut views = Vec::new();
