@@ -2,6 +2,7 @@ mod actions;
 mod fonts;
 mod ipc;
 mod materials;
+mod notifications;
 mod panes;
 mod shell_integration;
 mod terminal_view;

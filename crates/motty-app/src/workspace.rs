@@ -297,7 +297,13 @@ impl Workspace {
                     crate::ipc::command_finished(terminal, *exit, *duration, cx);
                 }
                 TerminalEvent::Notification { title, body } => {
-                    tracing::debug!(?title, body, "notification");
+                    // Only for panes the user can't see right now.
+                    if !window.is_window_active() || !this.is_focused_pane(terminal) {
+                        let title = title
+                            .clone()
+                            .unwrap_or_else(|| terminal.read(cx).display_title());
+                        crate::notifications::notify(&title, body);
+                    }
                 }
             },
         );
