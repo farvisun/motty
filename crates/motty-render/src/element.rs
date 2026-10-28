@@ -62,6 +62,9 @@ impl TerminalLayout {
 pub struct CellMetrics {
     pub cell_width: Pixels,
     pub line_height: Pixels,
+    /// Shift from GPUI's centered baseline to ours: the baseline sits one
+    /// descent above the cell bottom, rounded down the screen to a device pixel.
+    pub text_dy: Pixels,
 }
 
 pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
@@ -70,10 +73,16 @@ pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
     let font_id = ts.resolve_font(&style.font);
     let size = style.font_size;
     let advance = ts.advance(font_id, size, 'm').map(|s| s.width).unwrap_or(size * 0.6);
-    let natural = ts.ascent(font_id, size) + ts.descent(font_id, size).abs();
-    let cell_width = px((f32::from(advance) * scale).round() / scale);
+    let ascent = ts.ascent(font_id, size);
+    let descent = ts.descent(font_id, size).abs();
+    let natural = ascent + descent;
+    // The advance stays fractional (JetBrains Mono at 13pt is 7.8pt); glyphs
+    // are positioned at col * width so rounding would drift across a line.
+    let cell_width = advance;
     let line_height = px((f32::from(natural) * style.line_height_scale * scale).ceil() / scale);
-    CellMetrics { cell_width, line_height }
+    let centered_baseline = (line_height - natural) / 2. + ascent;
+    let baseline = px((f32::from(line_height - descent) * scale).ceil() / scale);
+    CellMetrics { cell_width, line_height, text_dy: baseline - centered_baseline }
 }
 
 type ResizeFn = Box<dyn FnOnce(GridSize, &mut Window, &mut App)>;
@@ -200,11 +209,16 @@ impl gpui::Element for TerminalElement {
         let style = self.style.clone();
         let metrics = measure(&style, window);
         let pad = style.padding;
-        let origin = point(bounds.origin.x + px(pad.left), bounds.origin.y + px(pad.top));
         let inner_w = f32::from(bounds.size.width) - pad.left - pad.right;
         let inner_h = f32::from(bounds.size.height) - pad.top - pad.bottom;
         let cols = ((inner_w / f32::from(metrics.cell_width)).floor() as usize).max(2);
         let rows = ((inner_h / f32::from(metrics.line_height)).floor() as usize).max(1);
+        // Rows are centered vertically in the leftover space (snapped down to a
+        // device pixel); columns stay left-aligned.
+        let scale = window.scale_factor();
+        let leftover = inner_h - rows as f32 * f32::from(metrics.line_height);
+        let top_slack = ((leftover / 2.).max(0.) * scale).floor() / scale;
+        let origin = point(bounds.origin.x + px(pad.left), bounds.origin.y + px(pad.top + top_slack));
 
         let grid = GridSize {
             cols: cols as u16,
@@ -468,7 +482,7 @@ impl SegmentBuilder {
         );
         let origin = point(
             origin.x + metrics.cell_width * self.start_col as f32,
-            origin.y + metrics.line_height * row as f32,
+            origin.y + metrics.line_height * row as f32 + metrics.text_dy,
         );
         Some(TextSegment { origin, line })
     }
