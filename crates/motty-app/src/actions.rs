@@ -56,6 +56,10 @@ actions!(
         DeleteWordLeft,
         DeleteWordRight,
         Undo,
+        Redo,
+        Cut,
+        Save,
+        NewFileEditor,
         ScrollToTop,
         ScrollToBottom,
         ScrollPageUp,
@@ -109,6 +113,7 @@ pub struct SendText {
 
 const TERMINAL: Option<&str> = Some("Terminal");
 const WORKSPACE: Option<&str> = Some("Workspace");
+const EDITOR: Option<&str> = Some("Editor");
 
 struct DefaultKey {
     keys: &'static str,
@@ -130,6 +135,13 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-v", Paste, TERMINAL),
         b("cmd-a", SelectAll, TERMINAL),
         b("cmd-k", Clear, TERMINAL),
+        b("cmd-c", Copy, EDITOR),
+        b("cmd-v", Paste, EDITOR),
+        b("cmd-a", SelectAll, EDITOR),
+        b("cmd-x", Cut, EDITOR),
+        b("cmd-z", Undo, EDITOR),
+        b("cmd-shift-z", Redo, EDITOR),
+        b("cmd-s", Save, EDITOR),
         b("cmd-f", Find, TERMINAL),
         b("ctrl-shift-space", ToggleViMode, TERMINAL),
         b("cmd-/", ToggleViKeyHints, TERMINAL),

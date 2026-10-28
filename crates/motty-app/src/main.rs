@@ -1,4 +1,5 @@
 mod actions;
+mod editor;
 mod folders;
 mod fonts;
 mod history;

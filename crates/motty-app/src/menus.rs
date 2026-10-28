@@ -26,6 +26,8 @@ pub fn set(cx: &mut App) {
         Menu::new("Shell").items([
             MenuItem::action("New Window", NewWindow),
             MenuItem::action("New Tab", NewTab),
+            MenuItem::action("New File Editor", NewFileEditor),
+            MenuItem::action("Save", Save),
             MenuItem::separator(),
             MenuItem::action("Split Right", SplitRight),
             MenuItem::action("Split Down", SplitDown),
@@ -54,6 +56,10 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Read-Only", ToggleReadOnly),
         ]),
         Menu::new("Edit").items([
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
             MenuItem::os_action("Copy", Copy, OsAction::Copy),
             MenuItem::os_action("Paste", Paste, OsAction::Paste),
             MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),

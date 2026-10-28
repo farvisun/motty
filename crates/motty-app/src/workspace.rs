@@ -18,6 +18,7 @@ use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
 use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
+use crate::editor::FileEditor;
 use crate::materials::{Backdrop, Backdrops, Region};
 use crate::panes::{Direction, Pane, PaneStyle};
 use crate::recovery::{PaneState, TabState, WindowState};
@@ -26,6 +27,7 @@ use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
 mod details;
+mod files;
 mod new_menu;
 mod open_quickly;
 mod palette;
@@ -89,23 +91,64 @@ const MAX_CLOSED_TABS: usize = 10;
 const DIVIDER_INSET: f32 = 8.;
 const DIVIDER_SPACE: f32 = 4.;
 
+/// A sidebar tab: terminals in splits, or a file editor.
 struct Tab {
+    content: Content,
+    /// A divider follows this tab in the sidebar.
+    divider: bool,
+}
+
+enum Content {
+    Terminals(Terminals),
+    Editor(Entity<FileEditor>),
+}
+
+struct Terminals {
     root: Pane,
     /// The pane that has (or last had) focus.
     focused: Entity<TerminalView>,
     /// Showing only the focused pane.
     zoomed: bool,
-    /// A divider follows this tab in the sidebar.
-    divider: bool,
 }
 
 impl Tab {
     fn new(view: Entity<TerminalView>) -> Self {
         Self {
-            root: Pane::Leaf(view.clone()),
-            focused: view,
-            zoomed: false,
+            content: Content::Terminals(Terminals {
+                root: Pane::Leaf(view.clone()),
+                focused: view,
+                zoomed: false,
+            }),
             divider: false,
+        }
+    }
+
+    fn editor(editor: Entity<FileEditor>) -> Self {
+        Self {
+            content: Content::Editor(editor),
+            divider: false,
+        }
+    }
+
+    /// The tab's terminals, unless it's an editor.
+    fn terms(&self) -> Option<&Terminals> {
+        match &self.content {
+            Content::Terminals(t) => Some(t),
+            Content::Editor(_) => None,
+        }
+    }
+
+    fn terms_mut(&mut self) -> Option<&mut Terminals> {
+        match &mut self.content {
+            Content::Terminals(t) => Some(t),
+            Content::Editor(_) => None,
+        }
+    }
+
+    fn as_editor(&self) -> Option<&Entity<FileEditor>> {
+        match &self.content {
+            Content::Editor(e) => Some(e),
+            Content::Terminals(_) => None,
         }
     }
 }
@@ -276,7 +319,7 @@ impl Workspace {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     let mut changed = false;
-                    for tab in &this.tabs {
+                    for tab in this.tabs.iter().filter_map(Tab::terms) {
                         for view in tab.root.leaves() {
                             changed |= view.update(cx, |t, _| t.refresh_process());
                         }
@@ -374,11 +417,18 @@ impl Workspace {
             ],
             sidebar_visible: self.sidebar_visible,
             details_visible: self.details.visible,
-            active: self.active,
+            // Editor tabs aren't kept: their files are on disk.
+            active: self.tabs[..self.active.min(self.tabs.len())]
+                .iter()
+                .filter(|t| t.terms().is_some())
+                .count(),
             tabs: self
                 .tabs
                 .iter()
-                .map(|tab| tab_state(tab, scrollback_dir.is_some().then_some(&mut write as _), cx))
+                .filter_map(|tab| {
+                    let write = scrollback_dir.is_some().then_some(&mut write as _);
+                    Some(tab_state(tab.terms()?, tab.divider, write, cx))
+                })
                 .collect(),
         }
     }
@@ -416,9 +466,11 @@ impl Workspace {
             .cloned()
             .expect("a pane tree has a leaf");
         Ok(Tab {
-            root,
-            focused,
-            zoomed: state.zoomed,
+            content: Content::Terminals(Terminals {
+                root,
+                focused,
+                zoomed: state.zoomed,
+            }),
             divider: state.divider,
         })
     }
@@ -594,13 +646,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
-        let tab = self.tabs.get(self.active).context("no tab")?;
+        let tab = self.active_terms().context("no terminal tab")?;
         let cwd = cwd.or_else(|| tab.focused.read(cx).cwd.clone());
         let rect = direction.half(tab.root.rect_of(&tab.focused).unwrap_or([0., 0., 1., 1.]));
         let terminal = self.new_terminal(command, cwd, rect, window, cx)?;
         let id = self.next_split;
         self.next_split += 1;
-        let tab = &mut self.tabs[self.active];
+        let tab = self.active_terms_mut().context("no terminal tab")?;
         tab.zoomed = false;
         tab.root
             .split(&tab.focused.clone(), terminal.clone(), direction, id);
@@ -620,13 +672,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
-        let cwd = cwd.or_else(|| {
-            self.tabs
-                .get(self.active)
-                .and_then(|tab| tab.focused.read(cx).cwd.clone())
-        });
+        let cwd = cwd.or_else(|| self.active_folder(cx));
         self.add_tab(command, cwd, window, cx)?;
-        Ok(self.tabs.last().context("no tab")?.focused.clone())
+        let tab = self.tabs.last().and_then(Tab::terms).context("no tab")?;
+        Ok(tab.focused.clone())
     }
 
     /// Every pane, by tab.
@@ -634,6 +683,7 @@ impl Workspace {
         self.tabs
             .iter()
             .enumerate()
+            .filter_map(|(ix, tab)| Some((ix, tab.terms()?)))
             .flat_map(|(ix, tab)| tab.root.leaves().into_iter().map(move |v| (ix, v)))
     }
 
@@ -647,19 +697,41 @@ impl Workspace {
     /// The pane that has focus in the active tab.
     /// Whether `view` is in the active tab (so it's drawn).
     pub fn is_pane_shown(&self, view: &Entity<TerminalView>) -> bool {
-        self.tabs
-            .get(self.active)
+        self.active_terms()
             .is_some_and(|tab| tab.root.contains(view))
     }
 
     pub fn focused_pane(&self) -> Option<Entity<TerminalView>> {
-        self.tabs.get(self.active).map(|tab| tab.focused.clone())
+        self.active_terms().map(|tab| tab.focused.clone())
     }
 
     pub fn is_focused_pane(&self, view: &Entity<TerminalView>) -> bool {
+        self.active_terms().is_some_and(|tab| tab.focused == *view)
+    }
+
+    /// The active tab's terminals, unless it's an editor.
+    fn active_terms(&self) -> Option<&Terminals> {
+        self.tabs.get(self.active).and_then(Tab::terms)
+    }
+
+    fn active_terms_mut(&mut self) -> Option<&mut Terminals> {
+        self.tabs.get_mut(self.active).and_then(Tab::terms_mut)
+    }
+
+    /// Where new tabs start: the active terminal's folder, or the edited
+    /// file's.
+    fn active_folder(&self, cx: &App) -> Option<std::path::PathBuf> {
+        match &self.tabs.get(self.active)?.content {
+            Content::Terminals(t) => t.focused.read(cx).cwd.clone(),
+            Content::Editor(e) => e.read(cx).folder(),
+        }
+    }
+
+    /// The tab holding `view`.
+    fn tab_of(&self, view: &Entity<TerminalView>) -> Option<usize> {
         self.tabs
-            .get(self.active)
-            .is_some_and(|tab| tab.focused == *view)
+            .iter()
+            .position(|t| t.terms().is_some_and(|t| t.root.contains(view)))
     }
 
     /// Activates the pane's tab and focuses the pane.
@@ -669,7 +741,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(ix) = self.tabs.iter().position(|t| t.root.contains(view)) {
+        if let Some(ix) = self.tab_of(view) {
             self.activate(ix, window, cx);
             self.focus_pane(view.clone(), window, cx);
         }
@@ -690,7 +762,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.active_terms_mut() else {
             return;
         };
         if !tab.root.contains(&view) {
@@ -710,7 +782,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(tab) = self.active_terms() else {
             return;
         };
         if let Some(view) = tab.root.neighbor(&tab.focused, direction) {
@@ -720,7 +792,7 @@ impl Workspace {
 
     /// Focuses the next (or previous) pane in reading order, wrapping around.
     fn cycle_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(tab) = self.active_terms() else {
             return;
         };
         let leaves = tab.root.leaves();
@@ -739,11 +811,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.tabs.iter().position(|t| t.root.contains(view)) else {
+        let Some(ix) = self.tab_of(view) else {
             return;
         };
         self.pane_subscriptions.remove(&view.entity_id());
-        let tab = &mut self.tabs[ix];
+        let Some(tab) = self.tabs[ix].terms_mut() else {
+            return;
+        };
         if tab.root.leaves().len() == 1 {
             return self.close_tab_at(ix, window, cx);
         }
@@ -762,7 +836,7 @@ impl Workspace {
         let root = std::mem::replace(&mut tab.root, Pane::Leaf(tab.focused.clone()));
         tab.root = root.without(view).expect("another pane remains");
         if ix == self.active {
-            let focused = self.tabs[ix].focused.clone();
+            let focused = tab.focused.clone();
             self.focus_pane(focused, window, cx);
         }
         cx.notify();
@@ -771,25 +845,42 @@ impl Workspace {
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else { return };
         self.active = ix;
-        let focus = tab.focused.focus_handle(cx);
+        let focus = match &tab.content {
+            Content::Terminals(t) => t.focused.focus_handle(cx),
+            Content::Editor(e) => e.focus_handle(cx),
+        };
         window.focus(&focus, cx);
         cx.notify();
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
+        let Some(tab) = self.tabs.get(ix) else {
+            return;
+        };
+        if let Content::Editor(editor) = &tab.content {
+            if editor.read(cx).is_dirty() {
+                return self.confirm_close_editor(ix, window, cx);
+            }
+            self.remove_tab(ix, window, cx);
             return;
         }
         let mut scrollback = Vec::new();
+        let Some(terms) = self.tabs[ix].terms() else {
+            return;
+        };
         let state = tab_state(
-            &self.tabs[ix],
+            terms,
+            self.tabs[ix].divider,
             Some(&mut |bytes| {
                 scrollback.push(bytes);
                 Some((scrollback.len() - 1).to_string())
             }),
             cx,
         );
-        let focused = self.tabs[ix].focused.read(cx);
+        let Some(terms) = self.tabs[ix].terms() else {
+            return;
+        };
+        let focused = terms.focused.read(cx);
         let (title, cwd) = (focused.display_title(), focused.cwd.clone());
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let closed = &mut cx.default_global::<ClosedTabs>().0;
@@ -804,9 +895,22 @@ impl Workspace {
             index: ix,
             scrollback,
         });
+        self.remove_tab(ix, window, cx);
+    }
+
+    /// Takes the tab out (no questions, nothing kept for reopening) and
+    /// activates a neighbor, or closes the window with the last tab.
+    fn remove_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.tabs.remove(ix);
-        for view in tab.root.leaves() {
-            self.pane_subscriptions.remove(&view.entity_id());
+        match &tab.content {
+            Content::Terminals(t) => {
+                for view in t.root.leaves() {
+                    self.pane_subscriptions.remove(&view.entity_id());
+                }
+            }
+            Content::Editor(e) => {
+                self.pane_subscriptions.remove(&e.entity_id());
+            }
         }
         if self.tabs.is_empty() {
             window.remove_window();
@@ -827,10 +931,7 @@ impl Workspace {
     /// Opens a shell tab and activates it.
     pub fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // New tabs start where the active tab is, like Otty.
-        let cwd = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.focused.read(cx).cwd.clone());
+        let cwd = self.active_folder(cx);
         if let Err(e) = self.add_tab(None, cwd, window, cx) {
             tracing::error!("failed to start shell: {e:#}");
         }
@@ -870,7 +971,7 @@ impl Workspace {
         let tab = self
             .restore_tab(&closed.state, &scrollback, window, cx)
             .context("couldn't reopen the tab")?;
-        let focused = tab.focused.clone();
+        let focused = tab.terms().context("not a terminal tab")?.focused.clone();
         let ix = closed.index.min(self.tabs.len());
         self.tabs.insert(ix, tab);
         self.activate(ix, window, cx);
@@ -905,8 +1006,13 @@ impl Workspace {
 
     /// ⌘W closes the focused pane, and the tab with its last pane.
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = self.tabs.get(self.active).map(|t| t.focused.clone()) {
-            self.close_pane(&view, window, cx);
+        match self.tabs.get(self.active).map(|t| &t.content) {
+            Some(Content::Terminals(t)) => {
+                let view = t.focused.clone();
+                self.close_pane(&view, window, cx);
+            }
+            Some(Content::Editor(_)) => self.close_tab_at(self.active, window, cx),
+            None => {}
         }
     }
 
@@ -947,7 +1053,7 @@ impl Workspace {
         let scrollback = self.config.scrollback.unwrap_or(10_000);
         let links = crate::terminal_view::LinkOptions::from_config(&self.config);
         let autocomplete = self.config.autocomplete.clone();
-        for view in self.tabs.iter().flat_map(|tab| tab.root.leaves()) {
+        for view in self.panes().map(|(_, v)| v) {
             view.update(cx, |t, cx| {
                 t.set_link_options(links);
                 t.set_autocomplete(autocomplete.clone(), cx);
@@ -966,8 +1072,15 @@ impl Workspace {
         self.ui_font = crate::fonts::ui_family(&self.theme.token.font_ui, cx).into();
         self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
         let style = terminal_style(&self.config, &self.theme, cx);
-        for view in self.tabs.iter().flat_map(|tab| tab.root.leaves()) {
-            view.update(cx, |t, cx| t.set_style(style.clone(), cx));
+        for tab in &self.tabs {
+            match &tab.content {
+                Content::Terminals(t) => {
+                    for view in t.root.leaves() {
+                        view.update(cx, |t, cx| t.set_style(style.clone(), cx));
+                    }
+                }
+                Content::Editor(e) => e.update(cx, |e, cx| e.set_style(style.clone(), cx)),
+            }
         }
         cx.notify();
     }
@@ -975,7 +1088,10 @@ impl Workspace {
     /// The active tab's panes; unfocused ones fade like Otty's
     /// `unfocused-split-opacity`.
     fn render_panes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tab = self.tabs.get(self.active)?;
+        let tab = match &self.tabs.get(self.active)?.content {
+            Content::Terminals(t) => t,
+            Content::Editor(e) => return Some(e.clone().into_any_element()),
+        };
         if tab.zoomed {
             return Some(tab.focused.clone().into_any_element());
         }
@@ -1007,18 +1123,14 @@ impl Workspace {
             self.dragging = None;
             return;
         }
-        if let Some(split) = self
-            .tabs
-            .get_mut(self.active)
-            .and_then(|t| t.root.split_mut(id))
-        {
+        if let Some(split) = self.active_terms_mut().and_then(|t| t.root.split_mut(id)) {
             split.drag_to(event.position);
             cx.notify();
         }
     }
 
     fn equalize_splits(&mut self, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(self.active) {
+        if let Some(tab) = self.active_terms_mut() {
             tab.root.equalize();
             cx.notify();
         }
@@ -1027,7 +1139,7 @@ impl Workspace {
     /// Otty's ⌃⇧⌘ arrows: move the divider beside the focused pane.
     fn move_divider(&mut self, direction: Direction, cx: &mut Context<Self>) {
         const STEP: f32 = 10.;
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.active_terms_mut() else {
             return;
         };
         let (axis, delta) = match direction {
@@ -1044,7 +1156,7 @@ impl Workspace {
     }
 
     fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(self.active)
+        if let Some(tab) = self.active_terms_mut()
             && matches!(tab.root, Pane::Split(_))
         {
             tab.zoomed = !tab.zoomed;
@@ -1117,14 +1229,24 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, tab)| {
-                let view = tab.focused.read(cx);
-                let title = view.display_title();
-                // With splits, Otty counts the panes instead.
-                let panes = tab.root.leaves().len();
-                let process = if panes > 1 {
-                    panes.to_string()
-                } else {
-                    view.process.clone().unwrap_or_default()
+                let (title, process) = match &tab.content {
+                    Content::Terminals(terms) => {
+                        let view = terms.focused.read(cx);
+                        // With splits, Otty counts the panes instead.
+                        let panes = terms.root.leaves().len();
+                        let process = if panes > 1 {
+                            panes.to_string()
+                        } else {
+                            view.process.clone().unwrap_or_default()
+                        };
+                        (view.display_title(), process)
+                    }
+                    // Otty marks unsaved changes with a star.
+                    Content::Editor(editor) => {
+                        let editor = editor.read(cx);
+                        let star = if editor.is_dirty() { "*" } else { "" };
+                        (format!("{}{star}", editor.title()), String::new())
+                    }
                 };
                 let active = ix == self.active;
                 let style = if active {
@@ -1565,7 +1687,7 @@ impl Render for Workspace {
         let t = &self.theme;
         let c = &t.container;
         // A click into another pane moves focus without telling us.
-        if let Some(tab) = self.tabs.get_mut(self.active)
+        if let Some(tab) = self.tabs.get_mut(self.active).and_then(Tab::terms_mut)
             && let Some(view) = tab
                 .root
                 .leaves()
@@ -1579,7 +1701,7 @@ impl Render for Workspace {
         let title = self
             .tabs
             .get(self.active)
-            .map(|tab| tab.focused.read(cx).display_title())
+            .map(|tab| tab_title(tab, cx))
             .unwrap_or_default();
         if title != self.window_title {
             window.set_window_title(&title);
@@ -1587,11 +1709,11 @@ impl Render for Workspace {
         }
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
-        let busy = self
-            .tabs
-            .iter()
-            .flat_map(|tab| tab.root.leaves())
-            .any(|view| view.read(cx).busy);
+        let busy = self.panes().any(|(_, view)| view.read(cx).busy)
+            || self
+                .tabs
+                .iter()
+                .any(|tab| tab.as_editor().is_some_and(|e| e.read(cx).is_dirty()));
         let state = (
             background_appearance(t),
             busy && !self.config.hide_dirty_indicator,
@@ -1743,6 +1865,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::new_file_editor))
             .on_mouse_move(cx.listener(Self::drag_divider))
             .on_mouse_up(
                 MouseButton::Left,
@@ -1861,8 +1984,17 @@ impl Render for Workspace {
 /// What session recovery (or reopening a closed tab) keeps of `tab`. With
 /// `scrollback`, each pane's scrollback is handed to it, and the name it
 /// returns is saved with the pane.
+/// The tab's name in the sidebar and the window title.
+fn tab_title(tab: &Tab, cx: &App) -> String {
+    match &tab.content {
+        Content::Terminals(t) => t.focused.read(cx).display_title(),
+        Content::Editor(e) => e.read(cx).title(),
+    }
+}
+
 fn tab_state(
-    tab: &Tab,
+    tab: &Terminals,
+    divider: bool,
     mut scrollback: Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
     cx: &App,
 ) -> TabState {
@@ -1908,6 +2040,6 @@ fn tab_state(
             .position(|v| **v == tab.focused)
             .unwrap_or(0),
         zoomed: tab.zoomed,
-        divider: tab.divider,
+        divider,
     }
 }

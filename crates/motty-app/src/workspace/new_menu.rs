@@ -73,7 +73,12 @@ impl Workspace {
         });
         entries.push(Entry::Separator);
 
-        for title in ["New File Editor", "New File Browser", "New Web Browser…"] {
+        entries.push(add(
+            &mut picks,
+            Item::new("New File Editor"),
+            Pick::Action(Box::new(NewFileEditor)),
+        ));
+        for title in ["New File Browser", "New Web Browser…"] {
             entries.push(add(&mut picks, Item::new(title).enabled(false), Pick::None));
         }
         entries.push(add(&mut picks, Item::new("Open…"), Pick::Open));
@@ -206,7 +211,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         self.add_tab(None, dirs::home_dir(), window, cx)?;
-        if let Some(tab) = self.tabs.last() {
+        if let Some(tab) = self.tabs.last().and_then(|t| t.terms()) {
             let line = format!("ssh {}\r", shell_quote(host));
             tab.focused
                 .update(cx, |view, cx| view.write_input(&line, cx));
@@ -214,7 +219,7 @@ impl Workspace {
         Ok(())
     }
 
-    /// Open…: a folder opens a tab there; a file opens a tab in its folder.
+    /// Open…: a folder opens a terminal there; a file, an editor.
     fn open_from_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -229,13 +234,11 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let dir = if path.is_dir() {
-                path
-            } else {
-                path.parent().map(Path::to_path_buf).unwrap_or(path)
-            };
             let _ = this.update_in(cx, |this, window, cx| {
-                if let Err(e) = this.add_tab(None, Some(dir), window, cx) {
+                if !path.is_dir() {
+                    return this.open_editor(Some(path), window, cx);
+                }
+                if let Err(e) = this.add_tab(None, Some(path), window, cx) {
                     tracing::error!("failed to open a tab: {e:#}");
                 }
             });

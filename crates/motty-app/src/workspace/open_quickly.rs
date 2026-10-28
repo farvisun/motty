@@ -464,7 +464,7 @@ impl Workspace {
                     ),
                     target: Target::Window(handle),
                 });
-                for tab in &ws.tabs {
+                for tab in ws.tabs.iter().filter_map(|t| t.terms()) {
                     let view = tab.focused.read(cx);
                     tabs.push(Item {
                         group: "Tabs",
