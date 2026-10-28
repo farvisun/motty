@@ -340,6 +340,7 @@ fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
     for _ in 0..4 {
         bring_to_front(pid)?;
         order_backdrop_below(window_id)?;
+        park_pointer()?;
         capture(window_id, out)?;
         let img = load(out)?;
         let s = scale_of(&img) as f32;
@@ -351,6 +352,15 @@ fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
         pause(500);
     }
     bail!("window {window_id} never captured in its focused state")
+}
+
+/// Moves the pointer just right of the window (inside the backdrop margin),
+/// so hover-only chrome such as titlebar buttons stays hidden.
+fn park_pointer() -> Result<()> {
+    let (x, y, w, h) = BOUNDS;
+    run(Command::new(swift_tool("warp")?).args([(x + w + 20).to_string(), (y + h / 2).to_string()]))?;
+    pause(300);
+    Ok(())
 }
 
 fn bring_to_front(pid: u32) -> Result<()> {
