@@ -27,6 +27,16 @@ pub enum Direction {
 }
 
 impl Direction {
+    /// The half of `rect` a new pane split off in this direction gets.
+    pub fn half(self, [x, y, w, h]: [f32; 4]) -> [f32; 4] {
+        match self {
+            Direction::Left => [x, y, w / 2., h],
+            Direction::Right => [x + w / 2., y, w / 2., h],
+            Direction::Up => [x, y, w, h / 2.],
+            Direction::Down => [x, y + h / 2., w, h / 2.],
+        }
+    }
+
     fn axis(self) -> Axis {
         match self {
             Direction::Left | Direction::Right => Axis::Horizontal,
@@ -190,6 +200,13 @@ impl<T: Clone + PartialEq> Pane<T> {
                 s.second.rects(b, out);
             }
         }
+    }
+
+    /// Where `leaf` sits, as (x, y, w, h) within the unit square.
+    pub fn rect_of(&self, leaf: &T) -> Option<[f32; 4]> {
+        let mut rects = Vec::new();
+        self.rects([0., 0., 1., 1.], &mut rects);
+        rects.into_iter().find(|(v, _)| v == leaf).map(|(_, r)| r)
     }
 
     /// The pane next to `from` in `direction`: of those across that edge

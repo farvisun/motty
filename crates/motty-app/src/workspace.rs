@@ -103,10 +103,11 @@ pub fn mode_for(appearance: WindowAppearance) -> Mode {
 
 /// Spawns the user's shell for a new pane in `cwd` (home when `None`).
 /// `command` (from `-e`) replaces the shell.
-pub fn spawn_shell(
+fn spawn_shell(
     config: &Config,
     command: Option<(String, Vec<String>)>,
     cwd: Option<std::path::PathBuf>,
+    size: GridSize,
 ) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
     let session = SessionConfig {
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
@@ -115,13 +116,7 @@ pub fn spawn_shell(
         cursor_style: cursor_style(config),
         ..Default::default()
     };
-    let initial = GridSize {
-        cols: 80,
-        rows: 24,
-        cell_width: 8.,
-        cell_height: 16.,
-    };
-    Session::spawn(session, initial)
+    Session::spawn(session, size)
 }
 
 /// `cursor-style` and the blink policy's starting state, as the terminal's
@@ -147,8 +142,8 @@ pub fn terminal_style(config: &Config, theme: &Theme, cx: &App) -> TerminalStyle
 impl Workspace {
     pub fn new(
         config: Config,
-        session: Session,
-        events: async_channel::Receiver<SessionEvent>,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -228,19 +223,30 @@ impl Workspace {
             _process_poll: process_poll,
             _config_poll: config_poll,
         };
-        this.add_tab(session, events, window, cx);
+        if let Err(e) = this.add_tab(command, cwd, window, cx) {
+            tracing::error!("failed to start shell: {e:#}");
+        }
         this
     }
 
     /// A terminal view for `session`, closing its pane when the shell exits.
+    /// Starts a shell (or `command`) in `cwd` for a pane at `rect` (a share
+    /// of the container), closing the pane when it exits.
     fn new_terminal(
         &mut self,
-        session: Session,
-        events: async_channel::Receiver<SessionEvent>,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
+        rect: [f32; 4],
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<TerminalView> {
+    ) -> anyhow::Result<Entity<TerminalView>> {
         let style = terminal_style(&self.config, &self.theme, cx);
+        // The PTY starts at the pane's size: programs read it on startup,
+        // and output from before a resize would be reflowed.
+        let area = self.pane_area(window);
+        let pane = gpui::size(area.width * rect[2], area.height * rect[3]);
+        let grid = motty_render::grid_for(&style, window, pane);
+        let (session, events) = spawn_shell(&self.config, command, cwd, grid)?;
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
             let mut view = TerminalView::new(session, events, style, meta, blink, window, cx);
@@ -257,19 +263,24 @@ impl Workspace {
         );
         self.pane_subscriptions
             .insert(terminal.entity_id(), subscription);
-        terminal
+        Ok(terminal)
     }
 
     fn add_tab(
         &mut self,
-        session: Session,
-        events: async_channel::Receiver<SessionEvent>,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let terminal = self.new_terminal(session, events, window, cx);
+    ) -> anyhow::Result<()> {
+        let terminal = self.new_terminal(command, cwd, [0., 0., 1., 1.], window, cx)?;
         self.tabs.push(Tab::new(terminal));
         self.activate(self.tabs.len() - 1, window, cx);
+        Ok(())
+    }
+
+    pub fn has_tabs(&self) -> bool {
+        !self.tabs.is_empty()
     }
 
     /// Splits the focused pane, starting a shell (or `command`) in the new
@@ -285,11 +296,11 @@ impl Workspace {
             return;
         };
         let cwd = tab.focused.read(cx).cwd.clone();
-        let (session, events) = match spawn_shell(&self.config, command, cwd) {
-            Ok(shell) => shell,
+        let rect = direction.half(tab.root.rect_of(&tab.focused).unwrap_or([0., 0., 1., 1.]));
+        let terminal = match self.new_terminal(command, cwd, rect, window, cx) {
+            Ok(terminal) => terminal,
             Err(e) => return tracing::error!("failed to start shell: {e:#}"),
         };
-        let terminal = self.new_terminal(session, events, window, cx);
         let id = self.next_split;
         self.next_split += 1;
         let tab = &mut self.tabs[self.active];
@@ -422,9 +433,8 @@ impl Workspace {
             .tabs
             .get(self.active)
             .and_then(|tab| tab.focused.read(cx).cwd.clone());
-        match spawn_shell(&self.config, None, cwd) {
-            Ok((session, events)) => self.add_tab(session, events, window, cx),
-            Err(e) => tracing::error!("failed to start shell: {e:#}"),
+        if let Err(e) = self.add_tab(None, cwd, window, cx) {
+            tracing::error!("failed to start shell: {e:#}");
         }
     }
 
@@ -545,6 +555,21 @@ impl Workspace {
             tab.zoomed = !tab.zoomed;
             cx.notify();
         }
+    }
+
+    /// The container's size: what the active tab's panes share.
+    fn pane_area(&self, window: &Window) -> gpui::Size<gpui::Pixels> {
+        let viewport = window.viewport_size();
+        let m = &self.theme.container.margin;
+        let sidebar = if self.sidebar_visible {
+            self.sidebar_width()
+        } else {
+            0.
+        };
+        gpui::size(
+            (viewport.width - px(sidebar + m.left + m.right)).max(px(0.)),
+            (viewport.height - px(TITLEBAR_RESERVE + m.top + m.bottom)).max(px(0.)),
+        )
     }
 
     /// `sidebar-width` excludes the border, which sits outside it.

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ElementId, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, PaintQuad, Pixels, ShapedLine, SharedString, StrikethroughStyle, Style,
-    TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    IntoElement, LayoutId, PaintQuad, Pixels, ShapedLine, SharedString, Size, StrikethroughStyle,
+    Style, TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Line, Point as GridPoint};
@@ -68,6 +68,20 @@ pub struct CellMetrics {
     /// Shift from GPUI's centered baseline to ours: the baseline sits one
     /// descent above the cell bottom, rounded down the screen to a device pixel.
     pub text_dy: Pixels,
+}
+
+/// The grid that fits a pane of `size` (padding included).
+pub fn grid_for(style: &TerminalStyle, window: &mut Window, size: Size<Pixels>) -> GridSize {
+    let metrics = measure(style, window);
+    let pad = style.padding;
+    let inner_w = f32::from(size.width) - pad.left - pad.right;
+    let inner_h = f32::from(size.height) - pad.top - pad.bottom;
+    GridSize {
+        cols: ((inner_w / f32::from(metrics.cell_width)).floor() as u16).max(2),
+        rows: ((inner_h / f32::from(metrics.line_height)).floor() as u16).max(1),
+        cell_width: f32::from(metrics.cell_width),
+        cell_height: f32::from(metrics.line_height),
+    }
 }
 
 pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {

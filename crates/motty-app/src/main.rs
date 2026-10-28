@@ -126,12 +126,11 @@ fn open_window(
     let cwd = std::env::current_dir()
         .ok()
         .filter(|d| d.parent().is_some());
-    let (session, events) = workspace::spawn_shell(&config, command.clone(), cwd)?;
     let extra_tabs = extra_tabs_arg();
     let split = split_arg();
-    cx.open_window(options, |window, cx| {
+    let window = cx.open_window(options, |window, cx| {
         cx.new(|cx| {
-            let mut workspace = Workspace::new(config, session, events, window, cx);
+            let mut workspace = Workspace::new(config, command.clone(), cwd, window, cx);
             for _ in 0..extra_tabs {
                 workspace.open_tab(window, cx);
             }
@@ -141,5 +140,8 @@ fn open_window(
             workspace
         })
     })?;
+    if !window.update(cx, |workspace, _, _| workspace.has_tabs())? {
+        anyhow::bail!("failed to start the shell");
+    }
     Ok(())
 }
