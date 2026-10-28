@@ -50,6 +50,23 @@ const CONFIG_POLL: Duration = Duration::from_millis(500);
 const LABEL_PITCH: f32 = 6.25;
 const LABEL_COLUMNS: f32 = 6.;
 
+/// Tabs closed lately, newest last, so ⇧⌘T in any window brings one back
+/// (even from a window that closed with it).
+#[derive(Default)]
+struct ClosedTabs(Vec<ClosedTab>);
+
+impl gpui::Global for ClosedTabs {}
+
+struct ClosedTab {
+    state: TabState,
+    /// Where it was in its window's tab list.
+    index: usize,
+    /// Each pane's scrollback; panes name theirs by index.
+    scrollback: Vec<Vec<u8>>,
+}
+
+const MAX_CLOSED_TABS: usize = 10;
+
 struct Tab {
     root: Pane,
     /// The pane that has (or last had) focus.
@@ -285,43 +302,13 @@ impl Workspace {
         files: &mut usize,
         cx: &App,
     ) -> WindowState {
-        fn save(
-            pane: &Pane,
-            dir: Option<&std::path::Path>,
-            files: &mut usize,
-            cx: &App,
-        ) -> PaneState {
-            match pane {
-                Pane::Leaf(view) => {
-                    let view = view.read(cx);
-                    let scrollback = dir.and_then(|dir| {
-                        let term = view.session().term.lock();
-                        let bytes = motty_term::snapshot::serialize(
-                            &*term,
-                            crate::recovery::scrollback_lines(),
-                        )?;
-                        drop(term);
-                        if bytes.is_empty() {
-                            return None;
-                        }
-                        *files += 1;
-                        let name = format!("{files}.ansi");
-                        std::fs::write(dir.join(&name), bytes).ok()?;
-                        Some(name)
-                    });
-                    PaneState::Leaf {
-                        cwd: view.cwd.clone(),
-                        scrollback,
-                    }
-                }
-                Pane::Split(split) => PaneState::Split {
-                    vertical: split.axis == gpui::Axis::Vertical,
-                    ratio: split.ratio,
-                    first: Box::new(save(&split.first, dir, files, cx)),
-                    second: Box::new(save(&split.second, dir, files, cx)),
-                },
-            }
-        }
+        let mut write = |bytes: Vec<u8>| {
+            let dir = scrollback_dir?;
+            *files += 1;
+            let name = format!("{files}.ansi");
+            std::fs::write(dir.join(&name), bytes).ok()?;
+            Some(name)
+        };
         let b = window.bounds();
         WindowState {
             bounds: [
@@ -335,16 +322,7 @@ impl Workspace {
             tabs: self
                 .tabs
                 .iter()
-                .map(|tab| TabState {
-                    root: save(&tab.root, scrollback_dir, files, cx),
-                    focused: tab
-                        .root
-                        .leaves()
-                        .iter()
-                        .position(|v| **v == tab.focused)
-                        .unwrap_or(0),
-                    zoomed: tab.zoomed,
-                })
+                .map(|tab| tab_state(tab, scrollback_dir.is_some().then_some(&mut write as _), cx))
                 .collect(),
         }
     }
@@ -354,20 +332,8 @@ impl Workspace {
     fn restore(&mut self, state: &WindowState, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = state.sidebar_visible;
         for tab in &state.tabs {
-            match self.restore_pane(&tab.root, [0., 0., 1., 1.], window, cx) {
-                Ok(root) => {
-                    let leaves: Vec<_> = root.leaves().into_iter().cloned().collect();
-                    let focused = leaves
-                        .get(tab.focused)
-                        .or(leaves.first())
-                        .cloned()
-                        .expect("a pane tree has a leaf");
-                    self.tabs.push(Tab {
-                        root,
-                        focused,
-                        zoomed: tab.zoomed,
-                    });
-                }
+            match self.restore_tab(tab, &crate::recovery::read_scrollback, window, cx) {
+                Ok(tab) => self.tabs.push(tab),
                 Err(e) => tracing::error!("couldn't restore a tab: {e:#}"),
             }
         }
@@ -376,19 +342,44 @@ impl Workspace {
         }
     }
 
+    /// A tab rebuilt from `state`; `scrollback` looks up each pane's saved
+    /// scrollback by name.
+    fn restore_tab(
+        &mut self,
+        state: &TabState,
+        scrollback: &dyn Fn(&str) -> Option<Vec<u8>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Tab> {
+        let root = self.restore_pane(&state.root, [0., 0., 1., 1.], scrollback, window, cx)?;
+        let leaves: Vec<_> = root.leaves().into_iter().cloned().collect();
+        let focused = leaves
+            .get(state.focused)
+            .or(leaves.first())
+            .cloned()
+            .expect("a pane tree has a leaf");
+        Ok(Tab {
+            root,
+            focused,
+            zoomed: state.zoomed,
+        })
+    }
+
     fn restore_pane(
         &mut self,
         state: &PaneState,
         rect: [f32; 4],
+        scrollback: &dyn Fn(&str) -> Option<Vec<u8>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Pane> {
         Ok(match state {
-            PaneState::Leaf { cwd, scrollback } => {
+            PaneState::Leaf {
+                cwd,
+                scrollback: saved,
+            } => {
                 let cwd = cwd.clone().filter(|d| d.is_dir());
-                let preload = scrollback
-                    .as_deref()
-                    .and_then(crate::recovery::read_scrollback);
+                let preload = saved.as_deref().and_then(scrollback);
                 Pane::Leaf(self.new_terminal_with(None, cwd, preload, rect, window, cx)?)
             }
             PaneState::Split {
@@ -410,8 +401,8 @@ impl Workspace {
                         [x + w * ratio, y, w * (1. - ratio), h],
                     )
                 };
-                let first = self.restore_pane(first, a, window, cx)?;
-                let second = match self.restore_pane(second, b, window, cx) {
+                let first = self.restore_pane(first, a, scrollback, window, cx)?;
+                let second = match self.restore_pane(second, b, scrollback, window, cx) {
                     Ok(pane) => pane,
                     // Keep what started.
                     Err(e) => {
@@ -723,6 +714,24 @@ impl Workspace {
         if ix >= self.tabs.len() {
             return;
         }
+        let mut scrollback = Vec::new();
+        let state = tab_state(
+            &self.tabs[ix],
+            Some(&mut |bytes| {
+                scrollback.push(bytes);
+                Some((scrollback.len() - 1).to_string())
+            }),
+            cx,
+        );
+        let closed = &mut cx.default_global::<ClosedTabs>().0;
+        if closed.len() == MAX_CLOSED_TABS {
+            closed.remove(0);
+        }
+        closed.push(ClosedTab {
+            state,
+            index: ix,
+            scrollback,
+        });
         let tab = self.tabs.remove(ix);
         for view in tab.root.leaves() {
             self.pane_subscriptions.remove(&view.entity_id());
@@ -753,6 +762,44 @@ impl Workspace {
         if let Err(e) = self.add_tab(None, cwd, window, cx) {
             tracing::error!("failed to start shell: {e:#}");
         }
+    }
+
+    fn reopen_closed_tab(
+        &mut self,
+        _: &ReopenClosedTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(e) = self.reopen_tab(window, cx) {
+            tracing::info!("{e:#}");
+            window.play_system_bell();
+        }
+    }
+
+    /// ⇧⌘T: the last closed tab comes back where it was, with its splits,
+    /// folders and scrollback (and new shells). Returns its focused pane.
+    pub fn reopen_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<TerminalView>> {
+        let closed = cx
+            .default_global::<ClosedTabs>()
+            .0
+            .pop()
+            .context("no closed tab to reopen")?;
+        let scrollback = |name: &str| {
+            let i: usize = name.parse().ok()?;
+            closed.scrollback.get(i).cloned()
+        };
+        let tab = self
+            .restore_tab(&closed.state, &scrollback, window, cx)
+            .context("couldn't reopen the tab")?;
+        let focused = tab.focused.clone();
+        let ix = closed.index.min(self.tabs.len());
+        self.tabs.insert(ix, tab);
+        self.activate(ix, window, cx);
+        Ok(focused)
     }
 
     /// ⌘W closes the focused pane, and the tab with its last pane.
@@ -1549,6 +1596,7 @@ impl Render for Workspace {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(Self::reopen_closed_tab))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
             .on_action(cx.listener(|this, _: &ActivateTab1, w, cx| this.activate(0, w, cx)))
@@ -1577,5 +1625,58 @@ impl Render for Workspace {
             .children(titlebar_buttons)
             .children(details_button)
             .children(self.render_mode_pill(cx))
+    }
+}
+
+/// What session recovery (or reopening a closed tab) keeps of `tab`. With
+/// `scrollback`, each pane's scrollback is handed to it, and the name it
+/// returns is saved with the pane.
+fn tab_state(
+    tab: &Tab,
+    mut scrollback: Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
+    cx: &App,
+) -> TabState {
+    fn save(
+        pane: &Pane,
+        scrollback: &mut Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
+        cx: &App,
+    ) -> PaneState {
+        match pane {
+            Pane::Leaf(view) => {
+                let view = view.read(cx);
+                let scrollback = scrollback.as_mut().and_then(|keep| {
+                    let term = view.session().term.lock();
+                    let bytes = motty_term::snapshot::serialize(
+                        &*term,
+                        crate::recovery::scrollback_lines(),
+                    )?;
+                    drop(term);
+                    if bytes.is_empty() {
+                        return None;
+                    }
+                    keep(bytes)
+                });
+                PaneState::Leaf {
+                    cwd: view.cwd.clone(),
+                    scrollback,
+                }
+            }
+            Pane::Split(split) => PaneState::Split {
+                vertical: split.axis == gpui::Axis::Vertical,
+                ratio: split.ratio,
+                first: Box::new(save(&split.first, scrollback, cx)),
+                second: Box::new(save(&split.second, scrollback, cx)),
+            },
+        }
+    }
+    TabState {
+        root: save(&tab.root, &mut scrollback, cx),
+        focused: tab
+            .root
+            .leaves()
+            .iter()
+            .position(|v| **v == tab.focused)
+            .unwrap_or(0),
+        zoomed: tab.zoomed,
     }
 }

@@ -136,6 +136,9 @@ pub struct NewTabParams {
     pub command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Bring back the last closed tab instead (as ⇧⌘T does).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reopen: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

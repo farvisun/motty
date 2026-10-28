@@ -80,6 +80,9 @@ enum Command {
         window: Option<usize>,
         #[arg(long)]
         cwd: Option<String>,
+        /// Reopen the last closed tab (⇧⌘T) instead.
+        #[arg(long, conflicts_with_all = ["cwd", "command"])]
+        reopen: bool,
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
@@ -280,6 +283,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::NewTab {
             window,
             cwd,
+            reopen,
             command,
         } => {
             let created: Created = client.call(
@@ -288,6 +292,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     window,
                     command: argv(command),
                     cwd,
+                    reopen,
                 },
             )?;
             println!("{}", created.pane);

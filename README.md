@@ -134,6 +134,7 @@ Notifications.
 | ⌃⌘←→↑↓, ⌘], ⌘[ | Focus the pane in that direction, the next or the previous one |
 | ⌃⌘=, ⇧⌘↩ | Equalize splits, zoom the focused pane |
 | ⌘W | Close the focused pane (the tab with its last one) |
+| ⇧⌘T | Reopen the last closed tab, with its splits, folders and scrollback (`motty new-tab --reopen`) |
 
 Drag a divider to resize. Themes set the divider with `[divider] color`, `width`.
 

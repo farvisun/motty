@@ -291,6 +291,7 @@ fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
                 window: None,
                 command: strings(&args["command"]).filter(|c| !c.is_empty()),
                 cwd: args["cwd"].as_str().map(str::to_owned),
+                reopen: false,
             };
             let created: Created = client.call(method::NEW_TAB, &params)?;
             Ok(format!("new pane {}", created.pane))

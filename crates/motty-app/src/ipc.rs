@@ -301,7 +301,11 @@ fn new_tab(p: NewTabParams, cx: &mut App) -> anyhow::Result<Value> {
         .context("no such window")?;
     let command = command_of(p.command)?;
     let created = handle.update(cx, |workspace, window, cx| {
-        workspace.open_tab_with(command, p.cwd.map(PathBuf::from), window, cx)
+        if p.reopen {
+            workspace.reopen_tab(window, cx)
+        } else {
+            workspace.open_tab_with(command, p.cwd.map(PathBuf::from), window, cx)
+        }
     })??;
     Ok(json!(Created {
         pane: created.read(cx).id
