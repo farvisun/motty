@@ -36,7 +36,19 @@ registered automatically. Saving a config or theme file applies it to open windo
 | `cursor-color`, `cursor-text` | Cursor colors for themes that don't set their own |
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
 | `sidebar-visible` | Open windows with the tabs sidebar (default `true`; toggle with ⌘⇧L) |
+| `unfocused-split-opacity` | Opacity of split panes without focus (default `0.6`) |
 | `scrollback-lines`, `shell` | Behaviour |
+
+## Splits
+
+| Keys | Action |
+|---|---|
+| ⌘D, ⌘⌥D, ⇧⌘D, ⌥⇧⌘D | Split right, left, down, up (the new pane starts in the focused pane's folder) |
+| ⌃⌘←→↑↓, ⌘], ⌘[ | Focus the pane in that direction, the next or the previous one |
+| ⌃⌘=, ⇧⌘↩ | Equalize splits, zoom the focused pane |
+| ⌘W | Close the focused pane (the tab with its last one) |
+
+Drag a divider to resize. Themes set the divider with `[divider] color`, `width`.
 
 ## Layout
 
@@ -56,7 +68,7 @@ Bundled JetBrains Mono is under the [SIL Open Font License](crates/motty-app/ass
 
 With Otty installed, `cargo xtask parity` renders `xtask/fixtures/render.sh` in both apps at
 the same window bounds, captures both windows and prints per-region diff stats; images land
-in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--theme NAME` to switch both
+in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--split right|down` to split the fixture pane, `--theme NAME` to switch both
 apps to a theme, `--backdrop RRGGBB` to put a solid color behind the window (for materials), and
 `--set key=value` (repeatable) to change a config key in both apps, and `--hover x,y` to rest the
 pointer on a window point (hover-only chrome; apps may not see a warped pointer move). Otty's config is restored

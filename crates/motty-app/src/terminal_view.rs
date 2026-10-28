@@ -519,15 +519,18 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Re-arm before reading so output during this frame schedules another.
         self.session.take_wakeup();
+        // Focus survives deactivation: the focused pane of an inactive window
+        // shows a hollow cursor, and other panes (unfocused splits) none.
         let focused = self.focus_handle.is_focused(window);
+        let active = focused && window.is_window_active();
         let entity = cx.entity().downgrade();
         let input_entity = cx.entity();
         let focus = self.focus_handle.clone();
         let element = TerminalElement::new(
             self.session.term.clone(),
             self.style.clone(),
-            focused,
-            !focused || self.blink.as_ref().is_none_or(|b| b.visible),
+            active,
+            focused && (!active || self.blink.as_ref().is_none_or(|b| b.visible)),
             self.layout.clone(),
             move |size, _window, cx| {
                 if let Some(view) = entity.upgrade() {

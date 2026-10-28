@@ -50,7 +50,12 @@ fn main() -> Result<()> {
                 Path::new(&args[6]),
             )
         }
-        Some("scan") if args.len() == 4 => scan(Path::new(&args[1]), &args[2], args[3].parse()?),
+        Some("scan") if args.len() >= 4 => scan(
+            Path::new(&args[1]),
+            &args[2],
+            args[3].parse()?,
+            args.get(4).map(|t| t.parse()).transpose()?.unwrap_or(30.),
+        ),
         Some("probe") if args.len() == 4 => {
             probe(Path::new(&args[1]), args[2].parse()?, args[3].parse()?)
         }
@@ -64,7 +69,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]"
+                "usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--split right|down] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]"
             );
             std::process::exit(2);
         }
@@ -269,7 +274,7 @@ impl Drop for OttyConfig {
     }
 }
 
-fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
+fn capture_otty(fixture: &Path, tabs: bool, split: Option<&str>, out: &Path) -> Result<()> {
     let socket = dirs_home().join("Library/Application Support/io.appmakes.otty/otty.sock");
     if !socket.exists() {
         run(Command::new("open").args(["-a", "Otty"]))?;
@@ -325,6 +330,26 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
         run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window]))?;
         // New tabs can bring back the previous theme; reload the current one.
         run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
+    }
+    if let Some(direction) = split {
+        // The new pane runs the fixture too and takes focus.
+        let json =
+            run(Command::new(OTTY_CLI).args(["--json", "pane", "list", "--window", &window]))?;
+        let panes: serde_json::Value = serde_json::from_str(&json)?;
+        let pane = panes["data"][0]["id"]
+            .as_str()
+            .context("fixture pane not found")?
+            .to_owned();
+        run(Command::new(OTTY_CLI).args([
+            "pane",
+            "split",
+            "--pane",
+            &pane,
+            "--direction",
+            direction,
+            "--command",
+            &command,
+        ]))?;
     }
     pause(1000);
     if tabs {
@@ -400,6 +425,7 @@ fn capture_motty(
     release: bool,
     fixture: &Path,
     tabs: bool,
+    split: Option<&str>,
     theme: Option<&str>,
     out: &Path,
 ) -> Result<()> {
@@ -414,6 +440,9 @@ fn capture_motty(
         .current_dir(root());
     if tabs {
         motty.args(["--extra-tabs", "2"]);
+    }
+    if let Some(direction) = split {
+        motty.args(["--split", direction]);
     }
     if let Some(theme) = theme {
         motty.args(["--theme", theme]);
@@ -514,6 +543,11 @@ fn parity(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let (otty, motty) = (dir.join("otty.png"), dir.join("motty.png"));
     let tabs = args.iter().any(|a| a == "--tabs");
+    let split = args
+        .iter()
+        .position(|a| a == "--split")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str);
     let theme = args
         .iter()
         .position(|a| a == "--theme")
@@ -547,13 +581,14 @@ fn parity(args: &[String]) -> Result<()> {
     let mut restore = (theme.is_some() || !sets.is_empty())
         .then(|| OttyConfig::apply(theme.as_deref(), &sets))
         .transpose()?;
-    capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
+    capture_otty(&fixture, tabs, split, &otty).context("capturing Otty")?;
     // Without `--set`, Motty gets the theme as a flag, so the user's config
     // can be back before Motty starts.
     if sets.is_empty() {
         restore = None;
     }
-    capture_motty(release, &fixture, tabs, theme.as_deref(), &motty).context("capturing Motty")?;
+    capture_motty(release, &fixture, tabs, split, theme.as_deref(), &motty)
+        .context("capturing Motty")?;
     drop(restore);
     println!("captured {} and {}", otty.display(), motty.display());
     diff(&otty, &motty, Some(&dir.join("diff.png")))?;
@@ -641,7 +676,7 @@ fn crop(path: &Path, (x, y, w, h): (f32, f32, f32, f32), out: &Path) -> Result<(
     Ok(())
 }
 
-fn scan(path: &Path, axis: &str, pos: f32) -> Result<()> {
+fn scan(path: &Path, axis: &str, pos: f32, threshold: f32) -> Result<()> {
     let img = load(path)?;
     let s = scale_of(&img);
     let fixed = (pos * s as f32) as u32;
@@ -661,7 +696,7 @@ fn scan(path: &Path, axis: &str, pos: f32) -> Result<()> {
     let mut out = Vec::new();
     for i in 1..len {
         let p = at(i);
-        if distance(&p, &prev) > 30. {
+        if distance(&p, &prev) > threshold {
             out.push(format!(
                 "{:.1}:#{:02x}{:02x}{:02x}",
                 i as f32 / s as f32,

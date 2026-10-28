@@ -21,6 +21,8 @@ pub struct Config {
     pub sidebar_width: Option<f32>,
     /// `sidebar-visible`: whether windows open with the tabs sidebar shown.
     pub sidebar_visible: bool,
+    /// How opaque unfocused split panes are drawn (Otty's default is 0.6).
+    pub unfocused_split_opacity: Option<f32>,
     pub details_panel_width: Option<f32>,
     pub option_as_meta: bool,
     pub scrollback: Option<usize>,
@@ -144,6 +146,9 @@ impl Config {
                 }
                 "sidebar-width" => out.sidebar_width = num_of(value),
                 "sidebar-visible" => out.sidebar_visible = value.as_bool().unwrap_or(true),
+                "unfocused-split-opacity" => {
+                    out.unfocused_split_opacity = num_of(value).map(|o| o.clamp(0., 1.))
+                }
                 "details-panel-width" => out.details_panel_width = num_of(value),
                 // `true`, `false`, `left` or `right`; one side counts as on
                 // until left/right modifiers are told apart.

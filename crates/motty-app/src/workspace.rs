@@ -1,12 +1,14 @@
 //! Window root: the tab sidebar, the titlebar band, and the themed container
-//! around the active terminal.
+//! around the active tab's panes.
 
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
-    SharedString, Subscription, Task, Window, WindowAppearance, WindowBackgroundAppearance, div,
-    point, prelude::*, px,
+    AnyElement, App, BoxShadow, Context, Entity, EntityId, FocusHandle, Focusable, FontWeight,
+    MouseButton, SharedString, Subscription, Task, Window, WindowAppearance,
+    WindowBackgroundAppearance, div, point, prelude::*, px,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -15,6 +17,7 @@ use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
 use crate::materials::{Backdrop, Backdrops, Region};
+use crate::panes::{Direction, Pane, PaneStyle};
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
@@ -44,8 +47,21 @@ const LABEL_PITCH: f32 = 6.25;
 const LABEL_COLUMNS: f32 = 6.;
 
 struct Tab {
-    terminal: Entity<TerminalView>,
-    _subscription: Subscription,
+    root: Pane,
+    /// The pane that has (or last had) focus.
+    focused: Entity<TerminalView>,
+    /// Showing only the focused pane.
+    zoomed: bool,
+}
+
+impl Tab {
+    fn new(view: Entity<TerminalView>) -> Self {
+        Self {
+            root: Pane::Leaf(view.clone()),
+            focused: view,
+            zoomed: false,
+        }
+    }
 }
 
 pub struct Workspace {
@@ -68,6 +84,12 @@ pub struct Workspace {
     /// The pointer is over the window: Otty shows its titlebar buttons then.
     pointer_inside: bool,
     _subscriptions: Vec<Subscription>,
+    /// Each terminal's event subscription, dropped with its pane.
+    pane_subscriptions: HashMap<EntityId, Subscription>,
+    /// Ids for new splits.
+    next_split: usize,
+    /// The split whose divider is being dragged.
+    dragging: Option<usize>,
     _process_poll: Task<()>,
     _config_poll: Task<()>,
 }
@@ -152,7 +174,9 @@ impl Workspace {
                 let alive = this.update(cx, |this, cx| {
                     let mut changed = false;
                     for tab in &this.tabs {
-                        changed |= tab.terminal.update(cx, |t, _| t.refresh_process());
+                        for view in tab.root.leaves() {
+                            changed |= view.update(cx, |t, _| t.refresh_process());
+                        }
                     }
                     if changed {
                         cx.notify();
@@ -198,6 +222,9 @@ impl Workspace {
             sidebar_visible,
             pointer_inside: false,
             _subscriptions: subscriptions,
+            pane_subscriptions: HashMap::new(),
+            next_split: 0,
+            dragging: None,
             _process_poll: process_poll,
             _config_poll: config_poll,
         };
@@ -205,13 +232,14 @@ impl Workspace {
         this
     }
 
-    fn add_tab(
+    /// A terminal view for `session`, closing its pane when the shell exits.
+    fn new_terminal(
         &mut self,
         session: Session,
         events: async_channel::Receiver<SessionEvent>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Entity<TerminalView> {
         let style = terminal_style(&self.config, &self.theme, cx);
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
@@ -224,24 +252,141 @@ impl Workspace {
             window,
             |this, terminal, event, window, cx| match event {
                 TerminalEvent::TitleChanged => cx.notify(),
-                TerminalEvent::Exited => {
-                    if let Some(ix) = this.tabs.iter().position(|t| &t.terminal == terminal) {
-                        this.close_tab_at(ix, window, cx);
-                    }
-                }
+                TerminalEvent::Exited => this.close_pane(terminal, window, cx),
             },
         );
-        self.tabs.push(Tab {
-            terminal,
-            _subscription: subscription,
-        });
+        self.pane_subscriptions
+            .insert(terminal.entity_id(), subscription);
+        terminal
+    }
+
+    fn add_tab(
+        &mut self,
+        session: Session,
+        events: async_channel::Receiver<SessionEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal = self.new_terminal(session, events, window, cx);
+        self.tabs.push(Tab::new(terminal));
         self.activate(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Splits the focused pane, starting a shell (or `command`) in the new
+    /// half where the focused one is, and focuses it.
+    pub fn split(
+        &mut self,
+        direction: Direction,
+        command: Option<(String, Vec<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let cwd = tab.focused.read(cx).cwd.clone();
+        let (session, events) = match spawn_shell(&self.config, command, cwd) {
+            Ok(shell) => shell,
+            Err(e) => return tracing::error!("failed to start shell: {e:#}"),
+        };
+        let terminal = self.new_terminal(session, events, window, cx);
+        let id = self.next_split;
+        self.next_split += 1;
+        let tab = &mut self.tabs[self.active];
+        tab.zoomed = false;
+        tab.root
+            .split(&tab.focused.clone(), terminal.clone(), direction, id);
+        self.focus_pane(terminal, window, cx);
+    }
+
+    fn focus_pane(
+        &mut self,
+        view: Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if !tab.root.contains(&view) {
+            return;
+        }
+        if tab.focused != view {
+            tab.zoomed = false;
+        }
+        window.focus(&view.focus_handle(cx), cx);
+        tab.focused = view;
+        cx.notify();
+    }
+
+    fn focus_neighbor(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if let Some(view) = tab.root.neighbor(&tab.focused, direction) {
+            self.focus_pane(view, window, cx);
+        }
+    }
+
+    /// Focuses the next (or previous) pane in reading order, wrapping around.
+    fn cycle_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let leaves = tab.root.leaves();
+        let Some(ix) = leaves.iter().position(|v| **v == tab.focused) else {
+            return;
+        };
+        let next = leaves[(ix as isize + delta).rem_euclid(leaves.len() as isize) as usize].clone();
+        self.focus_pane(next, window, cx);
+    }
+
+    /// Removes a pane (its shell exited or it was closed); the last pane
+    /// takes its tab with it.
+    fn close_pane(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.tabs.iter().position(|t| t.root.contains(view)) else {
+            return;
+        };
+        self.pane_subscriptions.remove(&view.entity_id());
+        let tab = &mut self.tabs[ix];
+        if tab.root.leaves().len() == 1 {
+            return self.close_tab_at(ix, window, cx);
+        }
+        if tab.focused == *view {
+            let near = [
+                Direction::Left,
+                Direction::Up,
+                Direction::Right,
+                Direction::Down,
+            ]
+            .into_iter()
+            .find_map(|d| tab.root.neighbor(view, d));
+            tab.focused = near.unwrap_or_else(|| tab.root.leaves()[0].clone());
+            tab.zoomed = false;
+        }
+        let root = std::mem::replace(&mut tab.root, Pane::Leaf(tab.focused.clone()));
+        tab.root = root.without(view).expect("another pane remains");
+        if ix == self.active {
+            let focused = self.tabs[ix].focused.clone();
+            self.focus_pane(focused, window, cx);
+        }
+        cx.notify();
     }
 
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else { return };
         self.active = ix;
-        let focus = tab.terminal.focus_handle(cx);
+        let focus = tab.focused.focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
     }
@@ -250,7 +395,10 @@ impl Workspace {
         if ix >= self.tabs.len() {
             return;
         }
-        self.tabs.remove(ix);
+        let tab = self.tabs.remove(ix);
+        for view in tab.root.leaves() {
+            self.pane_subscriptions.remove(&view.entity_id());
+        }
         if self.tabs.is_empty() {
             window.remove_window();
             return;
@@ -273,15 +421,18 @@ impl Workspace {
         let cwd = self
             .tabs
             .get(self.active)
-            .and_then(|tab| tab.terminal.read(cx).cwd.clone());
+            .and_then(|tab| tab.focused.read(cx).cwd.clone());
         match spawn_shell(&self.config, None, cwd) {
             Ok((session, events)) => self.add_tab(session, events, window, cx),
             Err(e) => tracing::error!("failed to start shell: {e:#}"),
         }
     }
 
+    /// ⌘W closes the focused pane, and the tab with its last pane.
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_tab_at(self.active, window, cx);
+        if let Some(view) = self.tabs.get(self.active).map(|t| t.focused.clone()) {
+            self.close_pane(&view, window, cx);
+        }
     }
 
     fn cycle(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -312,8 +463,8 @@ impl Workspace {
             cursor_style(&self.config),
         );
         let scrollback = self.config.scrollback.unwrap_or(10_000);
-        for tab in &self.tabs {
-            tab.terminal.update(cx, |t, cx| {
+        for view in self.tabs.iter().flat_map(|tab| tab.root.leaves()) {
+            view.update(cx, |t, cx| {
                 t.apply_config(meta, blink, cursor, scrollback, cx)
             });
         }
@@ -329,11 +480,71 @@ impl Workspace {
         self.ui_font = crate::fonts::ui_family(&self.theme.token.font_ui, cx).into();
         self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
         let style = terminal_style(&self.config, &self.theme, cx);
-        for tab in &self.tabs {
-            tab.terminal
-                .update(cx, |t, cx| t.set_style(style.clone(), cx));
+        for view in self.tabs.iter().flat_map(|tab| tab.root.leaves()) {
+            view.update(cx, |t, cx| t.set_style(style.clone(), cx));
         }
         cx.notify();
+    }
+
+    /// The active tab's panes; unfocused ones fade like Otty's
+    /// `unfocused-split-opacity`.
+    fn render_panes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tab = self.tabs.get(self.active)?;
+        if tab.zoomed {
+            return Some(tab.focused.clone().into_any_element());
+        }
+        let focused = tab.focused.clone();
+        let split = matches!(tab.root, Pane::Split(_));
+        let weak = cx.entity().downgrade();
+        let style = PaneStyle {
+            divider: hsla(self.theme.divider.color),
+            divider_width: self.theme.divider.width,
+            dimmed: &move |view| split && *view != focused,
+            dim_opacity: self.config.unfocused_split_opacity.unwrap_or(0.6),
+            on_drag_start: Rc::new(move |id, _, cx| {
+                if let Some(this) = weak.upgrade() {
+                    this.update(cx, |this, _| this.dragging = Some(id));
+                }
+            }),
+        };
+        Some(tab.root.render(&style))
+    }
+
+    fn drag_divider(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.dragging else { return };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.dragging = None;
+            return;
+        }
+        if let Some(split) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.root.split_mut(id))
+        {
+            split.drag_to(event.position);
+            cx.notify();
+        }
+    }
+
+    fn equalize_splits(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.root.equalize();
+            cx.notify();
+        }
+    }
+
+    fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && matches!(tab.root, Pane::Split(_))
+        {
+            tab.zoomed = !tab.zoomed;
+            cx.notify();
+        }
     }
 
     /// `sidebar-width` excludes the border, which sits outside it.
@@ -381,9 +592,15 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, tab)| {
-                let view = tab.terminal.read(cx);
+                let view = tab.focused.read(cx);
                 let title = view.display_title();
-                let process = view.process.clone().unwrap_or_default();
+                // With splits, Otty counts the panes instead.
+                let panes = tab.root.leaves().len();
+                let process = if panes > 1 {
+                    panes.to_string()
+                } else {
+                    view.process.clone().unwrap_or_default()
+                };
                 let active = ix == self.active;
                 let style = if active {
                     &t.tabs.active
@@ -703,10 +920,22 @@ impl Render for Workspace {
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
         let t = &self.theme;
         let c = &t.container;
-        let active = self.tabs.get(self.active).map(|tab| tab.terminal.clone());
-        let title = active
-            .as_ref()
-            .map(|a| a.read(cx).display_title())
+        // A click into another pane moves focus without telling us.
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && let Some(view) = tab
+                .root
+                .leaves()
+                .into_iter()
+                .find(|v| v.focus_handle(cx).is_focused(window))
+            && *view != tab.focused
+        {
+            tab.focused = view.clone();
+            tab.zoomed = false;
+        }
+        let title = self
+            .tabs
+            .get(self.active)
+            .map(|tab| tab.focused.read(cx).display_title())
             .unwrap_or_default();
         if title != self.window_title {
             window.set_window_title(&title);
@@ -714,7 +943,11 @@ impl Render for Workspace {
         }
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
-        let busy = self.tabs.iter().any(|tab| tab.terminal.read(cx).busy);
+        let busy = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.root.leaves())
+            .any(|view| view.read(cx).busy);
         let state = (
             background_appearance(t),
             busy && !self.config.hide_dirty_indicator,
@@ -801,7 +1034,7 @@ impl Render for Workspace {
             .overflow_hidden()
             .bg(hsla(c.background))
             .shadow(shadows(&c.shadow))
-            .children(active)
+            .children(self.render_panes(cx))
             .children(border_overlay);
 
         let main = div()
@@ -845,6 +1078,43 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
+            .on_mouse_move(cx.listener(Self::drag_divider))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.dragging = None),
+            )
+            .on_action(
+                cx.listener(|this, _: &SplitRight, w, cx| {
+                    this.split(Direction::Right, None, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &SplitLeft, w, cx| this.split(Direction::Left, None, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SplitDown, w, cx| this.split(Direction::Down, None, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SplitUp, w, cx| this.split(Direction::Up, None, w, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FocusPaneLeft, w, cx| {
+                this.focus_neighbor(Direction::Left, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneRight, w, cx| {
+                this.focus_neighbor(Direction::Right, w, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &FocusPaneUp, w, cx| {
+                    this.focus_neighbor(Direction::Up, w, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &FocusPaneDown, w, cx| {
+                this.focus_neighbor(Direction::Down, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusNextPane, w, cx| this.cycle_pane(1, w, cx)))
+            .on_action(cx.listener(|this, _: &FocusPreviousPane, w, cx| this.cycle_pane(-1, w, cx)))
+            .on_action(cx.listener(|this, _: &EqualizeSplits, _, cx| this.equalize_splits(cx)))
+            .on_action(cx.listener(|this, _: &ZoomSplit, _, cx| this.toggle_zoom(cx)))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))

@@ -744,9 +744,7 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
 
     let div = s("divider");
     let divider = Divider {
-        color: div
-            .color("color")
-            .unwrap_or(overlay(if dark { 0.08 } else { 0.1 })),
+        color: div.color("color").unwrap_or(overlay(0.1)),
         width: div.num("width").unwrap_or(1.),
     };
 

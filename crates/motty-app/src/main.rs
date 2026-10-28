@@ -1,6 +1,7 @@
 mod actions;
 mod fonts;
 mod materials;
+mod panes;
 mod terminal_view;
 mod titlebar;
 mod workspace;
@@ -82,6 +83,18 @@ fn extra_tabs_arg() -> usize {
         .unwrap_or(0)
 }
 
+/// `--split right|down|left|up` splits the first pane, running the same `-e`
+/// command in the new one (used by the parity harness).
+fn split_arg() -> Option<panes::Direction> {
+    Some(match flag_value("--split")?.as_str() {
+        "right" => panes::Direction::Right,
+        "left" => panes::Direction::Left,
+        "down" => panes::Direction::Down,
+        "up" => panes::Direction::Up,
+        _ => return None,
+    })
+}
+
 /// `Motty -e program [args...]` runs a command instead of the login shell.
 fn command_arg() -> Option<(String, Vec<String>)> {
     let mut args = std::env::args().skip_while(|a| a != "-e").skip(1);
@@ -113,13 +126,17 @@ fn open_window(
     let cwd = std::env::current_dir()
         .ok()
         .filter(|d| d.parent().is_some());
-    let (session, events) = workspace::spawn_shell(&config, command, cwd)?;
+    let (session, events) = workspace::spawn_shell(&config, command.clone(), cwd)?;
     let extra_tabs = extra_tabs_arg();
+    let split = split_arg();
     cx.open_window(options, |window, cx| {
         cx.new(|cx| {
             let mut workspace = Workspace::new(config, session, events, window, cx);
             for _ in 0..extra_tabs {
                 workspace.open_tab(window, cx);
+            }
+            if let Some(direction) = split {
+                workspace.split(direction, command, window, cx);
             }
             workspace
         })

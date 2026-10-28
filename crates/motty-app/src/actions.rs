@@ -25,6 +25,18 @@ actions!(
         ActivateTab8,
         ActivateLastTab,
         ToggleTabsPanel,
+        SplitRight,
+        SplitLeft,
+        SplitDown,
+        SplitUp,
+        FocusPaneLeft,
+        FocusPaneRight,
+        FocusPaneUp,
+        FocusPaneDown,
+        FocusNextPane,
+        FocusPreviousPane,
+        EqualizeSplits,
+        ZoomSplit,
     ]
 );
 
@@ -55,5 +67,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-8", ActivateTab8, Some("Workspace")),
         KeyBinding::new("cmd-9", ActivateLastTab, Some("Workspace")),
         KeyBinding::new("cmd-shift-l", ToggleTabsPanel, Some("Workspace")),
+        KeyBinding::new("cmd-d", SplitRight, Some("Workspace")),
+        KeyBinding::new("cmd-alt-d", SplitLeft, Some("Workspace")),
+        KeyBinding::new("cmd-shift-d", SplitDown, Some("Workspace")),
+        KeyBinding::new("cmd-alt-shift-d", SplitUp, Some("Workspace")),
+        KeyBinding::new("cmd-ctrl-left", FocusPaneLeft, Some("Workspace")),
+        KeyBinding::new("cmd-ctrl-right", FocusPaneRight, Some("Workspace")),
+        KeyBinding::new("cmd-ctrl-up", FocusPaneUp, Some("Workspace")),
+        KeyBinding::new("cmd-ctrl-down", FocusPaneDown, Some("Workspace")),
+        KeyBinding::new("cmd-]", FocusNextPane, Some("Workspace")),
+        KeyBinding::new("cmd-[", FocusPreviousPane, Some("Workspace")),
+        KeyBinding::new("cmd-ctrl-=", EqualizeSplits, Some("Workspace")),
+        KeyBinding::new("cmd-shift-enter", ZoomSplit, Some("Workspace")),
     ]);
 }
