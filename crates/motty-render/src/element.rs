@@ -122,6 +122,9 @@ pub struct Highlight {
 const MATCH_BACKGROUND: u32 = 0xfee382;
 /// Text on matches over a dark theme.
 const MATCH_DARK_TEXT: u32 = 0x1b1b1b;
+/// Hint labels: dark letters on yellow in a dark outline (Otty's).
+const LABEL_BACKGROUND: u32 = 0xffd926;
+const LABEL_INK: u32 = 0x1a1a1a;
 
 type ResizeFn = Box<dyn FnOnce(GridSize, &mut Window, &mut App)>;
 type PaintHook = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
@@ -137,8 +140,11 @@ pub struct TerminalElement {
     preedit: Option<SharedString>,
     /// Sorted, non-overlapping.
     highlights: Vec<Highlight>,
-    /// A link under the pointer, underlined (OSC 8 links always are).
-    underline: Option<(GridPoint, GridPoint)>,
+    /// Links under the pointer or hint targets, underlined (OSC 8 links
+    /// always are).
+    underlines: Vec<(GridPoint, GridPoint)>,
+    /// Hint labels: text drawn over the cells from the point rightwards.
+    labels: Vec<(GridPoint, SharedString)>,
 }
 
 impl TerminalElement {
@@ -160,7 +166,8 @@ impl TerminalElement {
             on_paint: None,
             preedit: None,
             highlights: Vec::new(),
-            underline: None,
+            underlines: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
@@ -179,9 +186,15 @@ impl TerminalElement {
         self
     }
 
-    /// Underlines the cells from start to end (inclusive).
-    pub fn underline(mut self, range: Option<(GridPoint, GridPoint)>) -> Self {
-        self.underline = range;
+    /// Underlines the cells of each range (inclusive).
+    pub fn underlines(mut self, ranges: Vec<(GridPoint, GridPoint)>) -> Self {
+        self.underlines = ranges;
+        self
+    }
+
+    /// Hint labels, each drawn over the cells from its point rightwards.
+    pub fn labels(mut self, labels: Vec<(GridPoint, SharedString)>) -> Self {
+        self.labels = labels;
         self
     }
 
@@ -221,6 +234,8 @@ struct Snapshot {
     cursor: Option<(usize, usize, CursorShape, bool)>,
     /// Cursor cell even when the cursor itself is hidden (for IME placement).
     cursor_cell: Option<(usize, usize)>,
+    /// Hint labels on screen: row, column, width in cells.
+    labels: Vec<(usize, usize, usize)>,
 }
 
 impl IntoElement for TerminalElement {
@@ -308,6 +323,19 @@ impl gpui::Element for TerminalElement {
         };
         self.layout_sink.set(Some(layout));
         let mut prepaint = build(&snapshot, &style, metrics, origin, window);
+        for &(row, col, width) in &snapshot.labels {
+            prepaint.glyph_quads.push(outline(
+                Bounds::new(
+                    point(
+                        origin.x + metrics.cell_width * col as f32,
+                        origin.y + metrics.line_height * row as f32,
+                    ),
+                    size(metrics.cell_width * width as f32, metrics.line_height),
+                ),
+                hsla(Rgba::rgb(LABEL_INK)),
+                gpui::BorderStyle::Solid,
+            ));
+        }
         if let (Some(text), Some((row, col))) = (self.preedit.clone(), snapshot.cursor_cell) {
             prepaint.preedit = Some(build_preedit(text, &style, &layout, row, col, window));
             prepaint.cursor = None;
@@ -391,6 +419,27 @@ impl TerminalElement {
             style.palette[NamedColor::Background as usize].with_alpha(1.)
         };
         let default_fg = style.palette[NamedColor::Foreground as usize];
+        let label_cells: std::collections::BTreeMap<GridPoint, char> = self
+            .labels
+            .iter()
+            .flat_map(|(p, text)| {
+                text.chars()
+                    .enumerate()
+                    .map(move |(i, c)| (GridPoint::new(p.line, p.column + i), c))
+            })
+            .collect();
+        let labels = self
+            .labels
+            .iter()
+            .filter_map(|(p, text)| {
+                let row = p.line.0 + display_offset;
+                (0..rows_n as i32).contains(&row).then_some((
+                    row as usize,
+                    p.column.0,
+                    text.chars().count(),
+                ))
+            })
+            .collect();
         let dark = motty_theme::theme::luminance(opaque_bg) < 0.5;
 
         for indexed in content.display_iter {
@@ -405,10 +454,21 @@ impl TerminalElement {
             let mut flags = cell.flags;
             if cell.hyperlink().is_some()
                 || self
-                    .underline
-                    .is_some_and(|(a, b)| (a..=b).contains(&indexed.point))
+                    .underlines
+                    .iter()
+                    .any(|(a, b)| (*a..=*b).contains(&indexed.point))
             {
                 flags |= Flags::UNDERLINE;
+            }
+            if let Some(&c) = label_cells.get(&indexed.point) {
+                rows[row].push(SnapCell {
+                    c,
+                    zerowidth: None,
+                    fg: Rgba::rgb(LABEL_INK),
+                    bg: Rgba::rgb(LABEL_BACKGROUND),
+                    flags: Flags::BOLD,
+                });
+                continue;
             }
             let mut fg = style.resolve(dim_color(cell.fg, flags), colors);
             if flags.contains(Flags::DIM) && !matches!(cell.fg, Color::Named(n) if (n as usize) < 8)
@@ -478,6 +538,7 @@ impl TerminalElement {
             rows,
             cursor,
             cursor_cell,
+            labels,
         }
     }
 }

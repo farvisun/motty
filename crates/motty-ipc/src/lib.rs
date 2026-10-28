@@ -203,6 +203,8 @@ pub enum PaneMode {
     Vi,
     /// Input is refused; output still streams.
     ReadOnly,
+    /// Labels on every link on screen; typing one opens it.
+    Hints,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

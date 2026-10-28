@@ -322,8 +322,8 @@ fn close(p: PaneRef, cx: &mut App) -> anyhow::Result<Value> {
 
 fn set_mode(p: SetModeParams, cx: &mut App) -> anyhow::Result<Value> {
     let (handle, view) = resolve(&p.pane, cx)?;
-    handle.update(cx, |_, _, cx| {
-        view.update(cx, |view, cx| view.set_mode(p.mode, cx))
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |view, cx| view.set_mode(p.mode, window, cx))
     })?;
     Ok(Value::Null)
 }

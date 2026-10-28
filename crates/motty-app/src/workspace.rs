@@ -957,7 +957,9 @@ impl Workspace {
         let mode = view.read(cx).mode()?;
         let t = &self.theme;
         let ink = hsla(native_label(t, 1., 1.));
+        let secondary = hsla(native_label(t, 0.5, 0.55));
         let (lock, label) = match mode {
+            PaneMode::Hints => (false, "HINTS".to_owned()),
             PaneMode::Vi { count: None } => (false, "VI MODE".to_owned()),
             PaneMode::Vi { count: Some(n) } => (false, format!("VI MODE  {n}")),
             PaneMode::ReadOnly => (true, "READ ONLY".to_owned()),
@@ -980,13 +982,22 @@ impl Workspace {
                 .text_color(ink)
                 .when(lock, |d| d.child(titlebar::lock(ink)))
                 .child(SharedString::from(label))
+                .when(mode == PaneMode::Hints, |d| {
+                    d.child(
+                        div()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_size(px(12.))
+                            .text_color(secondary)
+                            .child("Esc Exit"),
+                    )
+                })
                 .child(
                     div()
                         .id("exit-mode")
                         .ml(px(2.))
                         .rounded(px(3.))
                         .hover(|d| d.bg(hsla(native_label(t, 0.08, 0.1))))
-                        .child(titlebar::small_close(hsla(native_label(t, 0.5, 0.55))))
+                        .child(titlebar::small_close(secondary))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(move |_, _, cx| view.update(cx, |v, cx| v.exit_mode(cx))),
                 )

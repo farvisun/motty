@@ -9,6 +9,7 @@ use gpui::{
     MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, SharedString, Task, UTF16Selection, Window,
     div, prelude::*,
 };
+use hints::HintAction;
 use motty_render::{TerminalElement, TerminalLayout, TerminalStyle};
 use motty_term::alacritty_terminal::grid::{Dimensions, Scroll};
 use motty_term::alacritty_terminal::index::{Column, Point, Side};
@@ -16,6 +17,7 @@ use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
 use motty_term::alacritty_terminal::vte::ansi::Rgb;
 use motty_term::input::{self, KeyInput, Mods, MouseAction};
+use motty_term::links::Matcher;
 use motty_term::search::SearchOptions;
 use motty_term::{Session, SessionEvent};
 use motty_theme::CursorBlink;
@@ -23,6 +25,7 @@ use motty_theme::CursorBlink;
 use crate::actions::*;
 
 mod find;
+mod hints;
 mod links;
 mod vi;
 
@@ -85,6 +88,8 @@ pub struct TerminalView {
     pointer: Option<gpui::Point<Pixels>>,
     /// Vi mode, while on.
     vi: Option<vi::ViState>,
+    /// Hint mode, while labels are up.
+    hints: Option<hints::HintState>,
     /// Input is refused (output still streams).
     read_only: bool,
     _events: Task<()>,
@@ -150,6 +155,7 @@ impl TerminalView {
             hovered_link: None,
             pointer: None,
             vi: None,
+            hints: None,
             read_only: false,
             _events: task,
         }
@@ -367,6 +373,10 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hints.is_some() {
+            self.hint_key(event, window, cx);
+            return;
+        }
         if self.vi.is_some() {
             self.vi_key(event, window, cx);
             return;
@@ -654,7 +664,8 @@ impl Render for TerminalView {
         )
         .preedit(self.marked_text.clone())
         .highlights(self.find_highlights())
-        .underline(self.hovered_link.as_ref().map(|l| (l.start, l.end)))
+        .underlines(self.underlines())
+        .labels(self.hint_labels())
         .on_paint(move |bounds, window, cx| {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
         });
@@ -717,6 +728,18 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))
             .on_action(cx.listener(|this, _: &ToggleViMode, _, cx| this.toggle_vi_mode(cx)))
+            .on_action(cx.listener(|this, _: &HintOpen, window, cx| {
+                this.start_hints(Matcher::Link, HintAction::Open, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &HintCopy, window, cx| {
+                this.start_hints(Matcher::Link, HintAction::Copy, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &HintPaste, window, cx| {
+                this.start_hints(Matcher::Word, HintAction::Paste, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &HintReveal, window, cx| {
+                this.start_hints(Matcher::Path, HintAction::Reveal, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleReadOnly, _, cx| {
                 this.set_read_only(!this.read_only, cx)
             }))

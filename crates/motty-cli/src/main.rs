@@ -132,6 +132,7 @@ enum Mode {
     Normal,
     Vi,
     ReadOnly,
+    Hints,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -327,6 +328,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Mode::Normal => PaneMode::Normal,
                 Mode::Vi => PaneMode::Vi,
                 Mode::ReadOnly => PaneMode::ReadOnly,
+                Mode::Hints => PaneMode::Hints,
             };
             let params = SetModeParams {
                 pane: pane(id),

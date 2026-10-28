@@ -90,9 +90,14 @@ instead of reaching the shell. `hjkl` (or arrows), `w b e`, `W B E`, `0 ^ $`, `H
 `o` swaps ends, `y` or ↩ copies and leaves. `/` and `?` open the find bar; after Esc, `n`/`N` step
 through matches. Esc or `q` leaves.
 
+In vi mode `f` starts hint mode: every link and path on screen gets a label (home-row letters,
+in the cell before it); type one to open it, with ⇧ on the last letter to copy instead. Backspace
+undoes a letter, Esc leaves. The `hint_open`, `hint_copy`, `hint_paste` (words) and `hint_reveal`
+(paths) actions have no default keys yet; `motty mode hints` starts it from the shell.
+
 Read-only mode refuses typing, paste and mouse reporting (with a beep) while output keeps
 streaming. Both show a pill in the titlebar; its × turns the mode off. From the shell:
-`motty mode vi | read-only | normal`.
+`motty mode vi | read-only | hints | normal`.
 
 ## Links
 

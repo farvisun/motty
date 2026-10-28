@@ -69,19 +69,130 @@ pub fn link_at<T>(term: &Term<T>, point: Point, cwd: Option<&Path>) -> Option<Li
         return Some(link);
     }
     let (text, points) = logical_line(term, point);
-    let at = points.iter().position(|p| *p == point)?;
-    let byte_at = text.char_indices().nth(at)?.0;
-    // Cells of the byte range `start..start + len`.
-    let span = |start: usize, len: usize| {
-        let first = text[..start].chars().count();
-        let last = first + text[start..start + len].chars().count() - 1;
-        (points[first], points[last])
-    };
-    for m in URL.find_iter(&text) {
-        let url = trim_url(m.as_str());
-        if (m.start()..m.start() + url.len()).contains(&byte_at) {
-            let (start, end) = span(m.start(), url.len());
-            return Some(Link {
+    line_links(&text, &points, cwd, Matcher::Link)
+        .into_iter()
+        .find(|l| (l.start..=l.end).contains(&point))
+}
+
+/// What hint mode labels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Matcher {
+    /// URLs, OSC 8 hyperlinks and file paths.
+    #[default]
+    Link,
+    Url,
+    Path,
+    /// Word-like tokens of at least three characters.
+    Word,
+    Ip,
+    /// Hexadecimal strings of 7 to 64 characters.
+    Hash,
+}
+
+static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w[\w-]+\w").unwrap());
+static IP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b")
+        .unwrap()
+});
+static HASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[0-9A-Fa-f]{7,64}\b").unwrap());
+
+/// A hint target: its cells and what it resolves to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HintTarget {
+    pub start: Point,
+    pub end: Point,
+    /// The text as shown.
+    pub text: String,
+    /// For links and paths: the URL or resolved path.
+    pub link: Option<Target>,
+}
+
+/// Targets on screen for `matcher`, top to bottom.
+pub fn hint_targets<T>(term: &Term<T>, matcher: Matcher, cwd: Option<&Path>) -> Vec<HintTarget> {
+    let grid = term.grid();
+    let top = Line(-(grid.display_offset() as i32));
+    let bottom = top + (term.screen_lines() as i32 - 1);
+    let mut out = Vec::new();
+    let mut line = top;
+    while line <= bottom {
+        let (text, points) = logical_line(term, Point::new(line, Column(0)));
+        let last = points.last().map_or(line, |p| p.line);
+        let visible = |p: &Point| (top..=bottom).contains(&p.line);
+        let mut found: Vec<HintTarget> = Vec::new();
+        if matches!(matcher, Matcher::Link | Matcher::Url) {
+            found.extend(
+                line_hyperlinks(term, &points)
+                    .into_iter()
+                    .map(|l| HintTarget {
+                        text: text_of(&text, &points, l.start, l.end),
+                        start: l.start,
+                        end: l.end,
+                        link: Some(l.target),
+                    }),
+            );
+        }
+        let regex = match matcher {
+            Matcher::Link | Matcher::Url | Matcher::Path => None,
+            Matcher::Word => Some(&*WORD),
+            Matcher::Ip => Some(&*IP),
+            Matcher::Hash => Some(&*HASH),
+        };
+        if let Some(regex) = regex {
+            for m in regex.find_iter(&text) {
+                let (start, end) = span(&text, &points, m.start(), m.len());
+                found.push(HintTarget {
+                    start,
+                    end,
+                    text: m.as_str().to_owned(),
+                    link: None,
+                });
+            }
+        } else {
+            for l in line_links(&text, &points, cwd, matcher) {
+                // OSC 8 links win over text found inside them.
+                if found.iter().any(|f| f.start <= l.end && l.start <= f.end) {
+                    continue;
+                }
+                found.push(HintTarget {
+                    text: text_of(&text, &points, l.start, l.end),
+                    start: l.start,
+                    end: l.end,
+                    link: Some(l.target),
+                });
+            }
+        }
+        found.retain(|t| visible(&t.start));
+        found.sort_by_key(|t| t.start);
+        out.extend(found);
+        line = last + 1;
+    }
+    out
+}
+
+/// Cells of the byte range `start..start + len` of a logical line.
+fn span(text: &str, points: &[Point], start: usize, len: usize) -> (Point, Point) {
+    let first = text[..start].chars().count();
+    let last = first + text[start..start + len].chars().count() - 1;
+    (points[first], points[last])
+}
+
+fn text_of(text: &str, points: &[Point], start: Point, end: Point) -> String {
+    text.chars()
+        .zip(points)
+        .filter(|(_, p)| (start..=end).contains(*p))
+        .map(|(c, _)| c)
+        .collect()
+}
+
+/// URLs and existing paths in a logical line, left to right, not
+/// overlapping (URLs first).
+fn line_links(text: &str, points: &[Point], cwd: Option<&Path>, matcher: Matcher) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    if matches!(matcher, Matcher::Link | Matcher::Url) {
+        for m in URL.find_iter(text) {
+            let url = trim_url(m.as_str());
+            let (start, end) = span(text, points, m.start(), url.len());
+            out.push(Link {
                 start,
                 end,
                 target: Target::Url(url.to_owned()),
@@ -89,21 +200,42 @@ pub fn link_at<T>(term: &Term<T>, point: Point, cwd: Option<&Path>) -> Option<Li
             });
         }
     }
-    for m in PATH.find_iter(&text) {
-        let raw = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?']);
-        if !(m.start()..m.start() + raw.len()).contains(&byte_at) {
+    if matches!(matcher, Matcher::Link | Matcher::Path) {
+        for m in PATH.find_iter(text) {
+            let raw = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            if raw.is_empty() {
+                continue;
+            }
+            let (start, end) = span(text, points, m.start(), raw.len());
+            if out.iter().any(|l| l.start <= end && start <= l.end) {
+                continue;
+            }
+            if let Some(target) = resolve_path(raw, cwd) {
+                out.push(Link {
+                    start,
+                    end,
+                    target,
+                    explicit: false,
+                });
+            }
+        }
+    }
+    out.sort_by_key(|l| l.start);
+    out
+}
+
+/// OSC 8 hyperlinks among `points`, one per run of cells.
+fn line_hyperlinks<T>(term: &Term<T>, points: &[Point]) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    for p in points {
+        if out.last().is_some_and(|l| (l.start..=l.end).contains(p)) {
             continue;
         }
-        let target = resolve_path(raw, cwd)?;
-        let (start, end) = span(m.start(), raw.len());
-        return Some(Link {
-            start,
-            end,
-            target,
-            explicit: false,
-        });
+        if let Some(link) = hyperlink_at(term, *p) {
+            out.push(link);
+        }
     }
-    None
+    out
 }
 
 /// Drops trailing punctuation, and a closing bracket without its opener.
@@ -271,6 +403,24 @@ mod tests {
         );
         assert_eq!(link.end, at(0, 20));
         assert_eq!(link_at(&t, at(0, 6), Some(Path::new("/nonexistent"))), None);
+    }
+
+    #[test]
+    fn hint_targets_by_matcher() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let t = term("cat src/links.rs\r\nsee https://a.io/x 10.0.0.1\r\ncommit 3f9a2c1d ok");
+        let cwd = Some(Path::new(dir));
+        let texts = |m| -> Vec<String> {
+            hint_targets(&t, m, cwd)
+                .into_iter()
+                .map(|h| h.text)
+                .collect()
+        };
+        assert_eq!(texts(Matcher::Link), ["src/links.rs", "https://a.io/x"]);
+        assert_eq!(texts(Matcher::Url), ["https://a.io/x"]);
+        assert_eq!(texts(Matcher::Ip), ["10.0.0.1"]);
+        assert_eq!(texts(Matcher::Hash), ["3f9a2c1d"]);
+        assert!(texts(Matcher::Word).contains(&"commit".to_owned()));
     }
 
     #[test]

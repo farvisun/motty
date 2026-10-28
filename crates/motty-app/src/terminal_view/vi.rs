@@ -24,12 +24,16 @@ pub struct ViState {
 /// What the titlebar pill shows for the focused pane.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneMode {
+    Hints,
     Vi { count: Option<usize> },
     ReadOnly,
 }
 
 impl TerminalView {
     pub fn mode(&self) -> Option<PaneMode> {
+        if self.hints.is_some() {
+            return Some(PaneMode::Hints);
+        }
         match (&self.vi, self.read_only) {
             (Some(vi), _) => Some(PaneMode::Vi { count: vi.count }),
             (None, true) => Some(PaneMode::ReadOnly),
@@ -39,7 +43,9 @@ impl TerminalView {
 
     /// The pill's ×: leaves vi mode, else read-only mode.
     pub fn exit_mode(&mut self, cx: &mut Context<Self>) {
-        if self.vi.is_some() {
+        if self.hints.is_some() {
+            self.stop_hints(cx);
+        } else if self.vi.is_some() {
             self.toggle_vi_mode(cx);
         } else {
             self.set_read_only(false, cx);
@@ -47,7 +53,21 @@ impl TerminalView {
     }
 
     /// Switches to `mode` (from the control socket).
-    pub fn set_mode(&mut self, mode: motty_ipc::PaneMode, cx: &mut Context<Self>) {
+    pub fn set_mode(
+        &mut self,
+        mode: motty_ipc::PaneMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if mode == motty_ipc::PaneMode::Hints {
+            return self.start_hints(
+                motty_term::links::Matcher::Link,
+                super::hints::HintAction::Open,
+                window,
+                cx,
+            );
+        }
+        self.stop_hints(cx);
         let vi = mode == motty_ipc::PaneMode::Vi;
         if vi != self.vi.is_some() {
             self.toggle_vi_mode(cx);
@@ -167,6 +187,12 @@ impl TerminalView {
                 }
                 self.open_find(window, cx);
             }
+            (_, "f", false) => self.start_hints(
+                motty_term::links::Matcher::Link,
+                super::hints::HintAction::Open,
+                window,
+                cx,
+            ),
             (_, "n", false) => self.vi_search_step(!backward, window, cx),
             (_, "N", false) => self.vi_search_step(backward, window, cx),
             _ => {}

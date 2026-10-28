@@ -66,6 +66,10 @@ actions!(
         GlobalSearch,
         ToggleViMode,
         ToggleReadOnly,
+        HintOpen,
+        HintCopy,
+        HintPaste,
+        HintReveal,
     ]
 );
 
