@@ -26,6 +26,11 @@ fn main() {
         fonts::load(cx);
         actions::bind_keys(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        cx.on_action(|_: &actions::NewWindow, cx| {
+            if let Err(e) = open_window(load_config(), None, cx) {
+                tracing::error!("failed to open a window: {e:#}");
+            }
+        });
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();

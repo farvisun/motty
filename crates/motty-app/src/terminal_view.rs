@@ -19,9 +19,7 @@ use motty_term::input::{self, KeyInput, Mods, MouseAction};
 use motty_term::{Session, SessionEvent};
 use motty_theme::CursorBlink;
 
-use crate::actions::{
-    Clear, Copy, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, SelectAll,
-};
+use crate::actions::*;
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -486,6 +484,18 @@ impl TerminalView {
     }
 
     /// Clears scrollback and screen, keeping the prompt line (like ⌘K elsewhere).
+    /// Sends a key's bytes as typed input (back at the bottom, like typing).
+    fn send(&mut self, bytes: &'static [u8], cx: &mut Context<Self>) {
+        self.session.term.lock().scroll_display(Scroll::Bottom);
+        self.session.write(bytes);
+        cx.notify();
+    }
+
+    fn scroll(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
+        self.session.term.lock().scroll_display(scroll);
+        cx.notify();
+    }
+
     fn clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
         let mut term = self.session.term.lock();
         term.grid_mut().clear_history();
@@ -558,6 +568,29 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(|this, _: &CursorLineStart, _, cx| this.send(b"\x01", cx)))
+            .on_action(cx.listener(|this, _: &CursorLineEnd, _, cx| this.send(b"\x05", cx)))
+            .on_action(cx.listener(|this, _: &CursorWordLeft, _, cx| this.send(b"\x1bb", cx)))
+            .on_action(cx.listener(|this, _: &CursorWordRight, _, cx| this.send(b"\x1bf", cx)))
+            .on_action(cx.listener(|this, _: &DeleteToLineStart, _, cx| this.send(b"\x15", cx)))
+            .on_action(cx.listener(|this, _: &DeleteToLineEnd, _, cx| this.send(b"\x0b", cx)))
+            .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| this.send(b"\x1b\x7f", cx)))
+            .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| this.send(b"\x1bd", cx)))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.send(b"\x1f", cx)))
+            .on_action(cx.listener(|this, _: &ScrollToTop, _, cx| this.scroll(Scroll::Top, cx)))
+            .on_action(
+                cx.listener(|this, _: &ScrollToBottom, _, cx| this.scroll(Scroll::Bottom, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll(Scroll::PageUp, cx)))
+            .on_action(
+                cx.listener(|this, _: &ScrollPageDown, _, cx| this.scroll(Scroll::PageDown, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ScrollLineUp, _, cx| this.scroll(Scroll::Delta(1), cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ScrollLineDown, _, cx| this.scroll(Scroll::Delta(-1), cx)),
+            )
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.zoom(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))

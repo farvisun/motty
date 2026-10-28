@@ -162,6 +162,36 @@ impl<T: Clone + PartialEq> Pane<T> {
         }
     }
 
+    /// The innermost split along `axis` that holds `leaf`.
+    pub fn enclosing_split(&mut self, leaf: &T, axis: Axis) -> Option<&mut Split<T>> {
+        let Pane::Split(s) = self else { return None };
+        let in_first = s.first.contains(leaf);
+        if !in_first && !s.second.contains(leaf) {
+            return None;
+        }
+        let inner = if in_first { &s.first } else { &s.second };
+        if inner.has_split_along(leaf, axis) {
+            let inner = if in_first {
+                &mut s.first
+            } else {
+                &mut s.second
+            };
+            return inner.enclosing_split(leaf, axis);
+        }
+        (s.axis == axis).then_some(s)
+    }
+
+    fn has_split_along(&self, leaf: &T, axis: Axis) -> bool {
+        match self {
+            Pane::Leaf(_) => false,
+            Pane::Split(s) => {
+                (s.axis == axis && self.contains(leaf))
+                    || s.first.has_split_along(leaf, axis)
+                    || s.second.has_split_along(leaf, axis)
+            }
+        }
+    }
+
     /// Gives every pane in a row (or column) of same-axis splits equal space.
     pub fn equalize(&mut self) {
         if let Pane::Split(s) = self {
@@ -325,6 +355,18 @@ impl Pane {
 }
 
 impl<T> Split<T> {
+    /// Moves the divider by `delta` points (right or down when positive).
+    pub fn nudge(&mut self, delta: f32) {
+        let Some(b) = self.bounds.get() else { return };
+        let len = f32::from(match self.axis {
+            Axis::Horizontal => b.size.width,
+            Axis::Vertical => b.size.height,
+        });
+        if len > 2. * MIN_PANE {
+            self.ratio = (self.ratio * len + delta).clamp(MIN_PANE, len - MIN_PANE) / len;
+        }
+    }
+
     /// Moves the divider to follow the pointer, keeping both sides usable.
     pub fn drag_to(&mut self, position: gpui::Point<Pixels>) {
         let Some(b) = self.bounds.get() else { return };
@@ -377,6 +419,20 @@ mod tests {
         assert_eq!(root.leaves(), [&1, &3]);
         assert_eq!(root.neighbor(&1, Direction::Right), Some(3));
         assert!(Pane::Leaf(1).without(&1).is_none());
+    }
+
+    #[test]
+    fn enclosing_split_is_the_innermost_on_that_axis() {
+        let mut root = tree();
+        assert_eq!(
+            root.enclosing_split(&3, Axis::Vertical).map(|s| s.id),
+            Some(1)
+        );
+        assert_eq!(
+            root.enclosing_split(&3, Axis::Horizontal).map(|s| s.id),
+            Some(0)
+        );
+        assert!(root.enclosing_split(&1, Axis::Vertical).is_none());
     }
 
     #[test]

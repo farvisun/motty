@@ -548,6 +548,25 @@ impl Workspace {
         }
     }
 
+    /// Otty's ⌃⇧⌘ arrows: move the divider beside the focused pane.
+    fn move_divider(&mut self, direction: Direction, cx: &mut Context<Self>) {
+        const STEP: f32 = 10.;
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let (axis, delta) = match direction {
+            Direction::Left => (gpui::Axis::Horizontal, -STEP),
+            Direction::Right => (gpui::Axis::Horizontal, STEP),
+            Direction::Up => (gpui::Axis::Vertical, -STEP),
+            Direction::Down => (gpui::Axis::Vertical, STEP),
+        };
+        let focused = tab.focused.clone();
+        if let Some(split) = tab.root.enclosing_split(&focused, axis) {
+            split.nudge(delta);
+            cx.notify();
+        }
+    }
+
     fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(self.active)
             && matches!(tab.root, Pane::Split(_))
@@ -1140,6 +1159,21 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusPreviousPane, w, cx| this.cycle_pane(-1, w, cx)))
             .on_action(cx.listener(|this, _: &EqualizeSplits, _, cx| this.equalize_splits(cx)))
             .on_action(cx.listener(|this, _: &ZoomSplit, _, cx| this.toggle_zoom(cx)))
+            .on_action(cx.listener(|this, _: &MoveDividerLeft, _, cx| {
+                this.move_divider(Direction::Left, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveDividerRight, _, cx| {
+                this.move_divider(Direction::Right, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &MoveDividerUp, _, cx| this.move_divider(Direction::Up, cx)),
+            )
+            .on_action(cx.listener(|this, _: &MoveDividerDown, _, cx| {
+                this.move_divider(Direction::Down, cx)
+            }))
+            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
