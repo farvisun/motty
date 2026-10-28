@@ -1,0 +1,11 @@
+[package]
+name = "motty-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+anyhow.workspace = true
+async-channel = "2"
+tracing.workspace = true
