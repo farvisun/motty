@@ -11,8 +11,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use motty_ipc::{
-    Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneRef,
-    ReadParams, RunParams, RunResult, SendTextParams, SplitParams, TextRange, method,
+    Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneMode, PaneRef,
+    ReadParams, RunParams, RunResult, SendTextParams, SetModeParams, SplitParams, TextRange,
+    method,
 };
 use serde_json::Value;
 
@@ -104,6 +105,13 @@ enum Command {
         show: bool,
         query: String,
     },
+    /// Put a pane in vi mode, read-only mode, or back to normal.
+    Mode {
+        #[arg(long)]
+        pane: Option<u64>,
+        #[arg(value_enum)]
+        mode: Mode,
+    },
     /// Focus a pane (and its tab and window).
     Focus {
         #[arg(long)]
@@ -117,6 +125,13 @@ enum Command {
     /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
     /// `claude mcp add motty -- motty mcp`.
     Mcp,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Mode {
+    Normal,
+    Vi,
+    ReadOnly,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -306,6 +321,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             if result.total == 0 {
                 return Ok(ExitCode::from(1));
             }
+        }
+        Command::Mode { pane: id, mode } => {
+            let mode = match mode {
+                Mode::Normal => PaneMode::Normal,
+                Mode::Vi => PaneMode::Vi,
+                Mode::ReadOnly => PaneMode::ReadOnly,
+            };
+            let params = SetModeParams {
+                pane: pane(id),
+                mode,
+            };
+            let _: Value = client.call(method::SET_MODE, &params)?;
         }
         Command::Focus { pane: id } => {
             let _: Value = client.call(method::FOCUS, &pane(id))?;

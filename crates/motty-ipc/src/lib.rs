@@ -47,6 +47,7 @@ pub mod method {
     pub const FOCUS: &str = "focus";
     pub const CLOSE: &str = "close";
     pub const FIND: &str = "find";
+    pub const SET_MODE: &str = "set-mode";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -191,6 +192,24 @@ pub struct FindResult {
     /// All matches, up to 10000.
     pub total: usize,
     pub matches: Vec<FoundMatch>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PaneMode {
+    /// Input goes to the program.
+    Normal,
+    /// Keys move a cursor through the scrollback.
+    Vi,
+    /// Input is refused; output still streams.
+    ReadOnly,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetModeParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    pub mode: PaneMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

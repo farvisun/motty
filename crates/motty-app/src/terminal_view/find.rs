@@ -288,6 +288,8 @@ impl TerminalView {
         }
         cx.stop_propagation();
         match ks.key.as_str() {
+            // In vi mode Esc goes back to the buffer, where n/N step.
+            "escape" if self.vi.is_some() => window.focus(&self.focus_handle, cx),
             "escape" => self.close_find(window, cx),
             "enter" => self.find_step(!m.shift, window, cx),
             "backspace" if m.alt => self.edit_query(cx, |q| {

@@ -24,8 +24,10 @@ use crate::actions::*;
 
 mod find;
 mod links;
+mod vi;
 
 pub use links::LinkOptions;
+pub use vi::PaneMode;
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -81,6 +83,10 @@ pub struct TerminalView {
     hovered_link: Option<motty_term::links::Link>,
     /// Last pointer position over the pane, for ⌘ presses without a move.
     pointer: Option<gpui::Point<Pixels>>,
+    /// Vi mode, while on.
+    vi: Option<vi::ViState>,
+    /// Input is refused (output still streams).
+    read_only: bool,
     _events: Task<()>,
 }
 
@@ -143,6 +149,8 @@ impl TerminalView {
             link_options: LinkOptions::default(),
             hovered_link: None,
             pointer: None,
+            vi: None,
+            read_only: false,
             _events: task,
         }
     }
@@ -274,7 +282,7 @@ impl TerminalView {
                 self.title = title;
                 cx.emit(TerminalEvent::TitleChanged);
             }
-            SessionEvent::Bell => {}
+            SessionEvent::Bell => _window.play_system_bell(),
             SessionEvent::ClipboardStore(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -327,8 +335,12 @@ impl TerminalView {
     }
 
     /// Sends typed text (from keys or the IME) to the shell.
-    fn send_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text.is_empty() {
+    fn send_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if text.is_empty() || self.vi.is_some() {
+            return;
+        }
+        if self.read_only {
+            window.play_system_bell();
             return;
         }
         self.reset_blink();
@@ -341,7 +353,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn mode(&self) -> TermMode {
+    fn term_mode(&self) -> TermMode {
         *self.session.term.lock().mode()
     }
 
@@ -354,14 +366,23 @@ impl TerminalView {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.vi.is_some() {
+            self.vi_key(event, window, cx);
+            return;
+        }
         let ks = &event.keystroke;
         let input = KeyInput {
             key: &ks.key,
             key_char: ks.key_char.as_deref(),
             mods: Self::mods(&ks.modifiers),
         };
-        if let Some(bytes) = input::encode(&input, self.mode(), self.option_as_meta) {
+        if let Some(bytes) = input::encode(&input, self.term_mode(), self.option_as_meta) {
+            if self.read_only {
+                window.play_system_bell();
+                cx.stop_propagation();
+                return;
+            }
             self.reset_blink();
             {
                 let mut term = self.session.term.lock();
@@ -395,11 +416,12 @@ impl TerminalView {
         pos: gpui::Point<gpui::Pixels>,
         mods: &gpui::Modifiers,
     ) -> bool {
-        // Shift bypasses application mouse tracking so text can still be selected.
-        if mods.shift {
+        // Shift bypasses application mouse tracking so text can still be
+        // selected; so does read-only mode.
+        if mods.shift || self.read_only {
             return false;
         }
-        let mode = self.mode();
+        let mode = self.term_mode();
         if !mode.intersects(TermMode::MOUSE_MODE) {
             return false;
         }
@@ -503,8 +525,8 @@ impl TerminalView {
         if whole == 0 {
             return;
         }
-        let mode = self.mode();
-        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+        let mode = self.term_mode();
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift && !self.read_only {
             let button = if whole > 0 {
                 input::MouseButton::WheelUp
             } else {
@@ -537,9 +559,13 @@ impl TerminalView {
         }
     }
 
-    fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only || self.vi.is_some() {
+            window.play_system_bell();
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-            let bytes = input::paste_bytes(&text, self.mode());
+            let bytes = input::paste_bytes(&text, self.term_mode());
             self.session.term.lock().scroll_display(Scroll::Bottom);
             self.session.write(bytes);
         }
@@ -617,7 +643,8 @@ impl Render for TerminalView {
             self.session.term.clone(),
             self.style.clone(),
             active,
-            focused && (!active || self.blink.as_ref().is_none_or(|b| b.visible)),
+            focused
+                && (!active || self.vi.is_some() || self.blink.as_ref().is_none_or(|b| b.visible)),
             self.layout.clone(),
             move |size, _window, cx| {
                 if let Some(view) = entity.upgrade() {
@@ -689,6 +716,10 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.zoom(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))
+            .on_action(cx.listener(|this, _: &ToggleViMode, _, cx| this.toggle_vi_mode(cx)))
+            .on_action(cx.listener(|this, _: &ToggleReadOnly, _, cx| {
+                this.set_read_only(!this.read_only, cx)
+            }))
             .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
             .on_action(
                 cx.listener(|this, _: &FindNext, window, cx| this.find_step(true, window, cx)),
@@ -750,11 +781,11 @@ impl EntityInputHandler for TerminalView {
         &mut self,
         _: Option<std::ops::Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked_text = None;
-        self.send_text(text, cx);
+        self.send_text(text, window, cx);
     }
 
     fn replace_and_mark_text_in_range(

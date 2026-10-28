@@ -12,8 +12,8 @@ use anyhow::{Context as _, anyhow, bail};
 use gpui::{App, Entity, Global, WindowHandle};
 use motty_ipc::{
     Created, Direction as IpcDirection, FindParams, FindResult, FoundMatch, NewTabParams, PaneInfo,
-    PaneRef, ReadParams, Request, Response, RunParams, RunResult, SendTextParams, SplitParams,
-    TextRange, method,
+    PaneRef, ReadParams, Request, Response, RunParams, RunResult, SendTextParams, SetModeParams,
+    SplitParams, TextRange, method,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Point};
@@ -133,6 +133,7 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::FOCUS => parse(request.params).and_then(|p| focus(p, cx)),
         method::CLOSE => parse(request.params).and_then(|p| close(p, cx)),
         method::FIND => parse(request.params).and_then(|p| find(p, cx)),
+        method::SET_MODE => parse(request.params).and_then(|p| set_mode(p, cx)),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
@@ -315,6 +316,14 @@ fn close(p: PaneRef, cx: &mut App) -> anyhow::Result<Value> {
     let (handle, view) = resolve(&p, cx)?;
     handle.update(cx, |workspace, window, cx| {
         workspace.close_pane_entity(&view, window, cx)
+    })?;
+    Ok(Value::Null)
+}
+
+fn set_mode(p: SetModeParams, cx: &mut App) -> anyhow::Result<Value> {
+    let (handle, view) = resolve(&p.pane, cx)?;
+    handle.update(cx, |_, _, cx| {
+        view.update(cx, |view, cx| view.set_mode(p.mode, cx))
     })?;
     Ok(Value::Null)
 }

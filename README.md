@@ -56,6 +56,7 @@ Motty listens on a Unix socket; shells it starts get `$MOTTY_SOCKET`, `$MOTTY_PA
 motty list                         # panes in every window
 motty run -- cargo test            # run in this pane's shell, wait, print output, exit with its status
 motty read --last-command          # output of the last command (also --lines N, or the screen)
+motty mode read-only --pane 3      # lock a pane (also vi, normal)
 motty find -e 'error\[E\d+\]'      # search screen and scrollback (-c case, -w words, --show opens the bar)
 motty split -d down -- htop        # new pane; prints its id
 motty send --pane 3 $'q'           # type into a pane
@@ -80,6 +81,18 @@ protocol (JSON lines) is in `crates/motty-ipc`.
 highlights every match and counts them. ↩ / ⌘G go to the next match, ⇧↩ / ⇧⌘G the previous,
 Esc closes. `Aa` matches case, `ab` whole words, `.*` treats the query as a Rust regex. A
 one-line selection seeds the query.
+
+## Vi mode and read-only mode
+
+⌃⇧Space puts the focused pane in vi mode: keys move a cursor through the screen and scrollback
+instead of reaching the shell. `hjkl` (or arrows), `w b e`, `W B E`, `0 ^ $`, `H M L`, `gg G`,
+`%`, `{ }`, ⌃U/⌃D/⌃B/⌃F, with counts (`5j`). `v`, `V` and ⌃V select (character, line, block),
+`o` swaps ends, `y` or ↩ copies and leaves. `/` and `?` open the find bar; after Esc, `n`/`N` step
+through matches. Esc or `q` leaves.
+
+Read-only mode refuses typing, paste and mouse reporting (with a beep) while output keeps
+streaming. Both show a pill in the titlebar; its × turns the mode off. From the shell:
+`motty mode vi | read-only | normal`.
 
 ## Links
 

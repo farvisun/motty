@@ -169,3 +169,33 @@ pub fn ellipsis(color: Hsla) -> impl IntoElement {
         .child(dot())
         .child(dot())
 }
+
+/// The mode pill's padlock: a 7.5pt filled body under a stroked shackle.
+pub fn lock(color: Hsla) -> impl IntoElement {
+    icon(8., 11., move |o, window| {
+        stroke(o, color, window, 1.2, |p, at| {
+            p.move_to(at(1.9, 5.));
+            p.line_to(at(1.9, 3.4));
+            p.cubic_bezier_to(at(6.1, 3.4), at(1.9, 0.6), at(6.1, 0.6));
+            p.line_to(at(6.1, 5.));
+        });
+        window.paint_quad(gpui::fill(
+            Bounds::new(at(o, 0.25, 4.75), gpui::size(px(7.5), px(5.75))),
+            color,
+        ));
+    })
+}
+
+/// The mode pill's 5.5pt ×.
+pub fn small_close(color: Hsla) -> impl IntoElement {
+    icon(14., 14., move |o, window| {
+        stroke(o, color, window, 1.1, |p, at| {
+            p.move_to(at(4.25, 4.25));
+            p.line_to(at(9.75, 9.75));
+        });
+        stroke(o, color, window, 1.1, |p, at| {
+            p.move_to(at(9.75, 4.25));
+            p.line_to(at(4.25, 9.75));
+        });
+    })
+}

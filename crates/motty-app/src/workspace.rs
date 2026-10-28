@@ -20,6 +20,7 @@ use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 use crate::actions::*;
 use crate::materials::{Backdrop, Backdrops, Region};
 use crate::panes::{Direction, Pane, PaneStyle};
+use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
@@ -949,6 +950,50 @@ impl Workspace {
         )
     }
 
+    /// The focused pane's vi or read-only mode, as a pill left of the details
+    /// toggle (measured from Otty's READ ONLY pill).
+    fn render_mode_pill(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let view = self.focused_pane()?;
+        let mode = view.read(cx).mode()?;
+        let t = &self.theme;
+        let ink = hsla(native_label(t, 1., 1.));
+        let (lock, label) = match mode {
+            PaneMode::Vi { count: None } => (false, "VI MODE".to_owned()),
+            PaneMode::Vi { count: Some(n) } => (false, format!("VI MODE  {n}")),
+            PaneMode::ReadOnly => (true, "READ ONLY".to_owned()),
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(6.))
+                .right(px(43.5))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .pl(px(12.))
+                .pr(px(8.))
+                .rounded(px(6.))
+                .bg(hsla(native_label(t, 0.065, 0.1)))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ink)
+                .when(lock, |d| d.child(titlebar::lock(ink)))
+                .child(SharedString::from(label))
+                .child(
+                    div()
+                        .id("exit-mode")
+                        .ml(px(2.))
+                        .rounded(px(3.))
+                        .hover(|d| d.bg(hsla(native_label(t, 0.08, 0.1))))
+                        .child(titlebar::small_close(hsla(native_label(t, 0.5, 0.55))))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| view.update(cx, |v, cx| v.exit_mode(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Native materials behind the window and the sidebar, bottom-most first.
     fn backdrops_wanted(&self) -> Vec<Backdrop> {
         let t = &self.theme;
@@ -1332,5 +1377,6 @@ impl Render for Workspace {
             .child(main)
             .children(titlebar_buttons)
             .children(details_button)
+            .children(self.render_mode_pill(cx))
     }
 }

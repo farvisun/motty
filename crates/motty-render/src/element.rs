@@ -452,15 +452,18 @@ impl TerminalElement {
 
         let cursor_point = content.cursor.point;
         let cursor_row = cursor_point.line.0 + display_offset;
+        let vi = content.mode.contains(TermMode::VI);
         let shape = match content.cursor.shape {
             _ if !self.cursor_visible => CursorShape::Hidden,
+            // The vi cursor is a block whatever the program asked for.
+            _ if vi => CursorShape::Block,
             CursorShape::Hidden => CursorShape::Hidden,
             _ if !self.focused => CursorShape::HollowBlock,
             shape => shape,
         };
         let cursor = (shape != CursorShape::Hidden
             && (0..rows_n as i32).contains(&cursor_row)
-            && content.mode.contains(TermMode::SHOW_CURSOR))
+            && (vi || content.mode.contains(TermMode::SHOW_CURSOR)))
         .then(|| {
             let wide = term.grid()
                 [GridPoint::new(Line(cursor_point.line.0), Column(cursor_point.column.0))]

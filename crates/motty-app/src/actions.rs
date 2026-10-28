@@ -64,6 +64,8 @@ actions!(
         FindNext,
         FindPrevious,
         GlobalSearch,
+        ToggleViMode,
+        ToggleReadOnly,
     ]
 );
 
@@ -74,6 +76,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-a", SelectAll, Some("Terminal")),
         KeyBinding::new("cmd-k", Clear, Some("Terminal")),
         KeyBinding::new("cmd-f", Find, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-space", ToggleViMode, Some("Terminal")),
         KeyBinding::new("cmd-g", FindNext, Some("Terminal")),
         KeyBinding::new("cmd-shift-g", FindPrevious, Some("Terminal")),
         KeyBinding::new("cmd-=", IncreaseFontSize, Some("Terminal")),
