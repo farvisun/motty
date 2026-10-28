@@ -5,6 +5,8 @@
 //!   them. `--tabs` adds two shell tabs (the last one active) to compare the
 //!   sidebar; the terminal region then shows the user's prompt. `--theme NAME`
 //!   renders both with that theme (Otty's config is restored afterwards).
+//!   `--backdrop RRGGBB` puts a solid window behind both and captures their
+//!   screen rect, so materials blur a known color.
 //! - `bundle [--release]`: builds `target/<profile>/Motty.app`.
 //! - `diff A.png B.png [OUT.png]`: pixel diff with per-region stats.
 //! - `crop IMG.png X Y W H OUT.png`: crops a region given in points.
@@ -70,8 +72,13 @@ fn run(cmd: &mut Command) -> Result<String> {
 
 /// Builds the CoreGraphics window-lookup helper on first use.
 fn winid_tool() -> Result<PathBuf> {
-    let bin = root().join("target/xtask-winid");
-    let src = root().join("xtask/src/winid.swift");
+    swift_tool("winid")
+}
+
+/// Compiles `xtask/src/<name>.swift` to `target/xtask-<name>` when stale.
+fn swift_tool(name: &str) -> Result<PathBuf> {
+    let bin = root().join(format!("target/xtask-{name}"));
+    let src = root().join(format!("xtask/src/{name}.swift"));
     let stale = match (bin.metadata(), src.metadata()) {
         (Ok(b), Ok(s)) => b.modified()? < s.modified()?,
         _ => true,
@@ -93,9 +100,69 @@ fn find_window(owner: &str, title: &str) -> Result<String> {
     bail!("no {owner} window titled {title:?}")
 }
 
+/// Set when a backdrop is up: captures then take the window's screen rect,
+/// so behind-window materials show what they blur.
+static CAPTURE_RECT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn capture(window_id: &str, out: &Path) -> Result<()> {
-    run(Command::new("screencapture").args(["-x", "-o", "-l", window_id]).arg(out))?;
+    if CAPTURE_RECT.load(std::sync::atomic::Ordering::Relaxed) {
+        let (x, y, w, h) = BOUNDS;
+        run(Command::new("screencapture").args(["-x", "-R", &format!("{x},{y},{w},{h}")]).arg(out))?;
+    } else {
+        run(Command::new("screencapture").args(["-x", "-o", "-l", window_id]).arg(out))?;
+    }
     Ok(())
+}
+
+/// A solid-color window behind the window under test, covering everything
+/// else on screen around it. Killed on drop.
+struct Backdrop(Child);
+
+/// The live backdrop's stdin and stdout, for ordering it below a window.
+static BACKDROP_IO: std::sync::Mutex<Option<(std::process::ChildStdin, std::io::BufReader<std::process::ChildStdout>)>> =
+    std::sync::Mutex::new(None);
+
+/// Puts the backdrop (if any) directly below `window_id` and waits for it.
+fn order_backdrop_below(window_id: &str) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let mut io = BACKDROP_IO.lock().unwrap();
+    if let Some((stdin, stdout)) = io.as_mut() {
+        writeln!(stdin, "{window_id}")?;
+        let mut line = String::new();
+        stdout.read_line(&mut line)?;
+        pause(200);
+    }
+    Ok(())
+}
+
+impl Backdrop {
+    fn show(color: &str) -> Result<Self> {
+        let tool = swift_tool("backdrop")?;
+        let (x, y, w, h) = BOUNDS;
+        let m = 40;
+        let mut child = Command::new(tool)
+            .args([x - m, y - m, w + 2 * m, h + 2 * m].map(|v| v.to_string()))
+            .arg(color.trim_start_matches('#'))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        // Wait for "ready" so the window is up before anything is raised over it.
+        let mut stdout = std::io::BufReader::new(child.stdout.take().context("backdrop stdout")?);
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut stdout, &mut line)?;
+        *BACKDROP_IO.lock().unwrap() = Some((child.stdin.take().context("backdrop stdin")?, stdout));
+        CAPTURE_RECT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(Self(child))
+    }
+}
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        CAPTURE_RECT.store(false, std::sync::atomic::Ordering::Relaxed);
+        *BACKDROP_IO.lock().unwrap() = None;
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn otty_window_ids() -> Result<Vec<(String, String)>> {
@@ -267,14 +334,16 @@ fn capture_motty(release: bool, fixture: &Path, tabs: bool, theme: Option<&str>,
 /// traffic lights). `activate` alone is unreliable for an unbundled binary
 /// started from a background process.
 /// Captures the window while its app is active. Frontmost can still leave the
-/// window unkeyed now and then, so the minimize light is checked for color.
+/// window unkeyed now and then, so the minimize light (centered at 39,16) is
+/// checked for color.
 fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
     for _ in 0..4 {
         bring_to_front(pid)?;
+        order_backdrop_below(window_id)?;
         capture(window_id, out)?;
         let img = load(out)?;
         let s = scale_of(&img) as f32;
-        let p = img.get_pixel((32. * s) as u32, (18. * s) as u32);
+        let p = img.get_pixel((39. * s) as u32, (16. * s) as u32);
         let saturation = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
         if saturation > 40 {
             return Ok(());
@@ -318,6 +387,8 @@ fn parity(args: &[String]) -> Result<()> {
     let (otty, motty) = (dir.join("otty.png"), dir.join("motty.png"));
     let tabs = args.iter().any(|a| a == "--tabs");
     let theme = args.iter().position(|a| a == "--theme").and_then(|i| args.get(i + 1)).cloned();
+    let backdrop = args.iter().position(|a| a == "--backdrop").and_then(|i| args.get(i + 1));
+    let _backdrop = backdrop.map(|c| Backdrop::show(c)).transpose()?;
     {
         let _restore = theme.as_deref().map(OttyTheme::switch).transpose()?;
         capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
