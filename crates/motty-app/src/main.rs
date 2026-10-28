@@ -4,9 +4,12 @@ mod fonts;
 mod history;
 mod ipc;
 mod materials;
+mod menus;
+mod native_menu;
 mod notifications;
 mod panes;
 mod recovery;
+mod settings;
 mod shell_integration;
 mod terminal_view;
 mod titlebar;
@@ -28,53 +31,64 @@ fn main() {
         )
         .init();
 
-    application().run(|cx: &mut App| {
-        fonts::load(cx);
-        ipc::start(cx);
-        cx.on_action(|_: &actions::Quit, cx| cx.quit());
-        cx.on_action(|_: &actions::NewWindow, cx| {
-            if let Err(e) = open_window(load_config(), None, None, cx) {
-                tracing::error!("failed to open a window: {e:#}");
+    application()
+        .with_assets(settings::Assets)
+        .run(|cx: &mut App| {
+            fonts::load(cx);
+            ipc::start(cx);
+            cx.on_action(|_: &actions::Quit, cx| cx.quit());
+            cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
+            cx.on_action(|_: &actions::About, _| menus::show_about());
+            cx.on_action(|_: &actions::HideApp, cx| cx.hide());
+            cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
+            cx.on_action(|_: &actions::ShowAll, cx| cx.unhide_other_apps());
+            cx.on_action(|_: &actions::OpenHelp, cx| {
+                cx.open_url("https://github.com/farvisun/motty#readme")
+            });
+            cx.on_action(|_: &actions::NewWindow, cx| {
+                if let Err(e) = open_window(load_config(), None, None, cx) {
+                    tracing::error!("failed to open a window: {e:#}");
+                }
+            });
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
+            recovery::start(cx);
+            let config = load_config();
+            for w in actions::bind_keys(cx, &config.keybinds) {
+                tracing::warn!("{w}");
             }
-        });
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+            menus::set(cx);
+            let restored = recovery::to_restore(config.restore_session);
+            let windows = restored.map(|s| s.windows).unwrap_or_default();
+            let mut opened = false;
+            for state in &windows {
+                match open_window(config.clone(), None, Some(state), cx) {
+                    Ok(()) => opened = true,
+                    Err(e) => tracing::error!("couldn't restore a window: {e:#}"),
+                }
+            }
+            if !opened && let Err(e) = open_window(config, command_arg(), None, cx) {
+                eprintln!("motty: {e:#}");
                 cx.quit();
             }
-        })
-        .detach();
-
-        recovery::start(cx);
-        let config = load_config();
-        for w in actions::bind_keys(cx, &config.keybinds) {
-            tracing::warn!("{w}");
-        }
-        let restored = recovery::to_restore(config.restore_session);
-        let windows = restored.map(|s| s.windows).unwrap_or_default();
-        let mut opened = false;
-        for state in &windows {
-            match open_window(config.clone(), None, Some(state), cx) {
-                Ok(()) => opened = true,
-                Err(e) => tracing::error!("couldn't restore a window: {e:#}"),
+            if workspace::first_run()
+                && let Some(window) = cx.windows().first().and_then(|w| w.downcast::<Workspace>())
+            {
+                let _ = window.update(cx, |workspace, window, cx| {
+                    workspace.show_welcome(window, cx)
+                });
             }
-        }
-        if !opened && let Err(e) = open_window(config, command_arg(), None, cx) {
-            eprintln!("motty: {e:#}");
-            cx.quit();
-        }
-        if workspace::first_run()
-            && let Some(window) = cx.windows().first().and_then(|w| w.downcast::<Workspace>())
-        {
-            let _ = window.update(cx, |workspace, window, cx| {
-                workspace.show_welcome(window, cx)
-            });
-        }
-        // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
-        // keyboard from whatever the user is typing into.
-        if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
-            cx.activate(true);
-        }
-    });
+            // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
+            // keyboard from whatever the user is typing into.
+            if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
+                cx.activate(true);
+            }
+        });
 }
 
 /// The config files with command-line overrides applied: `--theme NAME`

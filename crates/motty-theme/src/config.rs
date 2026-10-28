@@ -46,6 +46,8 @@ pub struct Config {
     /// links work either way).
     pub link_detection: bool,
     pub link_cmd_click: LinkClick,
+    /// `right-click-action`: what a right-click in a terminal does.
+    pub right_click: RightClick,
     pub link_cmd_shift_click: LinkShiftClick,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
@@ -131,6 +133,18 @@ pub enum CursorStyle {
     Bar,
     Underline,
     BlockHollow,
+}
+
+/// `right-click-action` values. ⌃-click always opens the menu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RightClick {
+    #[default]
+    ContextMenu,
+    Copy,
+    Paste,
+    /// Copies the selection if there is one, else pastes.
+    CopyOrPaste,
+    Ignore,
 }
 
 /// `link-cmd-click`: what ⌘-click on a link does.
@@ -302,6 +316,14 @@ impl Config {
                 "link-detection" => {
                     out.link_detection = value.as_bool().unwrap_or(value.as_str() != Some("off"))
                 }
+                "right-click-action" => match value.as_str() {
+                    Some("context-menu") => out.right_click = RightClick::ContextMenu,
+                    Some("copy") => out.right_click = RightClick::Copy,
+                    Some("paste") => out.right_click = RightClick::Paste,
+                    Some("copy-or-paste") => out.right_click = RightClick::CopyOrPaste,
+                    Some("ignore") => out.right_click = RightClick::Ignore,
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
                 "link-cmd-click" => match value.as_str() {
                     Some("open") => out.link_cmd_click = LinkClick::Open,
                     Some("copy") => out.link_cmd_click = LinkClick::Copy,
@@ -503,9 +525,34 @@ pub fn set_in(src: &str, key: &str, value: &toml::Value) -> String {
     out
 }
 
+/// `src` without any `key = …` line (back to the default).
+pub fn remove_in(src: &str, key: &str) -> String {
+    let mut out: String = src
+        .lines()
+        .filter(|l| {
+            !l.trim_start()
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        })
+        .flat_map(|l| [l, "\n"])
+        .collect();
+    if out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 /// Writes `pairs` into Motty's own config.toml. The first time, an Otty
 /// config being read is copied over first, so nothing it set is lost.
 pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
+    let changes: Vec<(&str, Option<toml::Value>)> =
+        pairs.iter().map(|(k, v)| (*k, Some(v.clone()))).collect();
+    save(&changes)
+}
+
+/// Sets each key to its value, or removes it for `None`, in Motty's own
+/// config.toml (see [`save_values`]).
+pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf> {
     let path = motty_dir().join("config.toml");
     let mut src = match std::fs::read_to_string(&path) {
         Ok(src) => src,
@@ -514,8 +561,11 @@ pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
             Err(_) => "# Motty settings: https://docs.otty.sh/reference/configuration\n".into(),
         },
     };
-    for (key, value) in pairs {
-        src = set_in(&src, key, value);
+    for (key, value) in changes {
+        src = match value {
+            Some(value) => set_in(&src, key, value),
+            None => remove_in(&src, key),
+        };
     }
     std::fs::create_dir_all(motty_dir())?;
     let tmp = path.with_extension("toml.tmp");
@@ -807,5 +857,12 @@ mod tests {
             &toml::Value::String("B".into()),
         );
         assert_eq!(out, "theme-dark = \"A\"\ntheme = \"B\"\n");
+    }
+
+    #[test]
+    fn remove_in_drops_every_line_for_the_key() {
+        let src = "theme = \"A\"\nfont-size = 12\n# theme = \"B\"\ntheme=\"C\"\n";
+        assert_eq!(remove_in(src, "theme"), "font-size = 12\n# theme = \"B\"\n");
+        assert_eq!(remove_in("theme-dark = 1\n", "theme"), "theme-dark = 1\n");
     }
 }

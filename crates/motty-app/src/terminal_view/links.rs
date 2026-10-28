@@ -7,7 +7,7 @@ use gpui::{
 };
 use motty_render::hsla;
 use motty_term::links::{self, Link, Target};
-use motty_theme::{Config, LinkClick, LinkShiftClick, Rgba};
+use motty_theme::{Config, LinkClick, LinkShiftClick, Rgba, RightClick};
 
 use super::TerminalView;
 
@@ -16,6 +16,8 @@ pub struct LinkOptions {
     pub detection: bool,
     pub click: LinkClick,
     pub shift_click: LinkShiftClick,
+    /// Not a link option, but set with them: `right-click-action`.
+    pub right_click: RightClick,
 }
 
 impl LinkOptions {
@@ -24,6 +26,7 @@ impl LinkOptions {
             detection: config.link_detection,
             click: config.link_cmd_click,
             shift_click: config.link_cmd_shift_click,
+            right_click: config.right_click,
         }
     }
 }
@@ -53,7 +56,7 @@ impl TerminalView {
         }
     }
 
-    fn link_at(&self, pos: Point<Pixels>) -> Option<Link> {
+    pub(super) fn link_at(&self, pos: Point<Pixels>) -> Option<Link> {
         let layout = self.layout.get()?;
         // Only over the grid itself.
         let (x, y) = (pos.x - layout.origin.x, pos.y - layout.origin.y);

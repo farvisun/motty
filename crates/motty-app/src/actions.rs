@@ -89,6 +89,13 @@ actions!(
         RevealInFinder,
         OpenConfigFile,
         ShowWelcome,
+        OpenSettings,
+        About,
+        HideApp,
+        HideOthers,
+        ShowAll,
+        ZoomWindow,
+        OpenHelp,
     ]
 );
 
@@ -133,6 +140,9 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd--", DecreaseFontSize, TERMINAL),
         b("cmd-0", ResetFontSize, TERMINAL),
         b("cmd-q", Quit, None),
+        b("cmd-,", OpenSettings, None),
+        b("cmd-h", HideApp, None),
+        b("alt-cmd-h", HideOthers, None),
         b("cmd-t", NewTab, WORKSPACE),
         b("cmd-w", CloseTab, WORKSPACE),
         b("cmd-shift-t", ReopenClosedTab, WORKSPACE),

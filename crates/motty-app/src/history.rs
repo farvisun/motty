@@ -123,6 +123,16 @@ pub fn record(cwd: Option<&Path>, command: &str, exit: Option<i32>, options: &Au
     }
 }
 
+/// Forgets every remembered command.
+pub fn clear() {
+    with_db(Vec::clear);
+    if let Err(e) = std::fs::remove_file(file())
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("couldn't remove the command history: {e}");
+    }
+}
+
 fn frecency(entry: &Entry, now: u64) -> f64 {
     let age = now.saturating_sub(entry.last);
     let weight = match age {

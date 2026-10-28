@@ -116,6 +116,34 @@ Agents can't type into their own pane through it; they split one off and work th
 `run` and `--last-command` need shell integration. `--json` prints machine-readable output; the
 protocol (JSON lines) is in `crates/motty-ipc`.
 
+## Settings
+
+Open settings with ⌘, (**Motty ▸ Settings…**). The window has a sidebar of sections:
+General, Shell, Controls, Editor, Agents, Appearance, Key Bindings and Advanced. Type anywhere
+in the window to search every setting.
+
+Each change is written to `~/.config/motty/config.toml` right away and applies to all open
+windows. Only the line for that key changes. A "Default" choice removes the key from the file.
+
+## Menus
+
+The menu bar has Motty, Shell, Edit, View, Window and Help menus. Each item shows its current
+shortcut, including any you've rebound with `keybind`.
+
+Right-click in a terminal opens a native menu:
+
+- **Open Link / Copy Link:** when the pointer is on a URL. On a path you get Open, Reveal in
+  Finder and Copy Path instead.
+- **Copy, Paste, Select All, Find… and Clear Screen.**
+- **Split Pane ▸**
+- **Read-Only**
+
+A program that captures the mouse (vim, htop, tmux) gets the right-click instead. ⌃-click
+always opens the menu.
+
+Set `right-click-action` to change what a plain right-click does: `context-menu` (the
+default), `copy`, `paste`, `copy-or-paste` or `ignore`.
+
 ## Command palette
 
 ⇧⌘P lists every action, with or without a shortcut, grouped (working directory, view, window,

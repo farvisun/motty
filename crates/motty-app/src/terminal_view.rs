@@ -25,6 +25,7 @@ use motty_theme::CursorBlink;
 use crate::actions::*;
 
 mod autocomplete;
+mod context_menu;
 mod find;
 mod hints;
 mod links;
@@ -444,6 +445,13 @@ impl TerminalView {
         ))
     }
 
+    /// Whether the program in the pane gets mouse events. Shift bypasses
+    /// application mouse tracking so text can still be selected; so does
+    /// read-only mode.
+    fn captures_mouse(&self, mods: &gpui::Modifiers) -> bool {
+        !mods.shift && !self.read_only && self.term_mode().intersects(TermMode::MOUSE_MODE)
+    }
+
     fn report_mouse(
         &self,
         button: input::MouseButton,
@@ -451,15 +459,10 @@ impl TerminalView {
         pos: gpui::Point<gpui::Pixels>,
         mods: &gpui::Modifiers,
     ) -> bool {
-        // Shift bypasses application mouse tracking so text can still be
-        // selected; so does read-only mode.
-        if mods.shift || self.read_only {
+        if !self.captures_mouse(mods) {
             return false;
         }
         let mode = self.term_mode();
-        if !mode.intersects(TermMode::MOUSE_MODE) {
-            return false;
-        }
         if let Some((row, col, ..)) = self.hit(pos)
             && let Some(bytes) =
                 input::mouse_report(button, action, col, row, Self::mods(mods), mode)
@@ -476,6 +479,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        if self.control_click(event, window, cx) {
+            return;
+        }
         if self.click_link(&event.modifiers, cx) {
             return;
         }
@@ -725,6 +731,8 @@ impl Render for TerminalView {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_right_mouse_up))
             .on_scroll(cx.listener(Self::on_scroll))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))

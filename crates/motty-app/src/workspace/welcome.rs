@@ -136,7 +136,7 @@ fn load_themes() -> Vec<ThemeChoice> {
 
 /// The `motty` command as other programs should run it: by name when it's
 /// on the usual PATH, else by its place in the app.
-fn cli_command() -> String {
+pub(crate) fn cli_command() -> String {
     let Some(cli) = super::cli_dir().map(|d| d.join("motty")) else {
         return "motty".into();
     };
@@ -154,7 +154,7 @@ fn cli_command() -> String {
 
 /// Links /usr/local/bin/motty to the app's CLI, asking for an administrator
 /// password when the folder isn't writable.
-fn install_cli(cli: &Path) -> Result<String, String> {
+pub(crate) fn install_cli(cli: &Path) -> Result<String, String> {
     let link = Path::new("/usr/local/bin/motty");
     let direct = std::fs::create_dir_all("/usr/local/bin").and_then(|_| {
         match std::fs::remove_file(link) {

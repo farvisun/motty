@@ -30,7 +30,9 @@ mod open_quickly;
 mod palette;
 mod welcome;
 
+pub(crate) use palette::keycaps;
 pub use welcome::first_run;
+pub(crate) use welcome::{cli_command, install_cli};
 mod picker;
 
 /// The native titlebar height that the sidebar layout reserves.
@@ -188,6 +190,20 @@ fn spawn_shell(
 
 /// Where the `motty` CLI is: the bundle's Resources/bin, or beside the app
 /// binary in a cargo build.
+/// The `motty` CLI inside this build, if it's there.
+pub fn cli_path() -> Option<std::path::PathBuf> {
+    cli_dir().map(|d| d.join("motty"))
+}
+
+/// Re-reads the config in every window now, rather than at the next poll.
+pub fn reload_all(cx: &mut App) {
+    for window in cx.windows() {
+        if let Some(w) = window.downcast::<Workspace>() {
+            let _ = w.update(cx, |ws, _, cx| ws.reload_config(cx));
+        }
+    }
+}
+
 fn cli_dir() -> Option<&'static std::path::Path> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -901,6 +917,10 @@ impl Workspace {
         }
         for w in crate::actions::bind_keys(cx, &config.keybinds) {
             tracing::warn!("{w}");
+        }
+        // Menu items show the shortcuts as bound when the menus are set.
+        if config.keybinds != self.config.keybinds {
+            crate::menus::set(cx);
         }
         // The toggle wins until the key itself changes.
         if config.sidebar_visible != self.config.sidebar_visible {
@@ -1721,6 +1741,7 @@ impl Render for Workspace {
             }))
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
             .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::reopen_closed_tab))
