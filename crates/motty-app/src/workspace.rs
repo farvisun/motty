@@ -26,6 +26,7 @@ use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
 mod palette;
+mod picker;
 
 /// The native titlebar height that the sidebar layout reserves.
 const TITLEBAR_RESERVE: f32 = 28.;
