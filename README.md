@@ -68,7 +68,7 @@ Bundled JetBrains Mono is under the [SIL Open Font License](crates/motty-app/ass
 
 With Otty installed, `cargo xtask parity` renders `xtask/fixtures/render.sh` in both apps at
 the same window bounds, captures both windows and prints per-region diff stats; images land
-in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--split right|down` to split the fixture pane, `--theme NAME` to switch both
+in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--split right|down` to split the fixture pane, `--background CMD` (repeatable) to open tabs behind the fixture's, `--wait MS` to delay the captures, `--theme NAME` to switch both
 apps to a theme, `--backdrop RRGGBB` to put a solid color behind the window (for materials), and
 `--set key=value` (repeatable) to change a config key in both apps, and `--hover x,y` to rest the
 pointer on a window point (hover-only chrome; apps may not see a warped pointer move). Otty's config is restored

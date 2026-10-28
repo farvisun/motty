@@ -69,7 +69,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--split right|down] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]"
+                "usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--split right|down] [--background CMD]... [--wait MS] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]"
             );
             std::process::exit(2);
         }
@@ -331,6 +331,28 @@ fn capture_otty(fixture: &Path, tabs: bool, split: Option<&str>, out: &Path) -> 
         // New tabs can bring back the previous theme; reload the current one.
         run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
     }
+    if !background_tabs().is_empty() {
+        let json =
+            run(Command::new(OTTY_CLI).args(["--json", "tab", "list", "--window", &window]))?;
+        let tabs: serde_json::Value = serde_json::from_str(&json)?;
+        let first = tabs["data"][0]["id"]
+            .as_str()
+            .context("fixture tab not found")?
+            .to_owned();
+        for command in background_tabs() {
+            run(Command::new(OTTY_CLI).args([
+                "tab",
+                "new",
+                "--window",
+                &window,
+                "--no-focus",
+                "--command",
+                command,
+            ]))?;
+        }
+        // `--no-focus` still activates the new tab.
+        run(Command::new(OTTY_CLI).args(["tab", "focus", &first]))?;
+    }
     if let Some(direction) = split {
         // The new pane runs the fixture too and takes focus.
         let json =
@@ -444,6 +466,9 @@ fn capture_motty(
     if let Some(direction) = split {
         motty.args(["--split", direction]);
     }
+    for command in background_tabs() {
+        motty.args(["--background", command]);
+    }
     if let Some(theme) = theme {
         motty.args(["--theme", theme]);
     }
@@ -470,6 +495,7 @@ fn capture_motty(
 /// window unkeyed now and then, so the minimize light (centered at 39,16) is
 /// checked for color.
 fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
+    pause(WAIT.get().copied().unwrap_or(0));
     for _ in 0..4 {
         bring_to_front(pid)?;
         order_backdrop_below(window_id)?;
@@ -492,6 +518,14 @@ fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
 /// `--hover x,y`: window-relative point the pointer rests on during
 /// captures, to compare hover-only chrome. Unset, it parks outside.
 static HOVER: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+/// `--wait MS`: extra time before each capture, for output that comes later.
+static WAIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// `--background CMD` (repeatable): tabs opened behind the fixture's.
+static BACKGROUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+fn background_tabs() -> &'static [String] {
+    BACKGROUND.get().map_or(&[], Vec::as_slice)
+}
 
 /// Moves the pointer just right of the window (inside the backdrop margin),
 /// so hover-only chrome such as titlebar buttons stays hidden, or onto the
@@ -567,6 +601,19 @@ fn parity(args: &[String]) -> Result<()> {
             .context("--hover wants x,y")
     });
     let _ = HOVER.set(hover.transpose()?);
+    if let Some(ms) = args
+        .iter()
+        .position(|a| a == "--wait")
+        .and_then(|i| args.get(i + 1))
+    {
+        let _ = WAIT.set(ms.parse().context("--wait wants milliseconds")?);
+    }
+    let _ = BACKGROUND.set(
+        args.windows(2)
+            .filter(|w| w[0] == "--background")
+            .map(|w| w[1].clone())
+            .collect(),
+    );
     // `--set key=value` (repeatable) changes a config key in both apps.
     let sets: Vec<(String, String)> = args
         .windows(2)
