@@ -35,6 +35,9 @@ const TITLE_RIGHT_INSET: f32 = 66.;
 /// With the sidebar hidden, Otty centers the title between the window's
 /// left edge and this far from its right edge.
 const COLLAPSED_TITLE_RIGHT_INSET: f32 = 16.;
+/// Room a mode pill takes from the title band's right end (the widest,
+/// HINTS with "Esc Exit", is about 130pt, from 43.5pt in).
+const PILL_INTRUSION: f32 = 130. + 43.5 - TITLE_RIGHT_INSET;
 /// Top of the "TABS" header row and the first tab card.
 const SIDEBAR_HEADER_TOP: f32 = 37.5;
 const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
@@ -1426,6 +1429,23 @@ impl Render for Workspace {
         self.backdrops
             .sync(window, &backdrops, self.theme.meta.mode == Mode::Dark);
 
+        // Long titles truncate, clear of the buttons on the left (without a
+        // sidebar) and of a mode pill, with the same room on both sides so
+        // the title stays centered.
+        let pill = self
+            .focused_pane()
+            .is_some_and(|view| view.read(cx).mode().is_some());
+        let side = [
+            titlebar::TITLE_PAD_RIGHT,
+            if pill { PILL_INTRUSION } else { 0. },
+            if self.sidebar_visible {
+                0.
+            } else {
+                titlebar::COLLAPSED_LEFT + titlebar::GROUP + titlebar::TITLE_PAD_LEFT
+            },
+        ]
+        .into_iter()
+        .fold(0., f32::max);
         let title_band = div()
             .absolute()
             .top_0()
@@ -1436,6 +1456,7 @@ impl Render for Workspace {
                 COLLAPSED_TITLE_RIGHT_INSET
             }))
             .h(px(TITLE_BAND))
+            .px(px(side))
             .flex()
             .items_center()
             .justify_center()
@@ -1444,6 +1465,7 @@ impl Render for Workspace {
             .child(
                 div()
                     .relative()
+                    .min_w_0()
                     .h(px(titlebar::BUTTON))
                     .flex()
                     .items_center()
@@ -1475,7 +1497,7 @@ impl Render for Workspace {
                                 .child(titlebar::ellipsis(hsla(native_label(t, 0.55, 0.6)))),
                         )
                     })
-                    .child(div().relative().child(title)),
+                    .child(div().relative().min_w_0().truncate().child(title)),
             );
 
         // Otty draws the container border over the padding rather than
