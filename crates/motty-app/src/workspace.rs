@@ -28,6 +28,9 @@ use crate::titlebar;
 mod details;
 mod open_quickly;
 mod palette;
+mod welcome;
+
+pub use welcome::first_run;
 mod picker;
 
 /// The native titlebar height that the sidebar layout reserves.
@@ -112,6 +115,8 @@ pub struct Workspace {
     palette: Option<palette::Palette>,
     /// Open Quickly, while open.
     open_quickly: Option<open_quickly::OpenQuickly>,
+    /// The welcome guide, while open.
+    welcome: Option<welcome::Welcome>,
     backdrops: Backdrops,
     /// Last background appearance and edited flag given to the native window;
     /// both reach AppKit on every call, so they are only set on change.
@@ -292,6 +297,7 @@ impl Workspace {
             window_title: String::new(),
             palette: None,
             open_quickly: None,
+            welcome: None,
             details: Default::default(),
             backdrops: Backdrops::default(),
             native_state: None,
@@ -1742,6 +1748,7 @@ impl Render for Workspace {
                 this.show_open_quickly(open_quickly::Filter::Files, window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenConfigFile, _, _| this.open_config_file()))
+            .on_action(cx.listener(|this, _: &ShowWelcome, w, cx| this.show_welcome(w, cx)))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
             .on_action(cx.listener(|this, _: &ActivateTab1, w, cx| this.activate(0, w, cx)))
@@ -1773,6 +1780,7 @@ impl Render for Workspace {
             .children(self.render_mode_pill(cx))
             .children(self.render_palette(window, cx))
             .children(self.render_open_quickly(window, cx))
+            .children(self.render_welcome(window, cx))
     }
 }
 

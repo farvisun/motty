@@ -88,6 +88,7 @@ actions!(
         CopyPath,
         RevealInFinder,
         OpenConfigFile,
+        ShowWelcome,
     ]
 );
 

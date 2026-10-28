@@ -62,6 +62,13 @@ fn main() {
             eprintln!("motty: {e:#}");
             cx.quit();
         }
+        if workspace::first_run()
+            && let Some(window) = cx.windows().first().and_then(|w| w.downcast::<Workspace>())
+        {
+            let _ = window.update(cx, |workspace, window, cx| {
+                workspace.show_welcome(window, cx)
+            });
+        }
         // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
         // keyboard from whatever the user is typing into.
         if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
@@ -182,6 +189,10 @@ fn open_window(
             workspace
         })
     })?;
+    // Test runs: in front so it draws, without taking the keyboard.
+    if std::env::var_os("MOTTY_NO_ACTIVATE").is_some() {
+        window.update(cx, |_, window, _| materials::show_inactive(window))?;
+    }
     if !window.update(cx, |workspace, _, _| workspace.has_tabs())? {
         anyhow::bail!("failed to start the shell");
     }

@@ -17,6 +17,22 @@ Development builds compile Metal shaders at launch (`runtime-shaders` feature), 
 Metal toolchain isn't required. For release packaging, install it with
 `xcodebuild -downloadComponent MetalToolchain` and build with `--no-default-features`.
 
+## Welcome guide
+
+The first launch opens a short guide over the window. It covers:
+
+- what opens at launch;
+- a theme, with a live preview;
+- the commands that add Motty's MCP server to Claude Code or Codex;
+- installing the `motty` command in `/usr/local/bin`;
+- the shortcuts worth knowing.
+
+Your choices go straight into `~/.config/motty/config.toml`. Only the lines it sets change. If
+you've only had Otty's config so far, that file is copied first, so nothing it set is lost.
+
+The guide keeps coming back until you finish or skip it. To open it again, choose **Welcome
+Guide** in the command palette or run `motty action show_welcome`.
+
 ## Configuration
 
 Motty reads `~/.config/motty/config.toml`, or an existing `~/.config/otty/config.toml`, with

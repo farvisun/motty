@@ -112,6 +112,7 @@ fn commands(sidebar_visible: bool, details_visible: bool, target: &TerminalView)
         Command::new("Terminal", "Hints: Paste Word", HintPaste),
         Command::new("Terminal", "Hints: Reveal Path", HintReveal),
         Command::new("Settings", "Open Config File", OpenConfigFile),
+        Command::new("Motty", "Welcome Guide", ShowWelcome),
         Command::new("Motty", "Quit Motty", Quit),
     ]);
     list
@@ -136,7 +137,7 @@ fn filter(commands: Vec<Command>, query: &str) -> Vec<Command> {
 }
 
 /// Key caps for a binding, modifiers in macOS order.
-fn keycaps(keystroke: &Keystroke) -> Vec<SharedString> {
+pub(super) fn keycaps(keystroke: &Keystroke) -> Vec<SharedString> {
     let m = &keystroke.modifiers;
     let mut caps: Vec<SharedString> = [
         (m.control, "⌃"),

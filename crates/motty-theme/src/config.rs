@@ -479,6 +479,51 @@ fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
     (entries, warnings)
 }
 
+/// `src` with `key = value` set: the last line for `key` is replaced (so
+/// comments and everything else stay as they were), or the line appended.
+pub fn set_in(src: &str, key: &str, value: &toml::Value) -> String {
+    let line = format!("{key} = {value}");
+    let is_key = |l: &str| {
+        l.trim_start()
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let mut lines: Vec<String> = src.lines().map(str::to_owned).collect();
+    match lines.iter().rposition(|l| is_key(l)) {
+        Some(i) => lines[i] = line,
+        None => {
+            while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                lines.pop();
+            }
+            lines.push(line);
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Writes `pairs` into Motty's own config.toml. The first time, an Otty
+/// config being read is copied over first, so nothing it set is lost.
+pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
+    let path = motty_dir().join("config.toml");
+    let mut src = match std::fs::read_to_string(&path) {
+        Ok(src) => src,
+        Err(_) => match std::fs::read_to_string(otty_dir().join("config.toml")) {
+            Ok(otty) => format!("# Started from Otty's config.toml.\n{otty}"),
+            Err(_) => "# Motty settings: https://docs.otty.sh/reference/configuration\n".into(),
+        },
+    };
+    for (key, value) in pairs {
+        src = set_in(&src, key, value);
+    }
+    std::fs::create_dir_all(motty_dir())?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, src)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
 const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
 const MOTTY_LIGHT: &str = include_str!("../themes/motty-light.ottytheme");
 
@@ -742,5 +787,25 @@ mod tests {
             ]
         );
         assert_eq!(cfg.warnings.len(), 1, "{:?}", cfg.warnings);
+    }
+
+    #[test]
+    fn set_in_keeps_the_rest_of_the_file() {
+        let src = "# my config\ntheme = \"Nord\"\n# theme = \"x\"\nfont-size = 13\n\n";
+        let out = set_in(src, "theme", &toml::Value::String("Paper".into()));
+        assert_eq!(
+            out,
+            "# my config\ntheme = \"Paper\"\n# theme = \"x\"\nfont-size = 13\n\n"
+        );
+        let out = set_in(&out, "on-launch", &toml::Value::String("new_window".into()));
+        assert!(out.ends_with("font-size = 13\non-launch = \"new_window\"\n"));
+        assert_eq!(Config::parse(&out).theme.as_deref(), Some("Paper"));
+        // `theme-dark` isn't `theme`.
+        let out = set_in(
+            "theme-dark = \"A\"\n",
+            "theme",
+            &toml::Value::String("B".into()),
+        );
+        assert_eq!(out, "theme-dark = \"A\"\ntheme = \"B\"\n");
     }
 }
