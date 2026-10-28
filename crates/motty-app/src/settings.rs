@@ -23,6 +23,7 @@ use motty_theme::{
 use toml::Value;
 
 use crate::actions::*;
+use crate::agents::{self, hooks};
 use crate::native_menu::{self, Entry, Item};
 
 const WIDTH: f32 = 720.;
@@ -172,6 +173,12 @@ enum Control {
     },
     /// Buttons for the whole list: add a sequence, reset everything.
     BindingTools,
+    /// A coding agent's integration switch: `ix` indexes [`agents::CATALOG`].
+    Agent {
+        ix: usize,
+        installed: bool,
+        open: bool,
+    },
     Info(SharedString),
 }
 
@@ -181,6 +188,8 @@ struct Row {
     title: SharedString,
     description: Option<SharedString>,
     control: Control,
+    /// Shown greyed out, and not clickable.
+    dim: bool,
 }
 
 fn row(
@@ -196,6 +205,14 @@ fn row(
         title: title.into(),
         description: description.map(Into::into),
         control,
+        dim: false,
+    }
+}
+
+impl Row {
+    fn dimmed(mut self, dim: bool) -> Self {
+        self.dim = dim;
+        self
     }
 }
 
@@ -260,11 +277,64 @@ pub struct SettingsWindow {
     editing: Option<(usize, String)>,
     /// "Reset to Default" asks once more before it clears every binding.
     confirm_reset: bool,
+    /// Each agent's program and whether Motty's hooks are in its settings.
+    agents: Vec<AgentInfo>,
+    /// The agent whose details are shown.
+    agent_open: Option<usize>,
     /// The section shown before the current one, and a count bumped on each
     /// switch, which restarts the transition.
     previous: Section,
     epoch: usize,
     _intercept: Subscription,
+}
+
+/// `~/…` for a path in the home folder.
+fn tilde(path: &std::path::Path) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    match path.strip_prefix(&home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// An agent's mark: its initial on a colour of its own (Motty doesn't
+/// ship the agents' logos).
+fn agent_mark(ix: usize) -> AnyElement {
+    const COLORS: [u32; 12] = [
+        0xd97757, 0x10a37f, 0x3b82f6, 0x4b5563, 0x6366f1, 0x8b5cf6, 0xa855f7, 0x111827, 0x0ea5e9,
+        0x14b8a6, 0xf59e0b, 0x22c55e,
+    ];
+    let agent = &agents::CATALOG[ix];
+    let initial: String = agent.label.chars().take(1).collect();
+    div()
+        .flex_none()
+        .size(px(26.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .bg(hsla(Rgba::rgb(COLORS[ix % COLORS.len()])))
+        .text_size(px(13.))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(hsla(Rgba::rgb(0xffffff)))
+        .child(initial)
+        .into_any_element()
+}
+
+struct AgentInfo {
+    path: Option<std::path::PathBuf>,
+    installed: bool,
+}
+
+fn scan_agents() -> Vec<AgentInfo> {
+    let env = hooks::Env::current();
+    agents::CATALOG
+        .iter()
+        .map(|a| AgentInfo {
+            path: agents::locate(a.command),
+            installed: hooks::installed(a.id, &env),
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,6 +449,7 @@ impl SettingsWindow {
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.config = crate::load_config();
+                this.agents = scan_agents();
                 cx.notify();
             }
         })
@@ -419,6 +490,8 @@ impl SettingsWindow {
             recording: None,
             editing: None,
             confirm_reset: false,
+            agents: scan_agents(),
+            agent_open: None,
             previous: section,
             epoch: 0,
             _intercept: intercept,
@@ -786,6 +859,17 @@ impl SettingsWindow {
                 invert: false,
             },
         ));
+        rows.push(row(
+            Shell,
+            "Shell",
+            "Badge When a Command Finishes",
+            Some("A dot on a tab you weren't watching when its command succeeds, a triangle when it fails"),
+            Control::Toggle {
+                key: "privilege-badge-exit-status",
+                on: c.badges.exit_status,
+                invert: false,
+            },
+        ));
         let scrollback = c.scrollback.unwrap_or(10_000);
         let presets = [1_000usize, 5_000, 10_000, 50_000, 100_000];
         let mut options: Vec<(SharedString, Option<Value>)> = presets
@@ -982,6 +1066,71 @@ impl SettingsWindow {
         ));
 
         // Agents
+        // Nothing for these to act on until an agent reports in.
+        let any = self.agents.iter().any(|a| a.installed);
+        let b = c.badges;
+        for (title, key, on) in [
+            (
+                "Badge While Processing",
+                "privilege-badge-agent-processing",
+                b.agent_processing,
+            ),
+            (
+                "Badge When Task Completes",
+                "privilege-badge-agent-task-complete",
+                b.agent_complete,
+            ),
+            (
+                "Badge When Awaiting Input",
+                "privilege-badge-agent-awaiting-input",
+                b.agent_awaiting,
+            ),
+            (
+                "Notify When Task Completes",
+                "privilege-notify-agent-task-complete",
+                b.notify_complete,
+            ),
+            (
+                "Notify When Awaiting Input",
+                "privilege-notify-agent-awaiting-input",
+                b.notify_awaiting,
+            ),
+            (
+                "Prevent Sleep While Processing",
+                "privilege-caffeinate-agent-processing",
+                b.caffeinate,
+            ),
+        ] {
+            rows.push(
+                row(
+                    Agents,
+                    "Agent Behavior",
+                    title,
+                    None,
+                    Control::Toggle {
+                        key,
+                        on,
+                        invert: false,
+                    },
+                )
+                .dimmed(!any),
+            );
+        }
+        for (ix, (agent, info)) in agents::CATALOG.iter().zip(&self.agents).enumerate() {
+            let found = info.path.as_deref().map(tilde);
+            rows.push(Row {
+                section: Agents,
+                group: "Code Agent Integration",
+                title: agent.label.into(),
+                description: Some(found.unwrap_or_else(|| "Not installed".into()).into()),
+                control: Control::Agent {
+                    ix,
+                    installed: info.installed,
+                    open: self.agent_open == Some(ix),
+                },
+                dim: false,
+            });
+        }
         let cli = crate::workspace::cli_command();
         rows.push(row(
             Agents,
@@ -1180,17 +1329,14 @@ impl SettingsWindow {
 
         // Advanced
         let path = self.config_path();
-        let home = dirs::home_dir().unwrap_or_default();
-        let shown = match path.strip_prefix(&home) {
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => path.display().to_string(),
-        };
+        let shown = tilde(&path);
         rows.push(Row {
             section: Advanced,
             group: "Config File",
             title: "config.toml".into(),
             description: Some(format!("{shown} · settings here are saved to it").into()),
             control: Control::Button("Open", Command::OpenConfig),
+            dim: false,
         });
         rows.push(row(
             Advanced,
@@ -1585,6 +1731,86 @@ impl Render for SettingsWindow {
 }
 
 impl SettingsWindow {
+    /// Adds or removes Motty's hooks in an agent's settings.
+    fn switch_agent(&mut self, ix: usize, on: bool, cx: &mut Context<Self>) {
+        let agent = &agents::CATALOG[ix];
+        let env = hooks::Env::current();
+        let result = if on {
+            hooks::install(agent.id, &env, &hooks::Cli::current())
+        } else {
+            hooks::uninstall(agent.id, &env)
+        };
+        self.status = Some(match result {
+            Ok(path) if on => (
+                true,
+                format!(
+                    "Added Motty's hooks to {}. Restart {} once to connect it.",
+                    tilde(&path),
+                    agent.label
+                ),
+            ),
+            Ok(path) => (
+                true,
+                format!("Removed Motty's hooks from {}.", tilde(&path)),
+            ),
+            Err(e) => (false, e),
+        });
+        self.agents = scan_agents();
+        cx.notify();
+    }
+
+    /// What an agent's switch writes, under its row.
+    fn agent_details(&self, ix: usize, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
+        let agent = &agents::CATALOG[ix];
+        let env = hooks::Env::current();
+        let path = hooks::target(agent.id, &env);
+        let plugin = matches!(agent.id, "opencode" | "pi" | "omp" | "copilot");
+        let what = if plugin {
+            "Motty's own file there, deleted again when the switch is off."
+        } else {
+            "Hooks that run motty hook; nothing else in the file is touched, and switching off takes them out again."
+        };
+        let line = |text: String, mono: bool| {
+            div()
+                .text_size(px(11.))
+                .text_color(c.secondary)
+                .when(mono, |d| d.font_family("Menlo"))
+                .child(SharedString::from(text))
+        };
+        div()
+            .ml(px(38.))
+            .mb(px(10.))
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .rounded(px(7.))
+            .bg(c.field)
+            .child(line("Writes to".into(), false))
+            .children(path.as_ref().map(|p| line(tilde(p), true)))
+            .child(line(what.into(), false))
+            .children(hooks::note(agent.id).map(|n| line(n.into(), false)))
+            .children(path.filter(|p| p.exists()).map(|p| {
+                div()
+                    .id(("reveal-agent", ix))
+                    .mt(px(2.))
+                    .h(px(24.))
+                    .px(px(10.))
+                    .flex()
+                    .flex_none()
+                    .self_start()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(c.control)
+                    .border(px(0.5))
+                    .border_color(c.control_border)
+                    .text_size(px(12.))
+                    .child("Reveal in Finder")
+                    .on_click(cx.listener(move |_, _, _, cx| cx.reveal_path(&p)))
+            }))
+            .into_any_element()
+    }
+
     /// Key caps that record a new chord when clicked.
     fn recorder(
         &self,
@@ -1687,17 +1913,35 @@ impl SettingsWindow {
                 .child(control)
                 .into_any_element();
         }
+        let details = match &r.control {
+            Control::Agent { ix, open: true, .. } => Some(self.agent_details(*ix, c, cx)),
+            _ => None,
+        };
+        let icon = match &r.control {
+            Control::Agent { ix, .. } => Some(agent_mark(*ix)),
+            _ => None,
+        };
+        let dim = r.dim;
         let control = self.render_control(ix, r.control, c, cx);
-        div()
+        // Greyed out: the control is covered so it takes no clicks.
+        let control = div().flex_none().relative().child(control).when(dim, |d| {
+            d.child(div().id(("dim", ix)).absolute().inset_0().occlude())
+        });
+        let line = div()
             .min_h(px(ROW_MIN))
-            .mx(px(15.))
             .py(px(8.))
             .flex()
             .items_center()
             .gap(px(16.))
-            .when(separator, |d| d.border_b(px(1.)).border_color(c.separator))
+            .when(dim, |d| d.opacity(0.45))
+            .children(icon)
             .child(label)
-            .child(control)
+            .child(control);
+        div()
+            .mx(px(15.))
+            .when(separator, |d| d.border_b(px(1.)).border_color(c.separator))
+            .child(line)
+            .children(details)
             .into_any_element()
     }
 
@@ -2090,6 +2334,80 @@ impl SettingsWindow {
                                             Some((false, format!("Couldn't save config.toml: {e}")))
                                     }
                                 }
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            }
+            Control::Agent {
+                ix: agent,
+                installed,
+                open,
+            } => {
+                let (track, knob_left) = if installed {
+                    (c.accent, 18.)
+                } else {
+                    (c.switch_off, 2.)
+                };
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .when(installed, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(hsla(Rgba::rgb(0x34c759)))
+                                .child("Installed"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id(("agent", ix))
+                            .relative()
+                            .w(px(38.))
+                            .h(px(22.))
+                            .rounded_full()
+                            .bg(track)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(2.))
+                                    .left(px(knob_left))
+                                    .size(px(18.))
+                                    .rounded_full()
+                                    .bg(hsla(Rgba::rgb(0xffffff)))
+                                    .shadow_sm(),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.switch_agent(agent, !installed, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("agent-details", ix))
+                            .size(px(22.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.))
+                            .hover(|s| s.bg(c.selected))
+                            .child(
+                                svg()
+                                    .path("icons/chevron-down.svg")
+                                    .size(px(13.))
+                                    .text_color(c.secondary)
+                                    .with_transformation(gpui::Transformation::rotate(
+                                        gpui::radians(if open {
+                                            0.
+                                        } else {
+                                            -std::f32::consts::FRAC_PI_2
+                                        }),
+                                    )),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.agent_open = (this.agent_open != Some(agent)).then_some(agent);
                                 cx.notify();
                             })),
                     )

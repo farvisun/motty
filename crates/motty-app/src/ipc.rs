@@ -351,6 +351,10 @@ fn agent_state(p: motty_ipc::AgentStateParams, cx: &mut App) -> anyhow::Result<V
         handle.update(cx, |workspace, window, cx| {
             workspace.agent_state(&view, p, window, cx)
         })?;
+        let working = workspaces(cx)
+            .iter()
+            .any(|h| h.read(cx).is_ok_and(|w| w.agent_working(cx)));
+        crate::agents::keep_awake(working);
         return Ok(Value::Null);
     }
     bail!("no tab found for that agent")

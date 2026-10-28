@@ -158,6 +158,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Whether an agent in this window is working on something, for
+    /// Prevent Sleep While Processing.
+    pub fn agent_working(&self, cx: &gpui::App) -> bool {
+        self.config.badges.caffeinate
+            && self.panes().any(|(_, v)| {
+                v.read(cx).status.as_ref().is_some_and(|s| {
+                    s.agent.is_some() && s.in_turn && s.badge != Some(Badge::Awaiting)
+                })
+            })
+    }
+
     /// The pane an agent's report is about: by pane id, else the pane whose
     /// processes include the agent.
     pub fn pane_for_agent(

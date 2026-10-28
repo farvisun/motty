@@ -21,11 +21,23 @@ const TIMEOUT: Duration = Duration::from_millis(800);
 /// Messages are cut to this many characters.
 const MESSAGE_LEN: usize = 160;
 
-/// `motty hook <agent> [args…]`.
+/// `motty hook <agent> [event] [state] [key=value…]`.
 pub fn hook(agent: &str, args: &[String]) -> ExitCode {
     let payload = read_payload(args);
-    if let Some(report) = report_for(agent, &payload, args) {
+    // Grok Build runs Claude Code's hooks, and says so in the environment.
+    let agent = if agent == "claude" && std::env::var_os("GROK_HOOK_NAME").is_some() {
+        "grok"
+    } else {
+        agent
+    };
+    let report = report_for(agent, &payload, args);
+    if let Some(report) = report {
         let _ = send(agent, report, None, None);
+    }
+    // Cursor reads an answer from its `before…` hooks; this one lets the
+    // prompt through. Every other hook prints nothing.
+    if agent == "cursor" && event_of(&payload, args) == Some("beforeSubmitPrompt") {
+        println!(r#"{{"continue":true}}"#);
     }
     ExitCode::SUCCESS
 }
@@ -124,24 +136,56 @@ fn str_at<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-/// What an agent's event means: Claude Code's hook events (which Grok,
-/// CodeBuddy and Codex's hooks share), Cursor's, Codex's `notify`, or a
-/// state named on the command line.
-fn report_for(agent: &str, payload: &Value, args: &[String]) -> Option<Report> {
-    let session = str_at(
-        payload,
-        &["session_id", "sessionId", "conversation_id", "thread-id"],
-    )
-    .map(str::to_owned);
-    let event = str_at(
+/// The event's name: in the payload, or (for agents whose payloads carry
+/// none) the first plain argument that isn't a state.
+fn event_of<'a>(payload: &'a Value, args: &'a [String]) -> Option<&'a str> {
+    str_at(
         payload,
         &["hook_event_name", "hookEventName", "event", "type"],
-    );
-    let (state, message) = match event {
-        Some("UserPromptSubmit" | "beforeSubmitPrompt" | "user-prompt-submit") => (
+    )
+    .or_else(|| {
+        args.iter()
+            .map(String::as_str)
+            .find(|a| !a.starts_with('{') && !a.contains('=') && AgentState::parse(a).is_none())
+    })
+}
+
+/// What an agent's event means: Claude Code's hook events (which Grok,
+/// CodeBuddy, Codex, Kimi and Reasonix share), Cursor's, Copilot's,
+/// Antigravity's, Codex's `notify`, or a state named on the command line
+/// (OpenCode's and Pi's plugins, hand-written hooks).
+fn report_for(agent: &str, payload: &Value, args: &[String]) -> Option<Report> {
+    let _ = agent;
+    // `session=…` and `message=…` arguments, from plugins.
+    let arg = |key: &str| {
+        args.iter()
+            .find_map(|a| a.strip_prefix(key)?.strip_prefix('='))
+            .filter(|v| !v.is_empty())
+    };
+    let session = str_at(
+        payload,
+        &[
+            "session_id",
+            "sessionId",
+            "conversation_id",
+            "conversationId",
+            "thread-id",
+        ],
+    )
+    .or_else(|| arg("session"))
+    .map(str::to_owned);
+    let (state, message) = match event_of(payload, args) {
+        Some(
+            "UserPromptSubmit"
+            | "beforeSubmitPrompt"
+            | "user-prompt-submit"
+            | "userPromptSubmitted"
+            | "TurnStarted",
+        ) => (
             AgentState::Processing,
             str_at(payload, &["prompt"]).map(clip),
         ),
+        Some("PreInvocation") => (AgentState::Processing, None),
         Some(
             "PreToolUse"
             | "PostToolUse"
@@ -151,15 +195,15 @@ fn report_for(agent: &str, payload: &Value, args: &[String]) -> Option<Report> {
             | "afterFileEdit"
             | "beforeReadFile",
         ) => (AgentState::Processing, tool_step(payload)),
-        Some("PermissionRequest") => (
+        Some("PermissionRequest" | "permissionRequest") => (
             AgentState::Awaiting,
             Some(match tool_step(payload) {
                 Some(step) => format!("Approve {step}"),
                 None => "Needs permission".to_owned(),
             }),
         ),
-        Some("Notification") => {
-            let kind = str_at(payload, &["notification_type"]);
+        Some("Notification" | "notification") => {
+            let kind = str_at(payload, &["notification_type", "notificationType"]);
             let message = str_at(payload, &["message"]);
             let waiting = match kind {
                 Some(k) => matches!(k, "permission_prompt" | "elicitation_dialog"),
@@ -170,40 +214,69 @@ fn report_for(agent: &str, payload: &Value, args: &[String]) -> Option<Report> {
             }
             (AgentState::Awaiting, message.map(clip))
         }
-        Some("Stop" | "stop" | "agent-turn-complete") => {
-            let failed = str_at(payload, &["status"]).is_some_and(|s| s == "error");
+        // A turn whose subagents still run isn't over.
+        Some("Stop") if background_running(payload) => (AgentState::Processing, None),
+        Some("Stop" | "stop" | "agent-turn-complete" | "agentStop" | "Interrupt") => {
+            let failed = str_at(payload, &["status"]).is_some_and(|s| s == "error")
+                || str_at(payload, &["error"]).is_some();
             let state = if failed {
                 AgentState::Error
             } else {
                 AgentState::Idle
             };
-            let message = str_at(
-                payload,
-                &[
-                    "last_assistant_message",
-                    "last-assistant-message",
-                    "message",
-                ],
-            )
-            .map(clip)
-            .or_else(|| last_reply(str_at(payload, &["transcript_path"])?));
+            let message = str_at(payload, &["error"])
+                .or_else(|| {
+                    str_at(
+                        payload,
+                        &[
+                            "last_assistant_message",
+                            "last-assistant-message",
+                            "message",
+                        ],
+                    )
+                })
+                .map(clip)
+                .or_else(|| last_reply(str_at(payload, &["transcript_path"])?));
             (state, message)
         }
         Some("StopFailure") => (
             AgentState::Error,
             str_at(payload, &["error", "message"]).map(clip),
         ),
+        Some("errorOccurred") => (
+            AgentState::Error,
+            payload
+                .get("error")
+                .and_then(|e| str_at(e, &["message"]))
+                .or_else(|| str_at(payload, &["error"]))
+                .map(clip),
+        ),
         Some("SessionStart" | "sessionStart") => (AgentState::Idle, None),
         Some("SessionEnd" | "sessionEnd") => (AgentState::Ended, None),
-        // `motty hook myagent processing` from a hand-written hook.
-        _ => (args.iter().find_map(|a| AgentState::parse(a))?, None),
+        // `motty hook opencode processing session=…` from a plugin, or
+        // `motty hook myagent idle` from a hand-written hook.
+        _ => (
+            args.iter().find_map(|a| AgentState::parse(a))?,
+            arg("message").map(clip),
+        ),
     };
-    let _ = agent;
     Some(Report {
         state: Some(state),
         message,
         session,
     })
+}
+
+/// Claude Code lists the subagents still working when its turn stops.
+fn background_running(payload: &Value) -> bool {
+    payload
+        .get("background_tasks")
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| {
+            tasks
+                .iter()
+                .any(|t| str_at(t, &["status"]).is_none_or(|s| matches!(s, "running" | "pending")))
+        })
 }
 
 /// A tool call in a few words: `Bash: cargo test`, `Edit: src/main.rs`.
@@ -333,6 +406,80 @@ mod tests {
         assert_eq!(
             state(json!({"hook_event_name": "stop", "status": "error"})).map(|s| s.0),
             Some(AgentState::Error)
+        );
+    }
+
+    #[test]
+    fn other_agents() {
+        let report = |agent: &str, payload: Value, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            report_for(agent, &payload, &args).map(|r| (r.state.unwrap(), r.message, r.session))
+        };
+        // Copilot names its event on the command line.
+        assert_eq!(
+            report(
+                "copilot",
+                json!({"sessionId": "c1", "prompt": "ship it"}),
+                &["userPromptSubmitted"]
+            ),
+            Some((
+                AgentState::Processing,
+                Some("ship it".into()),
+                Some("c1".into())
+            ))
+        );
+        assert_eq!(
+            report(
+                "copilot",
+                json!({"error": {"message": "rate limited"}}),
+                &["errorOccurred"]
+            )
+            .map(|r| r.1),
+            Some(Some("rate limited".into()))
+        );
+        // Antigravity's Stop with an error, and without.
+        assert_eq!(
+            report("antigravity", json!({"error": "quota"}), &["Stop"]).map(|r| r.0),
+            Some(AgentState::Error)
+        );
+        assert_eq!(
+            report("antigravity", json!({"conversationId": "a"}), &["Stop"]).map(|r| r.0),
+            Some(AgentState::Idle)
+        );
+        // Reasonix's camelCase.
+        assert_eq!(
+            report(
+                "reasonix",
+                json!({"event": "Notification", "notificationType": "permission_prompt",
+                "message": "Allow shell?"}),
+                &[]
+            )
+            .map(|r| r.0),
+            Some(AgentState::Awaiting)
+        );
+        // Plugins.
+        assert_eq!(
+            report(
+                "pi",
+                Value::Null,
+                &["processing", "session=p9", "message=fix it"]
+            ),
+            Some((
+                AgentState::Processing,
+                Some("fix it".into()),
+                Some("p9".into())
+            ))
+        );
+        // Claude's turn with a subagent still going.
+        assert_eq!(
+            report(
+                "claude",
+                json!({"hook_event_name": "Stop",
+                "background_tasks": [{"status": "running"}]}),
+                &[]
+            )
+            .map(|r| r.0),
+            Some(AgentState::Processing)
         );
     }
 
