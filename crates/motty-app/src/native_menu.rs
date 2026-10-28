@@ -78,10 +78,36 @@ pub fn popup(
     cx: &mut App,
     on_pick: impl FnOnce(usize, &mut Window, &mut App) + 'static,
 ) {
+    popup_then(
+        entries,
+        position,
+        selected,
+        window,
+        cx,
+        |picked, window, cx| {
+            if let Some(ix) = picked {
+                on_pick(ix, window, cx);
+            }
+        },
+    );
+}
+
+/// [`popup`], calling `on_close` once the menu is gone, with the pick if
+/// there was one.
+pub fn popup_then(
+    entries: Vec<Entry>,
+    position: Point<Pixels>,
+    selected: Option<usize>,
+    window: &mut Window,
+    cx: &mut App,
+    on_close: impl FnOnce(Option<usize>, &mut Window, &mut App) + 'static,
+) {
     #[cfg(target_os = "macos")]
-    mac::popup(entries, position, selected, window, cx, on_pick);
+    mac::popup(entries, position, selected, window, cx, on_close);
     #[cfg(not(target_os = "macos"))]
-    let _ = (entries, position, selected, window, cx, on_pick);
+    on_close(None, window, cx);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (entries, position, selected);
 }
 
 #[cfg(target_os = "macos")]
@@ -135,7 +161,7 @@ mod mac {
         selected: Option<usize>,
         window: &mut Window,
         cx: &mut App,
-        on_pick: impl FnOnce(usize, &mut Window, &mut App) + 'static,
+        on_close: impl FnOnce(Option<usize>, &mut Window, &mut App) + 'static,
     ) {
         let Ok(handle) = HasWindowHandle::window_handle(window) else {
             return;
@@ -149,9 +175,7 @@ mod mac {
             let picked = run(view, &entries, position, selected);
             cx.update(|cx| {
                 let _ = window_handle.update(cx, |_, window, cx| {
-                    if let Some(ix) = picked {
-                        on_pick(ix, window, cx);
-                    }
+                    on_close(picked, window, cx);
                     // The tracking loop swallowed the mouse-up; draw again so
                     // the window picks up where it was.
                     window.refresh();

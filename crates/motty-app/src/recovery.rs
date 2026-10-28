@@ -45,6 +45,9 @@ pub struct TabState {
     /// Index of the focused pane among the leaves, left to right.
     pub focused: usize,
     pub zoomed: bool,
+    /// A divider follows the tab in the sidebar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub divider: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -26,6 +26,7 @@ use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
 mod details;
+mod new_menu;
 mod open_quickly;
 mod palette;
 mod welcome;
@@ -83,6 +84,10 @@ struct ClosedTab {
 }
 
 const MAX_CLOSED_TABS: usize = 10;
+/// A sidebar divider sits this far inside the cards' edges, with this much
+/// room (besides the gap between tabs) above and below.
+const DIVIDER_INSET: f32 = 8.;
+const DIVIDER_SPACE: f32 = 4.;
 
 struct Tab {
     root: Pane,
@@ -90,6 +95,8 @@ struct Tab {
     focused: Entity<TerminalView>,
     /// Showing only the focused pane.
     zoomed: bool,
+    /// A divider follows this tab in the sidebar.
+    divider: bool,
 }
 
 impl Tab {
@@ -98,6 +105,7 @@ impl Tab {
             root: Pane::Leaf(view.clone()),
             focused: view,
             zoomed: false,
+            divider: false,
         }
     }
 }
@@ -129,6 +137,8 @@ pub struct Workspace {
     details: details::Details,
     /// The pointer is over the window: Otty shows its titlebar buttons then.
     pointer_inside: bool,
+    /// The new-tab menu is open; its button stays pressed.
+    new_menu_open: bool,
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -319,6 +329,7 @@ impl Workspace {
             native_state: None,
             sidebar_visible,
             pointer_inside: false,
+            new_menu_open: false,
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
             next_split: 0,
@@ -408,6 +419,7 @@ impl Workspace {
             root,
             focused,
             zoomed: state.zoomed,
+            divider: state.divider,
         })
     }
 
@@ -1184,13 +1196,32 @@ impl Workspace {
                             }))
                             .child(tracked(&process, LABEL_PITCH)),
                     );
-                card.children(
-                    style
-                        .border
-                        .as_ref()
-                        .and_then(|b| tab_border(t, b, style.radius)),
-                )
-                .into_any_element()
+                let card = card
+                    .children(
+                        style
+                            .border
+                            .as_ref()
+                            .and_then(|b| tab_border(t, b, style.radius)),
+                    )
+                    .into_any_element();
+                if !tab.divider {
+                    return card;
+                }
+                // Insert Divider: a hairline inset from the cards, in the
+                // middle of a gap.
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(card)
+                    .child(
+                        div()
+                            .mt(px(TAB_GAP + DIVIDER_SPACE))
+                            .mb(px(DIVIDER_SPACE))
+                            .mx(px(DIVIDER_INSET))
+                            .h(px(1.))
+                            .bg(hsla(native_label(t, 0.1, 0.12))),
+                    )
+                    .into_any_element()
             })
             .collect();
 
@@ -1220,6 +1251,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Where the titlebar button group starts: it ends where the sidebar
+    /// header's icon box does, or follows the traffic lights.
+    fn titlebar_group_left(&self) -> f32 {
+        let t = &self.theme;
+        if self.sidebar_visible {
+            let width = self.config.sidebar_width.unwrap_or(t.sidebar.width);
+            width - t.sidebar.padding.right - SIDEBAR_ICON_INSET + 6. - titlebar::GROUP
+        } else {
+            titlebar::COLLAPSED_LEFT
+        }
+    }
+
     /// Otty's titlebar buttons, shown while the pointer is over the window:
     /// new tab, notifications and the tabs panel toggle (at the sidebar's
     /// edge, or after the traffic lights when it is hidden), and the details
@@ -1243,24 +1286,34 @@ impl Workspace {
                 // Keep a click from starting a window drag.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
-        // The group ends where the sidebar header's icon box does.
-        let left = if self.sidebar_visible {
-            let width = self.config.sidebar_width.unwrap_or(t.sidebar.width);
-            width - t.sidebar.padding.right - SIDEBAR_ICON_INSET + 6. - titlebar::GROUP
-        } else {
-            titlebar::COLLAPSED_LEFT
-        };
         let group = div()
             .absolute()
             .top(px(titlebar::TOP))
-            .left(px(left))
+            .left(px(self.titlebar_group_left()))
             .flex()
             .gap(px(titlebar::GAP))
             .child(
+                // The plus opens a tab; the chevron, the menu of other ways.
                 button("new-tab", titlebar::SPLIT)
-                    .child(titlebar::plus(icon))
-                    .child(titlebar::chevron(icon))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_tab(window, cx))),
+                    .when(self.new_menu_open, |d| d.bg(highlight))
+                    .child(
+                        div()
+                            .id("new-tab-plus")
+                            .child(titlebar::plus(icon))
+                            .on_click(cx.listener(|this, _, window, cx| this.open_tab(window, cx))),
+                    )
+                    .child(
+                        div()
+                            .id("new-tab-menu")
+                            .child(titlebar::chevron(icon))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.show_new_menu(window, cx);
+                                }),
+                            ),
+                    ),
             )
             .child(button("notifications", titlebar::BUTTON).child(titlebar::bell(icon)))
             .child(
@@ -1855,5 +1908,6 @@ fn tab_state(
             .position(|v| **v == tab.focused)
             .unwrap_or(0),
         zoomed: tab.zoomed,
+        divider: tab.divider,
     }
 }
