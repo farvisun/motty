@@ -3,13 +3,37 @@
 //! mode blocks input while output keeps streaming. Both show a pill in the
 //! titlebar.
 
-use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
+use gpui::{
+    BoxShadow, ClipboardItem, Context, KeyDownEvent, SharedString, Window, div, point, prelude::*,
+    px,
+};
 use motty_term::alacritty_terminal::grid::{Dimensions, Scroll};
 use motty_term::alacritty_terminal::index::{Column, Point, Side};
 use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::vi_mode::ViMotion;
 
 use super::TerminalView;
+use super::find::{CARD_INSET, CARD_RADIUS, Colors};
+
+/// Keys the hint bar lists: with no selection, and while selecting.
+const KEYS: &[(&str, &str)] = &[
+    ("h j k l", "move"),
+    ("w b e", "word"),
+    ("0 $", "line"),
+    ("gg G", "top, bottom"),
+    ("⌃U ⌃D", "half page"),
+    ("v V ⌃V", "select"),
+    ("/ ?", "search"),
+    ("f", "hints"),
+    ("q", "exit"),
+];
+const SELECTION_KEYS: &[(&str, &str)] = &[
+    ("h j k l w b e", "extend"),
+    ("o", "other end"),
+    ("y", "copy"),
+    ("v V ⌃V", "change, clear"),
+    ("q", "exit"),
+];
 
 #[derive(Default)]
 pub struct ViState {
@@ -73,6 +97,69 @@ impl TerminalView {
             self.toggle_vi_mode(cx);
         }
         self.set_read_only(mode == motty_ipc::PaneMode::ReadOnly, cx);
+    }
+
+    pub(super) fn toggle_vi_key_hints(&mut self, cx: &mut Context<Self>) {
+        if self.vi.is_some() {
+            self.vi_key_hints = !self.vi_key_hints;
+            cx.notify();
+        }
+    }
+
+    /// The bar of vi keys at the bottom of the pane, in the find bar's card.
+    pub(super) fn render_vi_key_hints(&self) -> Option<impl IntoElement> {
+        if self.vi.is_none() || !self.vi_key_hints {
+            return None;
+        }
+        let selecting = self.session.term.lock().selection.is_some();
+        let c = Colors::new(self.style.panel_background, self.style.dark);
+        let keys = if selecting { SELECTION_KEYS } else { KEYS };
+        let (text, secondary) = (c.text, c.secondary);
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(CARD_INSET))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .mx(px(CARD_INSET))
+                        .px(px(12.))
+                        .py(px(7.))
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap_x(px(14.))
+                        .gap_y(px(4.))
+                        .rounded(px(CARD_RADIUS))
+                        .border(px(0.5))
+                        .border_color(c.border)
+                        .bg(c.card)
+                        .shadow(vec![BoxShadow {
+                            color: c.shadow,
+                            offset: point(px(0.), px(3.)),
+                            blur_radius: px(8.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .text_size(px(11.5))
+                        .whitespace_nowrap()
+                        .children(keys.iter().map(move |(key, what)| {
+                            div()
+                                .flex()
+                                .gap(px(5.))
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(text)
+                                        .child(SharedString::from(*key)),
+                                )
+                                .child(div().text_color(secondary).child(SharedString::from(*what)))
+                        })),
+                ),
+        )
     }
 
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {

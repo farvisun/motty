@@ -23,8 +23,8 @@ const MAX_MATCHES: usize = 10_000;
 const REFRESH: Duration = Duration::from_millis(150);
 
 const CARD_WIDTH: f32 = 340.;
-const CARD_RADIUS: f32 = 10.;
-const CARD_INSET: f32 = 8.;
+pub(super) const CARD_RADIUS: f32 = 10.;
+pub(super) const CARD_INSET: f32 = 8.;
 const INPUT_HEIGHT: f32 = 30.;
 const INPUT_RADIUS: f32 = 6.;
 const TOGGLE_WIDTH: f32 = 21.;
@@ -49,21 +49,21 @@ pub struct Find {
 
 /// Colors derived from the theme: overlays of black on light themes and
 /// white on dark ones, over the panel background.
-struct Colors {
-    card: Hsla,
-    border: Hsla,
+pub(super) struct Colors {
+    pub card: Hsla,
+    pub border: Hsla,
     input: Hsla,
-    toggle_border: Hsla,
-    text: Hsla,
-    secondary: Hsla,
+    pub toggle_border: Hsla,
+    pub text: Hsla,
+    pub secondary: Hsla,
     icon: Hsla,
     hover: Hsla,
     active: Hsla,
-    shadow: Hsla,
+    pub shadow: Hsla,
 }
 
 impl Colors {
-    fn new(panel: Rgba, dark: bool) -> Self {
+    pub(super) fn new(panel: Rgba, dark: bool) -> Self {
         let ink = |a: f32| {
             let base = if dark { 1. } else { 0. };
             hsla(Rgba {

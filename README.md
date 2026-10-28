@@ -93,7 +93,7 @@ one-line selection seeds the query.
 instead of reaching the shell. `hjkl` (or arrows), `w b e`, `W B E`, `0 ^ $`, `H M L`, `gg G`,
 `%`, `{ }`, ⌃U/⌃D/⌃B/⌃F, with counts (`5j`). `v`, `V` and ⌃V select (character, line, block),
 `o` swaps ends, `y` or ↩ copies and leaves. `/` and `?` open the find bar; after Esc, `n`/`N` step
-through matches. Esc or `q` leaves.
+through matches. Esc or `q` leaves. A bar at the bottom lists the keys; ⌘/ hides or shows it.
 
 In vi mode `f` starts hint mode: every link and path on screen gets a label (home-row letters,
 in the cell before it); type one to open it, with ⇧ on the last letter to copy instead. Backspace

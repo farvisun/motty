@@ -88,6 +88,8 @@ pub struct TerminalView {
     pointer: Option<gpui::Point<Pixels>>,
     /// Vi mode, while on.
     vi: Option<vi::ViState>,
+    /// Vi mode shows its keys at the bottom (⌘/ toggles).
+    vi_key_hints: bool,
     /// Hint mode, while labels are up.
     hints: Option<hints::HintState>,
     /// Input is refused (output still streams).
@@ -155,6 +157,7 @@ impl TerminalView {
             hovered_link: None,
             pointer: None,
             vi: None,
+            vi_key_hints: true,
             hints: None,
             read_only: false,
             _events: task,
@@ -728,6 +731,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))
             .on_action(cx.listener(|this, _: &ToggleViMode, _, cx| this.toggle_vi_mode(cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleViKeyHints, _, cx| this.toggle_vi_key_hints(cx)),
+            )
             .on_action(cx.listener(|this, _: &HintOpen, window, cx| {
                 this.start_hints(Matcher::Link, HintAction::Open, window, cx)
             }))
@@ -752,6 +758,7 @@ impl Render for TerminalView {
             )
             .child(element)
             .children(self.render_link_status())
+            .children(self.render_vi_key_hints())
             .children(self.render_find_bar(cx))
     }
 }
