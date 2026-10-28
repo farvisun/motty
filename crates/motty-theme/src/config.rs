@@ -49,9 +49,35 @@ pub struct Config {
     pub link_cmd_shift_click: LinkShiftClick,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
+    /// `keybind = <trigger>=<action>` entries, in file order.
+    pub keybinds: Vec<Keybind>,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+/// One `keybind` line: a chord such as `cmd+shift+t` and what it does
+/// (an action name, `unbind`, or a `text:`/`csi:`/`esc:` payload).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Keybind {
+    pub trigger: String,
+    pub action: String,
+}
+
+impl Keybind {
+    /// Splits `trigger=action` at the first `=` that isn't the trigger's key
+    /// (`cmd+==increase_font_size` binds ⌘=).
+    pub fn parse(value: &str) -> Option<Self> {
+        let at = value
+            .char_indices()
+            .find(|&(i, c)| c == '=' && i > 0 && !value[..i].ends_with('+'))?
+            .0;
+        let (trigger, action) = (value[..at].trim(), value[at + 1..].trim());
+        (!trigger.is_empty() && !action.is_empty()).then(|| Self {
+            trigger: trigger.to_owned(),
+            action: action.to_owned(),
+        })
+    }
 }
 
 /// `cursor-style` values.
@@ -249,6 +275,10 @@ impl Config {
                     _ => unknown.push(format!("config.toml {key}: unknown action {value}")),
                 },
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
+                "keybind" => match value.as_str().and_then(Keybind::parse) {
+                    Some(keybind) => out.keybinds.push(keybind),
+                    None => unknown.push(format!("config.toml keybind: can't read {value}")),
+                },
                 k if k.starts_with("palette-") => {
                     if let Ok(i @ 0..16) = k["palette-".len()..].parse::<usize>() {
                         out.palette[i] = color_of(key, value);
@@ -334,6 +364,22 @@ fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
     while let Some((n, line)) = lines.next() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // `keybind = cmd+t=new_tab` isn't TOML: the value is the raw rest of
+        // the line (quotes optional, so a `#` in it is no comment).
+        if let Some(rest) = trimmed.strip_prefix("keybind")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            let value = value.trim();
+            let value = match value.strip_prefix('"').and(value.strip_suffix('"')) {
+                Some(_) => toml::from_str::<toml::Table>(&format!("v = {value}"))
+                    .ok()
+                    .and_then(|t| t.get("v")?.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| value.to_owned()),
+                None => value.to_owned(),
+            };
+            entries.push(("keybind".to_owned(), toml::Value::String(value)));
             continue;
         }
         let mut stmt = trimmed.to_owned();
@@ -595,5 +641,28 @@ mod tests {
         let t = cfg.resolve_theme(Mode::Light);
         assert_eq!(t.theme.meta.name, "Motty Light");
         assert_eq!(t.warnings.len(), 1);
+    }
+
+    #[test]
+    fn keybind_lines_keep_their_raw_value() {
+        let cfg = Config::parse(
+            "keybind = cmd+t=new_tab\n# free cmd+d\nkeybind = cmd+d=unbind\nkeybind = cmd+==increase_font_size\nkeybind = \"ctrl+x=text:# not a comment\"\nkeybind = cmd+k=csi:17~\nkeybind = nothing\n",
+        );
+        let pairs: Vec<(&str, &str)> = cfg
+            .keybinds
+            .iter()
+            .map(|k| (k.trigger.as_str(), k.action.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("cmd+t", "new_tab"),
+                ("cmd+d", "unbind"),
+                ("cmd+=", "increase_font_size"),
+                ("ctrl+x", "text:# not a comment"),
+                ("cmd+k", "csi:17~"),
+            ]
+        );
+        assert_eq!(cfg.warnings.len(), 1, "{:?}", cfg.warnings);
     }
 }

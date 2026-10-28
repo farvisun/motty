@@ -709,6 +709,13 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(|this, a: &SendText, window, cx| {
+                if this.read_only {
+                    window.play_system_bell();
+                } else {
+                    this.write_input(&a.text, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &CursorLineStart, _, cx| this.send(b"\x01", cx)))
             .on_action(cx.listener(|this, _: &CursorLineEnd, _, cx| this.send(b"\x05", cx)))
             .on_action(cx.listener(|this, _: &CursorWordLeft, _, cx| this.send(b"\x1bb", cx)))

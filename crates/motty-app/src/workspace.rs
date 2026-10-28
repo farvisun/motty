@@ -885,6 +885,9 @@ impl Workspace {
         for w in &config.warnings {
             tracing::warn!("{w}");
         }
+        for w in crate::actions::bind_keys(cx, &config.keybinds) {
+            tracing::warn!("{w}");
+        }
         // The toggle wins until the key itself changes.
         if config.sidebar_visible != self.config.sidebar_visible {
             self.sidebar_visible = config.sidebar_visible;

@@ -344,6 +344,7 @@ fn action_names(cx: &App) -> Vec<String> {
     let mut names: Vec<String> = cx
         .all_action_names()
         .iter()
+        .filter(|name| cx.build_action(name, None).is_ok())
         .filter_map(|name| name.strip_prefix("motty::"))
         .map(|name| {
             let mut out = String::new();

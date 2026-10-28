@@ -29,7 +29,6 @@ fn main() {
 
     application().run(|cx: &mut App| {
         fonts::load(cx);
-        actions::bind_keys(cx);
         ipc::start(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::NewWindow, cx| {
@@ -46,6 +45,9 @@ fn main() {
 
         recovery::start(cx);
         let config = load_config();
+        for w in actions::bind_keys(cx, &config.keybinds) {
+            tracing::warn!("{w}");
+        }
         let restored = recovery::to_restore(config.restore_session);
         let windows = restored.map(|s| s.windows).unwrap_or_default();
         let mut opened = false;

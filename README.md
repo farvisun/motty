@@ -40,6 +40,25 @@ registered automatically. Saving a config or theme file applies it to open windo
 | `on-launch` | `restore_session` (default) reopens last session's windows; `new_window` starts fresh |
 | `scrollback-lines`, `shell` | Behaviour |
 
+### Key bindings
+
+Add `keybind = <trigger>=<action>` lines (repeat the key for more); they apply on save:
+
+```toml
+keybind = cmd+shift+k=split_right
+keybind = cmd+1=goto_tab:1
+# free ⌘D (split right by default)
+keybind = cmd+d=unbind
+# send bytes: text:..., csi:17~ (ESC [ 17~), esc:O (ESC O)
+keybind = ctrl+shift+x=text:git status\n
+```
+
+Modifiers are `cmd`, `ctrl`, `alt` (or `opt`) and `shift`, joined with `+`; keys are characters
+or names like `enter`, `escape`, `tab`, `space`, `backspace`, `delete`, `left`, `page_up`, `f6`.
+Actions are the names `motty action --list` prints (Otty's and Ghostty's spellings such as
+`new_split:right` work too). Comments go on their own line: a trailing `#` is part of the
+action. Lines Motty can't read are logged and skipped.
+
 ## Shell integration
 
 zsh, bash and fish started by Motty load a small script that reports prompts, commands with
