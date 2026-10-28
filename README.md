@@ -19,7 +19,8 @@ Metal toolchain isn't required. For release packaging, install it with
 
 ## Configuration
 
-Motty reads `~/.config/motty/config.toml`, or an existing `~/.config/otty/config.toml`.
+Motty reads `~/.config/motty/config.toml`, or an existing `~/.config/otty/config.toml`, with
+`config.local.toml` from the same folder applied on top.
 Themes are `.ottytheme` TOML files, loaded from `~/.config/motty/themes` and
 `~/.config/otty/themes`. Font files dropped into `~/.config/{motty,otty}/fonts` are
 registered automatically.
@@ -27,10 +28,12 @@ registered automatically.
 | Key | Meaning |
 |---|---|
 | `theme`, `theme-dark` | Theme names for light and dark system appearance |
-| `font-family`, `font-size`, `font-ligatures` | Terminal font |
+| `font-family`, `font-size`, `font-ligatures` (`off`, `calt`, `dlig`) | Terminal font |
 | `foreground`, `background`, `palette-0`…`palette-15` | Color overrides for `theme` |
-| `option-as-meta` | Send Option+key as Esc-prefixed (default `true`) |
-| `cursor-blink`, `scrollback`, `shell` | Behaviour |
+| `macos-option-as-alt` | Send Option+key as Esc-prefixed (default `false`) |
+| `cursor-style-blink` | `default_off` (default), `default_on`, `always_off`, `always_on` |
+| `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
+| `scrollback-lines`, `shell` | Behaviour |
 
 ## Layout
 

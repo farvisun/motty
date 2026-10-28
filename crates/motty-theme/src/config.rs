@@ -24,6 +24,8 @@ pub struct Config {
     pub scrollback: Option<usize>,
     pub shell: Option<String>,
     pub cursor_blink: bool,
+    /// `window-hide-dirty-indicator`: never show the close button's dot.
+    pub hide_dirty_indicator: bool,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
     /// Where the config was read from, if anywhere.
@@ -41,11 +43,13 @@ pub fn otty_dir() -> PathBuf {
 
 impl Config {
     /// Motty's own config wins; otherwise an existing Otty config is read as-is.
+    /// `config.local.toml` beside it (machine-local settings) applies on top.
     pub fn load() -> Self {
         for dir in [motty_dir(), otty_dir()] {
             let path = dir.join("config.toml");
             if let Ok(src) = std::fs::read_to_string(&path) {
-                let mut cfg = Self::parse(&src);
+                let local = std::fs::read_to_string(dir.join("config.local.toml")).unwrap_or_default();
+                let mut cfg = Self::parse(&format!("{src}\n{local}"));
                 cfg.path = Some(path);
                 return cfg;
             }
@@ -53,8 +57,9 @@ impl Config {
         Self::parse("")
     }
 
+    /// Defaults follow Otty's: ligatures on, Option is not Alt, no blinking.
     pub fn parse(src: &str) -> Self {
-        let mut out = Config { ligatures: true, option_as_meta: true, cursor_blink: true, ..Default::default() };
+        let mut out = Config { ligatures: true, ..Default::default() };
         let (entries, mut warnings) = parse_entries(src);
         let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
         let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
@@ -76,13 +81,24 @@ impl Config {
                 "background" => out.background = color_of(key, value),
                 "font-family" => out.font_family = str_of(value),
                 "font-size" => out.font_size = num_of(value),
-                "font-ligatures" => out.ligatures = value.as_bool().unwrap_or(true),
+                // `off`, `calt` or `dlig` (older configs use a bool).
+                "font-ligatures" | "ligatures" => {
+                    out.ligatures = value.as_bool().unwrap_or_else(|| value.as_str() != Some("off"))
+                }
                 "sidebar-width" => out.sidebar_width = num_of(value),
                 "details-panel-width" => out.details_panel_width = num_of(value),
-                "option-as-meta" => out.option_as_meta = value.as_bool().unwrap_or(true),
+                // `true`, `false`, `left` or `right`; one side counts as on
+                // until left/right modifiers are told apart.
+                "macos-option-as-alt" | "option-as-meta" => {
+                    out.option_as_meta = value.as_bool().unwrap_or_else(|| value.as_str().is_some_and(|v| v != "false"))
+                }
                 "scrollback" | "scrollback-lines" => out.scrollback = value.as_integer().map(|i| i.max(0) as usize),
                 "shell" => out.shell = str_of(value),
-                "cursor-blink" => out.cursor_blink = value.as_bool().unwrap_or(true),
+                // `default_off`, `default_on`, `always_off` or `always_on`.
+                "cursor-style-blink" | "cursor-blink" => {
+                    out.cursor_blink = value.as_bool().unwrap_or_else(|| value.as_str().is_some_and(|v| v.ends_with("_on")))
+                }
+                "window-hide-dirty-indicator" => out.hide_dirty_indicator = value.as_bool().unwrap_or(false),
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
                 k if k.starts_with("palette-") => {
                     if let Ok(i @ 0..16) = k["palette-".len()..].parse::<usize>() {
@@ -269,6 +285,19 @@ mod tests {
         assert_eq!(cfg.open_with_apps.len(), 2);
         assert_eq!(cfg.theme.as_deref(), Some("Nord"));
         assert_eq!(cfg.warnings.len(), 1);
+    }
+
+    #[test]
+    fn otty_enum_values_and_defaults() {
+        let d = Config::parse("");
+        assert!(d.ligatures && !d.option_as_meta && !d.cursor_blink);
+        let cfg = Config::parse(
+            "font-ligatures = \"off\"\nmacos-option-as-alt = \"left\"\ncursor-style-blink = \"default_on\"\nwindow-hide-dirty-indicator = true\n",
+        );
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert!(!cfg.ligatures && cfg.option_as_meta && cfg.cursor_blink && cfg.hide_dirty_indicator);
+        // A later file (config.local.toml) overrides earlier keys.
+        assert!(!Config::parse("macos-option-as-alt = true\nmacos-option-as-alt = \"false\"\n").option_as_meta);
     }
 
     #[test]

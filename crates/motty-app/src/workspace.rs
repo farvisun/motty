@@ -407,7 +407,8 @@ impl Render for Workspace {
         }
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
-        window.set_window_edited(self.tabs.iter().any(|tab| tab.terminal.read(cx).busy));
+        let busy = self.tabs.iter().any(|tab| tab.terminal.read(cx).busy);
+        window.set_window_edited(busy && !self.config.hide_dirty_indicator);
 
         let title_band = div()
             .absolute()
