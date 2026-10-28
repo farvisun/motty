@@ -49,6 +49,8 @@ pub mod method {
     pub const FIND: &str = "find";
     pub const SET_MODE: &str = "set-mode";
     pub const QUIT: &str = "quit";
+    pub const ACTION: &str = "action";
+    pub const LIST_ACTIONS: &str = "list-actions";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -216,6 +218,15 @@ pub struct SetModeParams {
     #[serde(flatten)]
     pub pane: PaneRef,
     pub mode: PaneMode,
+}
+
+/// Runs one of Motty's actions (what keys and the command palette run),
+/// by its snake_case name, e.g. `split_right`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

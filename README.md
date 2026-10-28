@@ -66,6 +66,7 @@ motty split -d down -- htop        # new pane; prints its id
 motty send --pane 3 $'q'           # type into a pane
 motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
 motty quit                         # quit Motty, saving the session
+motty action split_right           # run any action, as its key would (motty action --list)
 ```
 
 `motty mcp` serves the same operations to coding agents as MCP tools (`list_panes`, `read_pane`,
@@ -79,6 +80,12 @@ Agents can't type into their own pane through it; they split one off and work th
 
 `run` and `--last-command` need shell integration. `--json` prints machine-readable output; the
 protocol (JSON lines) is in `crates/motty-ipc`.
+
+## Command palette
+
+⇧⌘P lists every action, with or without a shortcut, grouped (working directory, view, window,
+pane, terminal, settings) and showing its keys. Type to narrow it; ↑↓ (or ⌃P/⌃N) pick, ↩ runs
+in the focused pane, ⌘↩ runs and keeps the palette open, Esc closes.
 
 ## Find
 

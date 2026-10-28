@@ -11,9 +11,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use motty_ipc::{
-    Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneMode, PaneRef,
-    ReadParams, RunParams, RunResult, SendTextParams, SetModeParams, SplitParams, TextRange,
-    method,
+    ActionParams, Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo,
+    PaneMode, PaneRef, ReadParams, RunParams, RunResult, SendTextParams, SetModeParams,
+    SplitParams, TextRange, method,
 };
 use serde_json::Value;
 
@@ -121,6 +121,16 @@ enum Command {
     Focus {
         #[arg(long)]
         pane: Option<u64>,
+    },
+    /// Run one of Motty's actions in a pane, as its key would (e.g.
+    /// `split_right`, `command_palette`); `--list` prints their names.
+    Action {
+        #[arg(long)]
+        pane: Option<u64>,
+        #[arg(long, conflicts_with = "name")]
+        list: bool,
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
     },
     /// Close a pane.
     Close {
@@ -348,6 +358,28 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Focus { pane: id } => {
             let _: Value = client.call(method::FOCUS, &pane(id))?;
+        }
+        Command::Action {
+            pane: id,
+            list: true,
+            ..
+        } => {
+            let _ = id;
+            let names: Vec<String> = client.call(method::LIST_ACTIONS, &Value::Null)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&names)?);
+            } else {
+                for name in names {
+                    println!("{name}");
+                }
+            }
+        }
+        Command::Action { pane: id, name, .. } => {
+            let params = ActionParams {
+                pane: pane(id),
+                name: name.unwrap_or_default(),
+            };
+            let _: Value = client.call(method::ACTION, &params)?;
         }
         Command::Close { pane: id } => {
             let _: Value = client.call(method::CLOSE, &pane(id))?;

@@ -25,6 +25,8 @@ use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
+mod palette;
+
 /// The native titlebar height that the sidebar layout reserves.
 const TITLEBAR_RESERVE: f32 = 28.;
 /// The title is centered in a band slightly taller than the reserve, level
@@ -99,6 +101,8 @@ pub struct Workspace {
     mono_font: SharedString,
     /// Last title given to the native window (shown in Mission Control, menus).
     window_title: String,
+    /// The command palette, while open.
+    palette: Option<palette::Palette>,
     backdrops: Backdrops,
     /// Last background appearance and edited flag given to the native window;
     /// both reach AppKit on every call, so they are only set on change.
@@ -274,6 +278,7 @@ impl Workspace {
             ui_font,
             mono_font,
             window_title: String::new(),
+            palette: None,
             backdrops: Backdrops::default(),
             native_state: None,
             sidebar_visible,
@@ -589,6 +594,13 @@ impl Workspace {
     }
 
     /// The pane that has focus in the active tab.
+    /// Whether `view` is in the active tab (so it's drawn).
+    pub fn is_pane_shown(&self, view: &Entity<TerminalView>) -> bool {
+        self.tabs
+            .get(self.active)
+            .is_some_and(|tab| tab.root.contains(view))
+    }
+
     pub fn focused_pane(&self) -> Option<Entity<TerminalView>> {
         self.tabs.get(self.active).map(|tab| tab.focused.clone())
     }
@@ -803,6 +815,32 @@ impl Workspace {
         self.tabs.insert(ix, tab);
         self.activate(ix, window, cx);
         Ok(focused)
+    }
+
+    /// Opens the config file in the default text editor, first creating
+    /// Motty's own when there's none.
+    fn open_config_file(&self) {
+        let path = self.config.path.clone().unwrap_or_else(|| {
+            let path = motty_theme::config::motty_dir().join("config.toml");
+            let created =
+                std::fs::create_dir_all(motty_theme::config::motty_dir()).and_then(|_| {
+                    std::fs::write(
+                        &path,
+                        "# Motty settings: https://docs.otty.sh/reference/configuration\n",
+                    )
+                });
+            if let Err(e) = created {
+                tracing::warn!("couldn't create {}: {e}", path.display());
+            }
+            path
+        });
+        if let Err(e) = std::process::Command::new("/usr/bin/open")
+            .arg("-t")
+            .arg(&path)
+            .spawn()
+        {
+            tracing::warn!("couldn't open {}: {e}", path.display());
+        }
     }
 
     /// ⌘W closes the focused pane, and the tab with its last pane.
@@ -1619,6 +1657,8 @@ impl Render for Workspace {
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::reopen_closed_tab))
+            .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(|this, _: &OpenConfigFile, _, _| this.open_config_file()))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
             .on_action(cx.listener(|this, _: &ActivateTab1, w, cx| this.activate(0, w, cx)))
@@ -1647,6 +1687,7 @@ impl Render for Workspace {
             .children(titlebar_buttons)
             .children(details_button)
             .children(self.render_mode_pill(cx))
+            .children(self.render_palette(window, cx))
     }
 }
 

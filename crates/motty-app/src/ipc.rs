@@ -9,11 +9,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
-use gpui::{App, Entity, Global, WindowHandle};
+use gpui::{App, AppContext as _, Entity, Focusable as _, Global, WindowHandle};
 use motty_ipc::{
-    Created, Direction as IpcDirection, FindParams, FindResult, FoundMatch, NewTabParams, PaneInfo,
-    PaneRef, ReadParams, Request, Response, RunParams, RunResult, SendTextParams, SetModeParams,
-    SplitParams, TextRange, method,
+    ActionParams, Created, Direction as IpcDirection, FindParams, FindResult, FoundMatch,
+    NewTabParams, PaneInfo, PaneRef, ReadParams, Request, Response, RunParams, RunResult,
+    SendTextParams, SetModeParams, SplitParams, TextRange, method,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Point};
@@ -139,6 +139,8 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
             Ok(Value::Null)
         }
         method::SET_MODE => parse(request.params).and_then(|p| set_mode(p, cx)),
+        method::ACTION => parse(request.params).and_then(|p| action(p, cx)),
+        method::LIST_ACTIONS => Ok(json!(action_names(cx))),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
@@ -334,6 +336,73 @@ fn set_mode(p: SetModeParams, cx: &mut App) -> anyhow::Result<Value> {
     handle.update(cx, |_, window, cx| {
         view.update(cx, |view, cx| view.set_mode(p.mode, window, cx))
     })?;
+    Ok(Value::Null)
+}
+
+/// Action names as scripts use them: `motty::SplitRight` is `split_right`.
+fn action_names(cx: &App) -> Vec<String> {
+    let mut names: Vec<String> = cx
+        .all_action_names()
+        .iter()
+        .filter_map(|name| name.strip_prefix("motty::"))
+        .map(|name| {
+            let mut out = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if c.is_uppercase() && i > 0 {
+                    out.push('_');
+                }
+                out.extend(c.to_lowercase());
+            }
+            out
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Runs an action in a pane, as if its key were pressed there; a pane in
+/// a hidden tab is brought forward first.
+fn action(p: ActionParams, cx: &mut App) -> anyhow::Result<Value> {
+    let pascal: String = p
+        .name
+        .split(['_', '-'])
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
+        })
+        .collect();
+    let action = cx
+        .build_action(&format!("motty::{pascal}"), None)
+        .map_err(|_| anyhow::anyhow!("no action {} (see `motty action --list`)", p.name))?;
+    let (handle, view) = resolve(&p.pane, cx)?;
+    let focus = view.read(cx).focus_handle(cx);
+    let shown = handle.update(cx, |workspace, window, cx| {
+        let shown = workspace.is_pane_shown(&view);
+        if !shown {
+            workspace.reveal_pane(&view, window, cx);
+        }
+        shown
+    })?;
+    let window = handle.into();
+    if shown {
+        cx.update_window(window, |_, window, cx| {
+            focus.dispatch_action(&*action, window, cx)
+        })?;
+    } else {
+        // It's in the window's dispatch tree once a frame has drawn it.
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                focus.dispatch_action(&*action, window, cx)
+            });
+        })
+        .detach();
+    }
     Ok(Value::Null)
 }
 

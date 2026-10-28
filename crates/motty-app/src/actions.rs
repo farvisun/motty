@@ -72,6 +72,10 @@ actions!(
         HintCopy,
         HintPaste,
         HintReveal,
+        CommandPalette,
+        CopyPath,
+        RevealInFinder,
+        OpenConfigFile,
     ]
 );
 
@@ -94,6 +98,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", NewTab, Some("Workspace")),
         KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
         KeyBinding::new("cmd-shift-t", ReopenClosedTab, Some("Workspace")),
+        KeyBinding::new("cmd-shift-p", CommandPalette, Some("Workspace")),
         KeyBinding::new("cmd-shift-]", NextTab, Some("Workspace")),
         KeyBinding::new("ctrl-tab", NextTab, Some("Workspace")),
         KeyBinding::new("cmd-shift-[", PreviousTab, Some("Workspace")),
