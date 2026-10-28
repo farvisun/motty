@@ -131,6 +131,9 @@ pub struct TabStyle {
     pub padding: Edges,
     pub height: Option<f32>,
     pub indicator: Rgba,
+    /// `indicator = "bar"`: a 6×16 block in the indicator color at the
+    /// start of the title.
+    pub indicator_bar: bool,
     pub border: Option<Border>,
     pub shadow: Vec<Shadow>,
 }
@@ -492,7 +495,14 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
             padding.right = r;
         }
         let material = sec.material("material").or(base.map(|b| b.material)).unwrap_or_default();
-        let unset_background = if material == Material::None { panel.background } else { Rgba::TRANSPARENT };
+        // In a window with a material, a plain side panel takes the terminal
+        // background, not the panel color (Otty's Acrylic Dark: the sidebar
+        // is #202020 under a #2C2C2C panel; the only theme that tells).
+        let unset_background = match material {
+            Material::None if window_material != Material::None => background,
+            Material::None => panel.background,
+            _ => Rgba::TRANSPARENT,
+        };
         SidePanel {
             background: sec.color("background").or(base.map(|b| b.background)).unwrap_or(unset_background),
             border: sec.border("border-right").or_else(|| base.map(|b| b.border.clone())).unwrap_or(default_side_border.clone()),
@@ -519,6 +529,7 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         padding: tab_s.edges("padding").unwrap_or(Edges::all(10.)),
         height: tab_s.num("height"),
         indicator: tab_s.color("indicator-color").unwrap_or(token.tertiary),
+        indicator_bar: tab_s.str("indicator") == Some("bar"),
         border: tab_s.border("border").flatten(),
         shadow: tab_s.shadows("shadow").unwrap_or_default(),
     };
@@ -604,6 +615,7 @@ impl TabStyle {
             padding: sec.edges("padding").unwrap_or(self.padding),
             height: sec.num("height").or(self.height),
             indicator: sec.color("indicator-color").unwrap_or(self.indicator),
+            indicator_bar: sec.str("indicator").map_or(self.indicator_bar, |i| i == "bar"),
             border: sec.border("border").unwrap_or_else(|| self.border.clone()),
             shadow: sec.shadows("shadow").unwrap_or_else(|| self.shadow.clone()),
         }

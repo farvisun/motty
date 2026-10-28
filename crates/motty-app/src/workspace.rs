@@ -301,6 +301,20 @@ impl Workspace {
                             this.activate(ix, window, cx);
                         }),
                     )
+                    // `indicator = "bar"`: Otty puts it 8pt into the card,
+                    // centered, under the start of the title.
+                    .when(style.indicator_bar, |d| {
+                        let h = style.height.unwrap_or(TAB_HEIGHT);
+                        d.child(
+                            div()
+                                .absolute()
+                                .left(px(8.))
+                                .top(px((h - 16.) / 2.))
+                                .w(px(6.))
+                                .h(px(16.))
+                                .bg(hsla(style.indicator)),
+                        )
+                    })
                     // Otty's title baseline is half a point below the card's center.
                     .child(div().flex_1().min_w_0().pt(px(1.)).truncate().child(title))
                     .child(
