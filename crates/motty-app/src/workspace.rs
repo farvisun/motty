@@ -448,7 +448,8 @@ fn shadows(list: &[Shadow]) -> Vec<BoxShadow> {
         .map(|s| BoxShadow {
             color: hsla(s.color),
             offset: point(px(s.offset_x), px(s.offset_y)),
-            blur_radius: px(s.blur),
+            // CSS blur is twice the Gaussian's sigma; GPUI takes the sigma.
+            blur_radius: px(s.blur / 2.),
             spread_radius: px(s.spread),
             inset: s.inset,
         })
