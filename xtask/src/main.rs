@@ -3,7 +3,8 @@
 //! - `parity [--release] [--fixture PATH] [--tabs]`: renders the same fixture in
 //!   Otty and Motty at identical window bounds, captures both windows and diffs
 //!   them. `--tabs` adds two shell tabs (the last one active) to compare the
-//!   sidebar; the terminal region then shows the user's prompt.
+//!   sidebar; the terminal region then shows the user's prompt. `--theme NAME`
+//!   renders both with that theme (Otty's config is restored afterwards).
 //! - `bundle [--release]`: builds `target/<profile>/Motty.app`.
 //! - `diff A.png B.png [OUT.png]`: pixel diff with per-region stats.
 //! - `crop IMG.png X Y W H OUT.png`: crops a region given in points.
@@ -117,6 +118,37 @@ fn tabs_title() -> String {
     }
 }
 
+/// Switches Otty to another theme for one capture. Dropping it writes the
+/// user's config.toml back byte for byte (the CLI may reformat it) and
+/// reloads, so the user's setup is restored even when the capture fails.
+struct OttyTheme {
+    path: PathBuf,
+    original: Vec<u8>,
+}
+
+impl OttyTheme {
+    fn switch(theme: &str) -> Result<Self> {
+        let path = PathBuf::from(run(Command::new(OTTY_CLI).args(["config", "path"]))?.trim());
+        let original = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let guard = Self { path, original };
+        for key in ["theme", "theme-dark"] {
+            run(Command::new(OTTY_CLI).args(["config", "set", key, theme]))?;
+        }
+        run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
+        pause(1000);
+        Ok(guard)
+    }
+}
+
+impl Drop for OttyTheme {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::write(&self.path, &self.original) {
+            eprintln!("could not restore {}: {e}", self.path.display());
+        }
+        let _ = run(Command::new(OTTY_CLI).args(["config", "reload"]));
+    }
+}
+
 fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
     let socket = dirs_home().join("Library/Application Support/io.appmakes.otty/otty.sock");
     if !socket.exists() {
@@ -194,13 +226,18 @@ fn bundle(release: bool) -> Result<PathBuf> {
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos)?;
     std::fs::create_dir_all(app.join("Contents/Resources"))?;
-    std::fs::copy(profile.join("Motty"), macos.join("Motty"))?;
+    // Replace rather than overwrite: the kernel caches code signatures per
+    // inode, and rewriting a signed binary in place gets it killed on launch.
+    let exe = macos.join("Motty");
+    let _ = std::fs::remove_file(&exe);
+    std::fs::copy(profile.join("Motty"), &exe)?;
     let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
+    run(Command::new("codesign").args(["--force", "--sign", "-"]).arg(&app))?;
     Ok(app)
 }
 
-fn capture_motty(release: bool, fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
+fn capture_motty(release: bool, fixture: &Path, tabs: bool, theme: Option<&str>, out: &Path) -> Result<()> {
     let bin = bundle(release)?.join("Contents/MacOS/Motty");
     let (x, y, w, h) = BOUNDS;
     // Otty types the fixture into the user's zsh, so run it under zsh too
@@ -210,6 +247,9 @@ fn capture_motty(release: bool, fixture: &Path, tabs: bool, out: &Path) -> Resul
     motty.args(["--bounds", &format!("{x},{y},{w},{h}")]).current_dir(root());
     if tabs {
         motty.args(["--extra-tabs", "2"]);
+    }
+    if let Some(theme) = theme {
+        motty.args(["--theme", theme]);
     }
     let mut child: Child = motty.args(["-e", "/bin/zsh", "-c", &script]).spawn()?;
     let title = if tabs { tabs_title() } else { FIXTURE_TITLE.to_owned() };
@@ -277,8 +317,12 @@ fn parity(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let (otty, motty) = (dir.join("otty.png"), dir.join("motty.png"));
     let tabs = args.iter().any(|a| a == "--tabs");
-    capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
-    capture_motty(release, &fixture, tabs, &motty).context("capturing Motty")?;
+    let theme = args.iter().position(|a| a == "--theme").and_then(|i| args.get(i + 1)).cloned();
+    {
+        let _restore = theme.as_deref().map(OttyTheme::switch).transpose()?;
+        capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
+    }
+    capture_motty(release, &fixture, tabs, theme.as_deref(), &motty).context("capturing Motty")?;
     println!("captured {} and {}", otty.display(), motty.display());
     diff(&otty, &motty, Some(&dir.join("diff.png")))?;
     for (name, img) in [("otty", &otty), ("motty", &motty)] {
