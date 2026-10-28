@@ -219,6 +219,9 @@ impl Drop for OttyTheme {
             eprintln!("could not restore {}: {e}", self.path.display());
         }
         let _ = run(Command::new(OTTY_CLI).args(["config", "reload"]));
+        // Otty applies a reload asynchronously; a switch right after (the next
+        // parity run) could otherwise be overtaken by this one.
+        pause(1000);
     }
 }
 
@@ -233,15 +236,25 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
             pause(250);
         }
     }
+    // Fixture windows a failed run left behind would share the title.
+    for (id, title) in otty_window_ids()? {
+        if title == FIXTURE_TITLE {
+            let _ = run(Command::new(OTTY_CLI).args(["-y", "window", "close", "--force", &id]));
+        }
+    }
+    let before: Vec<String> = otty_window_ids()?.into_iter().map(|(id, _)| id).collect();
     let command = format!("/bin/sh -c '{}; sleep 600'", fixture.display());
     run(Command::new(OTTY_CLI).args(["open", "--command", &command]))?;
     pause(1500);
-    let window = otty_window_ids()?.into_iter().find(|(_, t)| t == FIXTURE_TITLE).map(|(id, _)| id);
+    let window = otty_window_ids()?.into_iter().find(|(id, t)| t == FIXTURE_TITLE && !before.contains(id)).map(|(id, _)| id);
     let window = window.context("fixture window not found")?;
     // Place the fixture window and make it Otty's key window (another Otty
     // window may otherwise stay key when the app is brought forward).
     let (x, y, w, h) = BOUNDS;
-    let target = format!("(first window whose name is \"{FIXTURE_TITLE}\")");
+    // The CGWindowID (also the AppleScript id) stays put when new tabs
+    // retitle the window, unlike the title, which other windows may share.
+    let id = find_window("Otty", FIXTURE_TITLE)?;
+    let target = format!("(window id {id})");
     run(Command::new("osascript").args([
         "-e",
         &format!("tell application \"Otty\" to set bounds of {target} to {{{x}, {y}, {}, {}}}", x + w, y + h),
@@ -252,11 +265,15 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
         // A busy tab and an idle one; Otty activates each new tab.
         run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window, "--command", "sleep 600"]))?;
         run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window]))?;
+        // New tabs can bring back the previous theme; reload the current one.
+        run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
     }
     pause(1000);
-    let title = if tabs { tabs_title() } else { FIXTURE_TITLE.to_owned() };
+    if tabs {
+        // Make it key again: new tabs can hand that to another window.
+        run(Command::new("osascript").args(["-e", &format!("tell application \"Otty\" to set index of {target} to 1")]))?;
+    }
     let result = (|| {
-        let id = find_window("Otty", &title)?;
         let pid = run(Command::new("pgrep").args(["-x", "Otty"]))?;
         capture_focused(&id, pid.lines().next().unwrap_or_default().parse()?, out)
     })();
