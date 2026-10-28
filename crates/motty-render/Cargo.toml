@@ -1,0 +1,10 @@
+[package]
+name = "motty-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui.workspace = true
+motty-term.workspace = true
+motty-theme.workspace = true
