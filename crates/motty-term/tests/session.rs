@@ -55,3 +55,19 @@ fn prompt_line_has_no_stray_characters() {
     let s = run("printf '\\033]0;title\\007$ '; sleep 2");
     assert_eq!(wait_for(&s, 0, "$"), "$");
 }
+
+#[test]
+fn foreground_process_is_reported() {
+    let s = run("cd /tmp && exec sleep 5");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut name = None;
+    while Instant::now() < deadline {
+        name = s.foreground_process_name();
+        if name.as_deref() == Some("sleep") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(name.as_deref(), Some("sleep"));
+    assert_eq!(s.foreground_cwd().map(|p| p.canonicalize().unwrap()), Some(std::path::Path::new("/tmp").canonicalize().unwrap()));
+}

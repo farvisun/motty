@@ -4,6 +4,7 @@
 //! produces at most one pending notification.
 
 use std::collections::HashMap;
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -142,6 +143,8 @@ pub struct Session {
     wakeup_pending: Arc<AtomicBool>,
     size: GridSize,
     pid: u32,
+    /// PTY master, kept for foreground-process queries. Owned by the event loop.
+    master_fd: RawFd,
 }
 
 impl Session {
@@ -165,6 +168,7 @@ impl Session {
         };
         let pty = tty::new(&options, size.window_size(), 0)?;
         let pid = pty.child().id();
+        let master_fd = pty.file().as_raw_fd();
 
         let term_config = term::Config {
             scrolling_history: if config.scrollback == 0 { 10_000 } else { config.scrollback },
@@ -176,7 +180,7 @@ impl Session {
         let _ = pty_tx_cell.set(pty_tx.clone());
         event_loop.spawn();
 
-        Ok((Self { term, pty_tx, wakeup_pending, size, pid }, rx))
+        Ok((Self { term, pty_tx, wakeup_pending, size, pid, master_fd }, rx))
     }
 
     /// Re-arms content wakeups. Call before reading the terminal for a frame,
@@ -209,6 +213,57 @@ impl Session {
     pub fn pid(&self) -> u32 {
         self.pid
     }
+
+    /// Process group currently in the foreground of the PTY (the running
+    /// command, or the shell when idle).
+    pub fn foreground_pid(&self) -> Option<i32> {
+        // SAFETY: tcgetpgrp only reads from the descriptor.
+        let pgid = unsafe { libc::tcgetpgrp(self.master_fd) };
+        (pgid > 0).then_some(pgid)
+    }
+
+    /// Short name of the foreground process, e.g. `zsh` or `vim`.
+    pub fn foreground_process_name(&self) -> Option<String> {
+        process_name(self.foreground_pid()?)
+    }
+
+    /// Working directory of the foreground process.
+    pub fn foreground_cwd(&self) -> Option<PathBuf> {
+        process_cwd(self.foreground_pid()?)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: i32) -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its full length.
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: i32) -> Option<PathBuf> {
+    use std::ffi::CStr;
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+    // SAFETY: `info` is a properly sized, writable proc_vnodepathinfo.
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size) };
+    if n != size {
+        return None;
+    }
+    // SAFETY: the kernel NUL-terminates vip_path.
+    let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    Some(PathBuf::from(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_name(_pid: i32) -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_cwd(_pid: i32) -> Option<PathBuf> {
+    None
 }
 
 impl Drop for Session {

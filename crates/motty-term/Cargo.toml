@@ -8,4 +8,5 @@ license.workspace = true
 alacritty_terminal.workspace = true
 anyhow.workspace = true
 async-channel = "2"
+libc = "0.2"
 tracing.workspace = true
