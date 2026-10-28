@@ -10,6 +10,7 @@ with first-class support for coding agents.
 cargo run -p motty-app                    # login shell
 cargo run -p motty-app -- -e htop         # run a command instead
 cargo build --release -p motty-app        # optimized build: target/release/Motty
+cargo xtask bundle --release              # app bundle: target/release/Motty.app
 ```
 
 Development builds compile Metal shaders at launch (`runtime-shaders` feature), so Xcode's
@@ -44,3 +45,9 @@ registered automatically.
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
 Bundled JetBrains Mono is under the [SIL Open Font License](crates/motty-app/assets/fonts/jetbrains-mono/OFL.txt).
+
+## Pixel parity
+
+With Otty installed, `cargo xtask parity` renders `xtask/fixtures/render.sh` in both apps at
+the same window bounds, captures both windows and prints per-region diff stats; images land
+in `target/parity/`. Add `--tabs` to compare a three-tab sidebar. Captures are local only.

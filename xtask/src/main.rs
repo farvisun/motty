@@ -1,7 +1,10 @@
 //! Development tasks. Run with `cargo xtask <command>`.
 //!
-//! - `parity [--release] [--fixture PATH]`: renders the same fixture in Otty and
-//!   Motty at identical window bounds, captures both windows and diffs them.
+//! - `parity [--release] [--fixture PATH] [--tabs]`: renders the same fixture in
+//!   Otty and Motty at identical window bounds, captures both windows and diffs
+//!   them. `--tabs` adds two shell tabs (the last one active) to compare the
+//!   sidebar; the terminal region then shows the user's prompt.
+//! - `bundle [--release]`: builds `target/<profile>/Motty.app`.
 //! - `diff A.png B.png [OUT.png]`: pixel diff with per-region stats.
 //! - `crop IMG.png X Y W H OUT.png`: crops a region given in points.
 //! - `scan IMG.png x|y POS`: color transitions along a column (x=POS) or row (y=POS), in points.
@@ -26,6 +29,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("parity") => parity(&args[1..]),
+        Some("bundle") => bundle(args.iter().any(|a| a == "--release")).map(|app| println!("{}", app.display())),
         Some("diff") if args.len() >= 3 => {
             let out = args.get(3).map(PathBuf::from);
             diff(Path::new(&args[1]), Path::new(&args[2]), out.as_deref())
@@ -41,7 +45,7 @@ fn main() -> Result<()> {
             metrics(Path::new(&args[1]), left)
         }
         _ => {
-            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
+            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
             std::process::exit(2);
         }
     }
@@ -104,7 +108,16 @@ fn otty_window_ids() -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-fn capture_otty(fixture: &Path, out: &Path) -> Result<()> {
+/// Window title once the extra tabs are open: the active tab's cwd, the repo.
+fn tabs_title() -> String {
+    let root = root();
+    match root.strip_prefix(dirs_home()) {
+        Ok(rel) => format!("~/{}", rel.display()),
+        Err(_) => root.display().to_string(),
+    }
+}
+
+fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
     let socket = dirs_home().join("Library/Application Support/io.appmakes.otty/otty.sock");
     if !socket.exists() {
         run(Command::new("open").args(["-a", "Otty"]))?;
@@ -118,43 +131,133 @@ fn capture_otty(fixture: &Path, out: &Path) -> Result<()> {
     let command = format!("/bin/sh -c '{}; sleep 600'", fixture.display());
     run(Command::new(OTTY_CLI).args(["open", "--command", &command]))?;
     pause(1500);
+    let window = otty_window_ids()?.into_iter().find(|(_, t)| t == FIXTURE_TITLE).map(|(id, _)| id);
+    let window = window.context("fixture window not found")?;
+    // Place the fixture window and make it Otty's key window (another Otty
+    // window may otherwise stay key when the app is brought forward).
     let (x, y, w, h) = BOUNDS;
+    let target = format!("(first window whose name is \"{FIXTURE_TITLE}\")");
     run(Command::new("osascript").args([
         "-e",
-        &format!("tell application \"Otty\" to set bounds of front window to {{{x}, {y}, {}, {}}}", x + w, y + h),
+        &format!("tell application \"Otty\" to set bounds of {target} to {{{x}, {y}, {}, {}}}", x + w, y + h),
+        "-e",
+        &format!("tell application \"Otty\" to set index of {target} to 1"),
     ]))?;
-    pause(1500);
-    let id = find_window("Otty", FIXTURE_TITLE)?;
-    capture(&id, out)?;
-    for (wid, title) in otty_window_ids()? {
-        if title == FIXTURE_TITLE {
-            let _ = run(Command::new(OTTY_CLI).args(["-y", "window", "close", "--force", &wid]));
-        }
+    if tabs {
+        // A busy tab and an idle one; Otty activates each new tab.
+        run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window, "--command", "sleep 600"]))?;
+        run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window]))?;
     }
-    Ok(())
+    pause(1000);
+    let title = if tabs { tabs_title() } else { FIXTURE_TITLE.to_owned() };
+    let result = (|| {
+        let id = find_window("Otty", &title)?;
+        let pid = run(Command::new("pgrep").args(["-x", "Otty"]))?;
+        capture_focused(&id, pid.lines().next().unwrap_or_default().parse()?, out)
+    })();
+    let _ = run(Command::new(OTTY_CLI).args(["-y", "window", "close", "--force", &window]));
+    result
 }
 
-fn capture_motty(release: bool, fixture: &Path, out: &Path) -> Result<()> {
+const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>Motty</string>
+    <key>CFBundleIdentifier</key><string>dev.motty.Motty</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>Motty</string>
+    <key>CFBundleDisplayName</key><string>Motty</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>{version}</string>
+    <key>CFBundleVersion</key><string>{version}</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict>
+</plist>
+"#;
+
+/// Builds the app and wraps it in a minimal `.app` bundle, which macOS needs
+/// to treat Motty as a regular app (activation, Dock, bundle id).
+fn bundle(release: bool) -> Result<PathBuf> {
     let mut build = Command::new("cargo");
     build.args(["build", "--quiet", "-p", "motty-app"]).current_dir(root());
     if release {
         build.arg("--release");
     }
     run(&mut build)?;
-    let bin = root().join(if release { "target/release/Motty" } else { "target/debug/Motty" });
+    let profile = root().join(if release { "target/release" } else { "target/debug" });
+    let app = profile.join("Motty.app");
+    let macos = app.join("Contents/MacOS");
+    std::fs::create_dir_all(&macos)?;
+    std::fs::create_dir_all(app.join("Contents/Resources"))?;
+    std::fs::copy(profile.join("Motty"), macos.join("Motty"))?;
+    let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
+    std::fs::write(app.join("Contents/Info.plist"), plist)?;
+    Ok(app)
+}
+
+fn capture_motty(release: bool, fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
+    let bin = bundle(release)?.join("Contents/MacOS/Motty");
     let (x, y, w, h) = BOUNDS;
-    let script = format!("{}; sleep 600", fixture.display());
-    let mut child: Child = Command::new(bin)
-        .args(["--bounds", &format!("{x},{y},{w},{h}"), "-e", "/bin/sh", "-c", &script])
-        .spawn()?;
+    // Otty types the fixture into the user's zsh, so run it under zsh too
+    // (the trailing `:` keeps zsh from exec-ing sleep in its place).
+    let script = format!("{}; sleep 600; :", fixture.display());
+    let mut motty = Command::new(bin);
+    motty.args(["--bounds", &format!("{x},{y},{w},{h}")]).current_dir(root());
+    if tabs {
+        motty.args(["--extra-tabs", "2"]);
+    }
+    let mut child: Child = motty.args(["-e", "/bin/zsh", "-c", &script]).spawn()?;
+    let title = if tabs { tabs_title() } else { FIXTURE_TITLE.to_owned() };
     let result = (|| {
-        let id = find_window("Motty", FIXTURE_TITLE)?;
-        pause(1200);
-        capture(&id, out)
+        let id = find_window("Motty", &title)?;
+        pause(700);
+        capture_focused(&id, child.id(), out)
     })();
     let _ = child.kill();
     let _ = child.wait();
     result
+}
+
+/// Makes the process frontmost so both apps are captured focused (cursor,
+/// traffic lights). `activate` alone is unreliable for an unbundled binary
+/// started from a background process.
+/// Captures the window while its app is active. Frontmost can still leave the
+/// window unkeyed now and then, so the minimize light is checked for color.
+fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
+    for _ in 0..4 {
+        bring_to_front(pid)?;
+        capture(window_id, out)?;
+        let img = load(out)?;
+        let s = scale_of(&img) as f32;
+        let p = img.get_pixel((32. * s) as u32, (18. * s) as u32);
+        let saturation = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+        if saturation > 40 {
+            return Ok(());
+        }
+        pause(500);
+    }
+    bail!("window {window_id} never captured in its focused state")
+}
+
+fn bring_to_front(pid: u32) -> Result<()> {
+    let process = format!("(first process whose unix id is {pid})");
+    for _ in 0..10 {
+        let set = format!("tell application \"System Events\" to set frontmost of {process} to true");
+        run(Command::new("osascript").args(["-e", &set]))?;
+        pause(300);
+        let get = format!("tell application \"System Events\" to get frontmost of {process}");
+        if run(Command::new("osascript").args(["-e", &get]))?.trim() == "true" {
+            // Let the window redraw in its key state.
+            pause(400);
+            return Ok(());
+        }
+    }
+    bail!("could not bring pid {pid} to the front")
 }
 
 fn dirs_home() -> PathBuf {
@@ -173,8 +276,9 @@ fn parity(args: &[String]) -> Result<()> {
     let dir = root().join("target/parity");
     std::fs::create_dir_all(&dir)?;
     let (otty, motty) = (dir.join("otty.png"), dir.join("motty.png"));
-    capture_otty(&fixture, &otty).context("capturing Otty")?;
-    capture_motty(release, &fixture, &motty).context("capturing Motty")?;
+    let tabs = args.iter().any(|a| a == "--tabs");
+    capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
+    capture_motty(release, &fixture, tabs, &motty).context("capturing Motty")?;
     println!("captured {} and {}", otty.display(), motty.display());
     diff(&otty, &motty, Some(&dir.join("diff.png")))?;
     for (name, img) in [("otty", &otty), ("motty", &motty)] {
