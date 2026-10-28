@@ -22,12 +22,17 @@ const TITLE_BAND: f32 = 32.;
 /// Space kept free at the right of the title band (toolbar buttons).
 const TITLE_RIGHT_INSET: f32 = 66.;
 /// Top of the "TABS" header row and the first tab card.
-const SIDEBAR_HEADER_TOP: f32 = 38.;
-const SIDEBAR_HEADER_HEIGHT: f32 = 22.;
-const TAB_HEIGHT: f32 = 36.;
-const TAB_GAP: f32 = 2.;
+const SIDEBAR_HEADER_TOP: f32 = 37.5;
+const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
+const TAB_HEIGHT: f32 = 37.;
+const TAB_GAP: f32 = 1.;
 const SIDEBAR_INSET: f32 = 7.5;
-const SIDEBAR_TEXT_INSET: f32 = 18.5;
+const SIDEBAR_TEXT_INSET: f32 = 18.;
+const SIDEBAR_ICON_INSET: f32 = 16.5;
+/// Process label beside each tab title: small mono text with wide tracking.
+const LABEL_FONT_SIZE: f32 = 9.5;
+const LABEL_PITCH: f32 = 6.25;
+const LABEL_COLUMNS: f32 = 6.;
 
 struct Tab {
     terminal: Entity<TerminalView>,
@@ -56,11 +61,16 @@ pub fn mode_for(appearance: WindowAppearance) -> Mode {
     }
 }
 
-/// Spawns the user's shell for a new pane. `command` (from `-e`) replaces it.
-pub fn spawn_shell(config: &Config, command: Option<(String, Vec<String>)>) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
+/// Spawns the user's shell for a new pane in `cwd` (home when `None`).
+/// `command` (from `-e`) replaces the shell.
+pub fn spawn_shell(
+    config: &Config,
+    command: Option<(String, Vec<String>)>,
+    cwd: Option<std::path::PathBuf>,
+) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
     let session = SessionConfig {
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
-        working_directory: dirs::home_dir(),
+        working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),
         ..Default::default()
     };
@@ -174,7 +184,14 @@ impl Workspace {
     }
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
-        match spawn_shell(&self.config, None) {
+        self.open_tab(window, cx);
+    }
+
+    /// Opens a shell tab and activates it.
+    pub fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // New tabs start where the active tab is, like Otty.
+        let cwd = self.tabs.get(self.active).and_then(|tab| tab.terminal.read(cx).cwd.clone());
+        match spawn_shell(&self.config, None, cwd) {
             Ok((session, events)) => self.add_tab(session, events, window, cx),
             Err(e) => tracing::error!("failed to start shell: {e:#}"),
         }
@@ -232,7 +249,8 @@ impl Workspace {
         let header = div()
             .mt(px(SIDEBAR_HEADER_TOP))
             .h(px(SIDEBAR_HEADER_HEIGHT))
-            .px(px(SIDEBAR_TEXT_INSET))
+            .pl(px(SIDEBAR_TEXT_INSET))
+            .pr(px(SIDEBAR_ICON_INSET))
             .flex()
             .items_center()
             .justify_between()
@@ -275,14 +293,21 @@ impl Workspace {
                             this.activate(ix, window, cx);
                         }),
                     )
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(title))
+                    // Otty's title sits half a point below and left of where
+                    // the card's centering and padding put it.
+                    .child(div().flex_1().min_w_0().pt(px(1.)).ml(px(-0.5)).truncate().child(title))
                     .child(
+                        // The label column keeps room for six characters, so
+                        // titles truncate at the same place for any process.
                         div()
                             .flex_none()
+                            .min_w(px(LABEL_COLUMNS * LABEL_PITCH))
+                            .flex()
+                            .justify_end()
                             .font_family(self.mono_font.clone())
-                            .text_size(px(10.))
-                            .text_color(hsla(native_tertiary_label(t)))
-                            .child(process),
+                            .text_size(px(LABEL_FONT_SIZE))
+                            .text_color(hsla(if active { native_tertiary_label(t) } else { t.token.tertiary }))
+                            .child(tracked(&process, LABEL_PITCH)),
                     );
                 // Inactive cards get a transparent border so text stays aligned
                 // with the bordered active card.
@@ -296,7 +321,13 @@ impl Workspace {
 
         sidebar
             .child(header)
-            .child(div().px(px(SIDEBAR_INSET)).flex().flex_col().gap(px(TAB_GAP)).children(tabs))
+            .child(
+                // Cards sit on a 38pt pitch starting half a point above the
+                // list, whose top edge clips the first card's border.
+                div()
+                    .overflow_hidden()
+                    .child(div().mt(px(-0.5)).px(px(SIDEBAR_INSET)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
+            )
             .into_any_element()
     }
 }
@@ -309,17 +340,25 @@ fn native_tertiary_label(t: &Theme) -> Rgba {
     }
 }
 
+/// Lays out `text` one character per fixed-width cell, which emulates the
+/// letter-spacing AppKit applies to small labels (GPUI has no tracking).
+fn tracked(text: &str, pitch: f32) -> gpui::Div {
+    div()
+        .flex()
+        .children(text.chars().map(|c| div().w(px(pitch)).flex().justify_center().child(c.to_string())))
+}
+
 /// Three-line "list" glyph used beside section headers.
 fn list_icon(color: gpui::Hsla) -> AnyElement {
-    let bar = |w: f32| div().h(px(1.5)).w(px(w)).rounded(px(0.75)).bg(color);
+    let bar = |w: f32| div().h(px(1.)).w(px(w)).rounded(px(0.5)).bg(color);
     div()
         .flex()
         .flex_col()
-        .items_end()
-        .gap(px(2.))
-        .child(bar(7.))
-        .child(bar(5.5))
-        .child(bar(4.))
+        .items_center()
+        .gap(px(2.5))
+        .child(bar(8.5))
+        .child(bar(6.5))
+        .child(bar(4.5))
         .into_any_element()
 }
 
@@ -366,6 +405,9 @@ impl Render for Workspace {
             window.set_window_title(&title);
             self.window_title = title.clone();
         }
+        // Like Otty, a running command marks the window edited (the dot in
+        // the close button), since closing it would kill that command.
+        window.set_window_edited(self.tabs.iter().any(|tab| tab.terminal.read(cx).busy));
 
         let title_band = div()
             .absolute()

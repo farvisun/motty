@@ -50,6 +50,12 @@ fn bounds_arg(cx: &App) -> Bounds<gpui::Pixels> {
     Bounds::centered(None, size(px(1200.), px(800.)), cx)
 }
 
+/// `--extra-tabs N` opens N more shell tabs (used by the parity harness).
+fn extra_tabs_arg() -> usize {
+    let args: Vec<String> = std::env::args().take_while(|a| a != "-e").collect();
+    args.iter().position(|a| a == "--extra-tabs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(0)
+}
+
 /// `Motty -e program [args...]` runs a command instead of the login shell.
 fn command_arg() -> Option<(String, Vec<String>)> {
     let mut args = std::env::args().skip_while(|a| a != "-e").skip(1);
@@ -77,7 +83,18 @@ fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut 
         window_min_size: Some(size(px(360.), px(200.))),
         ..Default::default()
     };
-    let (session, events) = workspace::spawn_shell(&config, command)?;
-    cx.open_window(options, |window, cx| cx.new(|cx| Workspace::new(config, session, events, window, cx)))?;
+    // Launched from a shell, start there; from Finder the cwd is `/`.
+    let cwd = std::env::current_dir().ok().filter(|d| d.parent().is_some());
+    let (session, events) = workspace::spawn_shell(&config, command, cwd)?;
+    let extra_tabs = extra_tabs_arg();
+    cx.open_window(options, |window, cx| {
+        cx.new(|cx| {
+            let mut workspace = Workspace::new(config, session, events, window, cx);
+            for _ in 0..extra_tabs {
+                workspace.open_tab(window, cx);
+            }
+            workspace
+        })
+    })?;
     Ok(())
 }

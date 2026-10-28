@@ -32,9 +32,11 @@ pub struct TerminalView {
     layout: Rc<Cell<Option<TerminalLayout>>>,
     /// Title set by the running program (OSC 0/2).
     pub title: Option<String>,
-    /// Foreground process name and cwd, refreshed by [`Self::refresh_process`].
+    /// Shell name, foreground cwd and whether a command is running,
+    /// refreshed by [`Self::refresh_process`].
     pub process: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
+    pub busy: bool,
     option_as_meta: bool,
     /// Fractional lines carried between precise (trackpad) scroll events.
     scroll_remainder: f32,
@@ -83,6 +85,7 @@ impl TerminalView {
             title: None,
             process: None,
             cwd: None,
+            busy: false,
             option_as_meta,
             scroll_remainder: 0.,
             selecting: false,
@@ -124,11 +127,13 @@ impl TerminalView {
 
     /// Re-reads the foreground process; returns whether anything changed.
     pub fn refresh_process(&mut self) -> bool {
-        let process = self.session.foreground_process_name();
+        let process = self.session.shell_name();
         let cwd = self.session.foreground_cwd();
-        let changed = process != self.process || cwd != self.cwd;
+        let busy = self.session.is_busy();
+        let changed = process != self.process || cwd != self.cwd || busy != self.busy;
         self.process = process;
         self.cwd = cwd;
+        self.busy = busy;
         changed
     }
 
