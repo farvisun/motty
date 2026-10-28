@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, BoxShadow, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, SharedString,
-    Subscription, Task, Window, WindowAppearance, div, point, prelude::*, px,
+    Subscription, Task, Window, WindowAppearance, WindowBackgroundAppearance, div, point, prelude::*, px,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
-use motty_theme::{Border, Config, Mode, Rgba, Shadow, Theme};
+use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
+use crate::materials::{Backdrop, Backdrops, Region};
 use crate::terminal_view::{TerminalEvent, TerminalView};
 
 /// The native titlebar height that the sidebar layout reserves.
@@ -50,6 +51,10 @@ pub struct Workspace {
     mono_font: SharedString,
     /// Last title given to the native window (shown in Mission Control, menus).
     window_title: String,
+    backdrops: Backdrops,
+    /// Last background appearance and edited flag given to the native window;
+    /// both reach AppKit on every call, so they are only set on change.
+    native_state: Option<(WindowBackgroundAppearance, bool)>,
     _subscriptions: Vec<Subscription>,
     _process_poll: Task<()>,
 }
@@ -135,6 +140,8 @@ impl Workspace {
             ui_font,
             mono_font,
             window_title: String::new(),
+            backdrops: Backdrops::default(),
+            native_state: None,
             _subscriptions: subscriptions,
             _process_poll: process_poll,
         };
@@ -332,6 +339,27 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Native materials behind the window and the sidebar, bottom-most first.
+    fn backdrops_wanted(&self) -> Vec<Backdrop> {
+        let t = &self.theme;
+        vec![
+            Backdrop { region: Region::Window, material: t.window.material },
+            Backdrop { region: Region::Sidebar { width: self.sidebar_width() }, material: t.sidebar.material },
+        ]
+    }
+}
+
+/// Motty draws its own materials, so the window only needs to be see-through
+/// when the theme uses one.
+pub fn background_appearance(t: &Theme) -> WindowBackgroundAppearance {
+    if t.window.material == Material::None && t.sidebar.material == Material::None {
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Transparent
+    }
+}
+
 /// AppKit's tertiary label color for the theme's mode.
 fn native_tertiary_label(t: &Theme) -> Rgba {
     match t.meta.mode {
@@ -408,7 +436,14 @@ impl Render for Workspace {
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
         let busy = self.tabs.iter().any(|tab| tab.terminal.read(cx).busy);
-        window.set_window_edited(busy && !self.config.hide_dirty_indicator);
+        let state = (background_appearance(t), busy && !self.config.hide_dirty_indicator);
+        if self.native_state != Some(state) {
+            window.set_background_appearance(state.0);
+            window.set_window_edited(state.1);
+            self.native_state = Some(state);
+        }
+        let backdrops = self.backdrops_wanted();
+        self.backdrops.sync(window, &backdrops);
 
         let title_band = div()
             .absolute()

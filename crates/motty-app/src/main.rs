@@ -1,11 +1,12 @@
 mod actions;
 mod fonts;
+mod materials;
 mod terminal_view;
 mod workspace;
 
-use gpui::{App, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, prelude::*, px, size};
+use gpui::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size};
 use gpui_platform::application;
-use motty_theme::{Config, Material};
+use motty_theme::Config;
 
 use crate::workspace::{Workspace, mode_for};
 
@@ -25,7 +26,12 @@ fn main() {
         })
         .detach();
 
-        let config = Config::load();
+        let mut config = Config::load();
+        // `--theme NAME` overrides the configured theme for both appearances.
+        if let Some(name) = flag_value("--theme") {
+            config.theme = Some(name.clone());
+            config.theme_dark = Some(name);
+        }
         if let Err(e) = open_window(config, command_arg(), cx) {
             eprintln!("motty: {e:#}");
             cx.quit();
@@ -50,10 +56,15 @@ fn bounds_arg(cx: &App) -> Bounds<gpui::Pixels> {
     Bounds::centered(None, size(px(1200.), px(800.)), cx)
 }
 
+/// The value after `flag`, among the arguments before `-e`.
+fn flag_value(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().take_while(|a| a != "-e").collect();
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+}
+
 /// `--extra-tabs N` opens N more shell tabs (used by the parity harness).
 fn extra_tabs_arg() -> usize {
-    let args: Vec<String> = std::env::args().take_while(|a| a != "-e").collect();
-    args.iter().position(|a| a == "--extra-tabs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(0)
+    flag_value("--extra-tabs").and_then(|n| n.parse().ok()).unwrap_or(0)
 }
 
 /// `Motty -e program [args...]` runs a command instead of the login shell.
@@ -65,7 +76,7 @@ fn command_arg() -> Option<(String, Vec<String>)> {
 
 fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut App) -> anyhow::Result<()> {
     let mode = mode_for(cx.window_appearance());
-    let material = config.resolve_theme(mode).theme.window.material;
+    let theme = config.resolve_theme(mode).theme;
     let bounds = bounds_arg(cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -74,11 +85,7 @@ fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut 
             appears_transparent: true,
             traffic_light_position: Some(point(px(9.), px(9.))),
         }),
-        window_background: if material == Material::None {
-            WindowBackgroundAppearance::Opaque
-        } else {
-            WindowBackgroundAppearance::Blurred
-        },
+        window_background: workspace::background_appearance(&theme),
         app_id: Some("dev.motty.Motty".into()),
         window_min_size: Some(size(px(360.), px(200.))),
         ..Default::default()

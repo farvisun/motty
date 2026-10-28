@@ -28,7 +28,7 @@ impl Material {
             "vibrancy-thin" => Self::VibrancyThin,
             "vibrancy-regular" | "vibrancy" => Self::VibrancyRegular,
             "vibrancy-thick" => Self::VibrancyThick,
-            "glass" => Self::Glass,
+            "glass" | "acrylic" => Self::Glass,
             _ => return None,
         })
     }
