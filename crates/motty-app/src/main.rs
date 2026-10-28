@@ -2,6 +2,7 @@ mod actions;
 mod fonts;
 mod materials;
 mod terminal_view;
+mod titlebar;
 mod workspace;
 
 use gpui::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size};

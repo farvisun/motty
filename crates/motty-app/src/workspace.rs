@@ -15,6 +15,7 @@ use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 use crate::actions::*;
 use crate::materials::{Backdrop, Backdrops, Region};
 use crate::terminal_view::{TerminalEvent, TerminalView};
+use crate::titlebar;
 
 /// The native titlebar height that the sidebar layout reserves.
 const TITLEBAR_RESERVE: f32 = 28.;
@@ -23,6 +24,9 @@ const TITLEBAR_RESERVE: f32 = 28.;
 const TITLE_BAND: f32 = 32.;
 /// Space kept free at the right of the title band (toolbar buttons).
 const TITLE_RIGHT_INSET: f32 = 66.;
+/// With the sidebar hidden, Otty centers the title between the window's
+/// left edge and this far from its right edge.
+const COLLAPSED_TITLE_RIGHT_INSET: f32 = 16.;
 /// Top of the "TABS" header row and the first tab card.
 const SIDEBAR_HEADER_TOP: f32 = 37.5;
 const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
@@ -56,6 +60,10 @@ pub struct Workspace {
     /// Last background appearance and edited flag given to the native window;
     /// both reach AppKit on every call, so they are only set on change.
     native_state: Option<(WindowBackgroundAppearance, bool)>,
+    /// The tabs sidebar (`sidebar-visible`, ⌘⇧L).
+    sidebar_visible: bool,
+    /// The pointer is over the window: Otty shows its titlebar buttons then.
+    pointer_inside: bool,
     _subscriptions: Vec<Subscription>,
     _process_poll: Task<()>,
 }
@@ -144,6 +152,8 @@ impl Workspace {
             }
         });
 
+        let sidebar_visible = config.sidebar_visible;
+
         let mut this = Self {
             config,
             theme,
@@ -156,6 +166,8 @@ impl Workspace {
             window_title: String::new(),
             backdrops: Backdrops::default(),
             native_state: None,
+            sidebar_visible,
+            pointer_inside: false,
             _subscriptions: subscriptions,
             _process_poll: process_poll,
         };
@@ -367,13 +379,74 @@ impl Workspace {
 }
 
 impl Workspace {
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
+    }
+
+    /// Otty's titlebar buttons, shown while the pointer is over the window:
+    /// new tab, notifications and the tabs panel toggle (at the sidebar's
+    /// edge, or after the traffic lights when it is hidden), and the details
+    /// panel toggle at the right.
+    fn render_titlebar_buttons(&self, cx: &mut Context<Self>) -> (Option<AnyElement>, Option<AnyElement>) {
+        if !self.pointer_inside {
+            return (None, None);
+        }
+        let t = &self.theme;
+        let icon = hsla(native_label(t, 0.5, 0.55));
+        let highlight = hsla(native_label(t, 0.08, 0.1));
+        let button = move |id: &'static str, width: f32| {
+            div()
+                .id(id)
+                .flex_none()
+                .w(px(width))
+                .h(px(titlebar::BUTTON))
+                .flex()
+                .rounded(px(titlebar::RADIUS))
+                .hover(move |s| s.bg(highlight))
+                // Keep a click from starting a window drag.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
+        // The group ends where the sidebar header's icon box does.
+        let left = if self.sidebar_visible {
+            let width = self.config.sidebar_width.unwrap_or(t.sidebar.width);
+            width - t.sidebar.padding.right - SIDEBAR_ICON_INSET + 6. - titlebar::GROUP
+        } else {
+            titlebar::COLLAPSED_LEFT
+        };
+        let group = div()
+            .absolute()
+            .top(px(titlebar::TOP))
+            .left(px(left))
+            .flex()
+            .gap(px(titlebar::GAP))
+            .child(
+                button("new-tab", titlebar::SPLIT)
+                    .child(titlebar::plus(icon))
+                    .child(titlebar::chevron(icon))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_tab(window, cx))),
+            )
+            .child(button("notifications", titlebar::BUTTON).child(titlebar::bell(icon)))
+            .child(
+                button("tabs-panel", titlebar::BUTTON)
+                    .child(titlebar::panel(icon, icon, false))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
+            );
+        let details = div()
+            .absolute()
+            .top(px(titlebar::TOP))
+            .right(px(titlebar::DETAILS_RIGHT))
+            .child(button("details-panel", titlebar::BUTTON).child(titlebar::panel(icon, hsla(native_tertiary_label(t)), true)));
+        (Some(group.into_any_element()), Some(details.into_any_element()))
+    }
+
     /// Native materials behind the window and the sidebar, bottom-most first.
     fn backdrops_wanted(&self) -> Vec<Backdrop> {
         let t = &self.theme;
         let mut wanted = vec![Backdrop { region: Region::Window, material: t.window.material }];
         // A sidebar on the window's own material is the same surface in Otty,
         // not a second layer (stacked glass would lighten the column).
-        if t.sidebar.material != t.window.material {
+        if self.sidebar_visible && t.sidebar.material != t.window.material {
             wanted.push(Backdrop { region: Region::Sidebar { width: self.sidebar_width() }, material: t.sidebar.material });
         }
         wanted
@@ -392,9 +465,15 @@ pub fn background_appearance(t: &Theme) -> WindowBackgroundAppearance {
 
 /// AppKit's tertiary label color for the theme's mode.
 fn native_tertiary_label(t: &Theme) -> Rgba {
+    native_label(t, 0.26, 0.25)
+}
+
+/// Black (light mode) or white (dark mode) at the given strength, like the
+/// system's label colors.
+fn native_label(t: &Theme, light: f32, dark: f32) -> Rgba {
     match t.meta.mode {
-        Mode::Light => Rgba { r: 0., g: 0., b: 0., a: 0.26 },
-        Mode::Dark => Rgba { r: 1., g: 1., b: 1., a: 0.25 },
+        Mode::Light => Rgba { r: 0., g: 0., b: 0., a: light },
+        Mode::Dark => Rgba { r: 1., g: 1., b: 1., a: dark },
     }
 }
 
@@ -478,7 +557,8 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = self.render_sidebar(cx);
+        let sidebar = self.sidebar_visible.then(|| self.render_sidebar(cx));
+        let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
         let t = &self.theme;
         let c = &t.container;
         let active = self.tabs.get(self.active).map(|tab| tab.terminal.clone());
@@ -503,14 +583,49 @@ impl Render for Workspace {
             .absolute()
             .top_0()
             .left_0()
-            .right(px(TITLE_RIGHT_INSET))
+            .right(px(if self.sidebar_visible { TITLE_RIGHT_INSET } else { COLLAPSED_TITLE_RIGHT_INSET }))
             .h(px(TITLE_BAND))
             .flex()
             .items_center()
             .justify_center()
             .text_color(hsla(t.titlebar.foreground))
             .text_size(px(t.titlebar.font_size))
-            .child(title);
+            .child(
+                div()
+                    .relative()
+                    .h(px(titlebar::BUTTON))
+                    .flex()
+                    .items_center()
+                    .when(self.pointer_inside, |d| {
+                        // The title and its "more" ellipsis are one button;
+                        // its highlight and the ellipsis hang around the
+                        // title without moving it.
+                        let highlight = hsla(native_label(t, 0.08, 0.1));
+                        d.child(
+                            div()
+                                .id("title")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(-titlebar::TITLE_PAD_LEFT))
+                                .right(px(-titlebar::TITLE_PAD_RIGHT))
+                                .rounded(px(titlebar::RADIUS))
+                                .hover(move |s| s.bg(highlight)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(gpui::relative(1.))
+                                .pl(px(titlebar::ELLIPSIS_GAP))
+                                .flex()
+                                .items_center()
+                                .child(titlebar::ellipsis(hsla(native_label(t, 0.55, 0.6)))),
+                        )
+                    })
+                    .child(div().relative().child(title)),
+            );
 
         // Otty draws the container border over the padding rather than
         // inside it, so the grid doesn't move when a theme adds a border.
@@ -561,8 +676,17 @@ impl Render for Workspace {
             .child(title_band);
 
         div()
+            .id("workspace")
+            .relative()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if this.pointer_inside != *hovered {
+                    this.pointer_inside = *hovered;
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
@@ -586,7 +710,9 @@ impl Render for Workspace {
             // paints its own); a sidebar material must not be covered by it.
             .when(t.sidebar.material == Material::None, |d| d.bg(hsla(t.window.background)))
             .font_family(self.ui_font.clone())
-            .child(sidebar)
+            .children(sidebar)
             .child(main)
+            .children(titlebar_buttons)
+            .children(details_button)
     }
 }

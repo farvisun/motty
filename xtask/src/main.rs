@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             metrics(Path::new(&args[1]), left)
         }
         _ => {
-            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
+            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
             std::process::exit(2);
         }
     }
@@ -381,11 +381,17 @@ fn capture_focused(window_id: &str, pid: u32, out: &Path) -> Result<()> {
     bail!("window {window_id} never captured in its focused state")
 }
 
+/// `--hover x,y`: window-relative point the pointer rests on during
+/// captures, to compare hover-only chrome. Unset, it parks outside.
+static HOVER: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+
 /// Moves the pointer just right of the window (inside the backdrop margin),
-/// so hover-only chrome such as titlebar buttons stays hidden.
+/// so hover-only chrome such as titlebar buttons stays hidden, or onto the
+/// `--hover` point.
 fn park_pointer() -> Result<()> {
     let (x, y, w, h) = BOUNDS;
-    run(Command::new(swift_tool("warp")?).args([(x + w + 20).to_string(), (y + h / 2).to_string()]))?;
+    let (px, py) = HOVER.get().copied().flatten().unwrap_or(((w + 20) as f32, (h / 2) as f32));
+    run(Command::new(swift_tool("warp")?).args([(x as f32 + px).to_string(), (y as f32 + py).to_string()]))?;
     pause(300);
     Ok(())
 }
@@ -425,6 +431,9 @@ fn parity(args: &[String]) -> Result<()> {
     let tabs = args.iter().any(|a| a == "--tabs");
     let theme = args.iter().position(|a| a == "--theme").and_then(|i| args.get(i + 1)).cloned();
     let backdrop = args.iter().position(|a| a == "--backdrop").and_then(|i| args.get(i + 1));
+    let hover = args.iter().position(|a| a == "--hover").and_then(|i| args.get(i + 1));
+    let hover = hover.map(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))).context("--hover wants x,y"));
+    let _ = HOVER.set(hover.transpose()?);
     // `--set key=value` (repeatable) changes a config key in both apps.
     let sets: Vec<(String, String)> = args
         .windows(2)

@@ -35,6 +35,7 @@ registered automatically.
 | `cursor-style-blink` | `default_off` (default) and `default_on` let programs turn blinking on or off; `always_off` and `always_on` don't |
 | `cursor-color`, `cursor-text` | Cursor colors for themes that don't set their own |
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
+| `sidebar-visible` | Open windows with the tabs sidebar (default `true`; toggle with ⌘⇧L) |
 | `scrollback-lines`, `shell` | Behaviour |
 
 ## Layout
@@ -57,5 +58,6 @@ With Otty installed, `cargo xtask parity` renders `xtask/fixtures/render.sh` in 
 the same window bounds, captures both windows and prints per-region diff stats; images land
 in `target/parity/`. Add `--tabs` to compare a three-tab sidebar, `--theme NAME` to switch both
 apps to a theme, `--backdrop RRGGBB` to put a solid color behind the window (for materials), and
-`--set key=value` (repeatable) to change a config key in both apps. Otty's config is restored
+`--set key=value` (repeatable) to change a config key in both apps, and `--hover x,y` to rest the
+pointer on a window point (hover-only chrome; apps may not see a warped pointer move). Otty's config is restored
 byte for byte afterwards. Captures are local only.

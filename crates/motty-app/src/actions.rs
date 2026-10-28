@@ -24,6 +24,7 @@ actions!(
         ActivateTab7,
         ActivateTab8,
         ActivateLastTab,
+        ToggleTabsPanel,
     ]
 );
 
@@ -53,5 +54,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-7", ActivateTab7, Some("Workspace")),
         KeyBinding::new("cmd-8", ActivateTab8, Some("Workspace")),
         KeyBinding::new("cmd-9", ActivateLastTab, Some("Workspace")),
+        KeyBinding::new("cmd-shift-l", ToggleTabsPanel, Some("Workspace")),
     ]);
 }

@@ -19,6 +19,8 @@ pub struct Config {
     pub font_size: Option<f32>,
     pub ligatures: bool,
     pub sidebar_width: Option<f32>,
+    /// `sidebar-visible`: whether windows open with the tabs sidebar shown.
+    pub sidebar_visible: bool,
     pub details_panel_width: Option<f32>,
     pub option_as_meta: bool,
     pub scrollback: Option<usize>,
@@ -101,7 +103,7 @@ impl Config {
 
     /// Defaults follow Otty's: ligatures on, Option is not Alt, no blinking.
     pub fn parse(src: &str) -> Self {
-        let mut out = Config { ligatures: true, ..Default::default() };
+        let mut out = Config { ligatures: true, sidebar_visible: true, ..Default::default() };
         let (entries, mut warnings) = parse_entries(src);
         let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
         let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
@@ -130,6 +132,7 @@ impl Config {
                     out.ligatures = value.as_bool().unwrap_or_else(|| value.as_str() != Some("off"))
                 }
                 "sidebar-width" => out.sidebar_width = num_of(value),
+                "sidebar-visible" => out.sidebar_visible = value.as_bool().unwrap_or(true),
                 "details-panel-width" => out.details_panel_width = num_of(value),
                 // `true`, `false`, `left` or `right`; one side counts as on
                 // until left/right modifiers are told apart.
@@ -367,6 +370,7 @@ mod tests {
         let d = Config::parse("");
         assert!(d.ligatures && !d.option_as_meta && d.cursor_blink == CursorBlink::DefaultOff);
         assert_eq!(d.cursor_style, CursorStyle::Block);
+        assert!(d.sidebar_visible && !Config::parse("sidebar-visible = false\n").sidebar_visible);
         let cfg = Config::parse(
             "font-ligatures = \"off\"\nmacos-option-as-alt = \"left\"\ncursor-style-blink = \"default_on\"\nwindow-hide-dirty-indicator = true\n",
         );
