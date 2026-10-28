@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/farvisun/motty"
+
+[workspace.dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.10" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10" }
+alacritty_terminal = "=0.26.0"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+motty-theme = { path = "crates/motty-theme" }
+motty-term = { path = "crates/motty-term" }
+motty-render = { path = "crates/motty-render" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
