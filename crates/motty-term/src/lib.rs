@@ -13,7 +13,8 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{self, Term};
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
@@ -411,6 +412,14 @@ impl Session {
     /// The command typed at `block`'s prompt (from where input started to
     /// where its output did), if it's still in the scrollback.
     pub fn block_command(&self, block: &shell::Block) -> Option<String> {
+        let text = self.block_input(block)?;
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    /// Like [`Self::block_command`], but keeping leading spaces (shells
+    /// leave a command typed after a space out of their history).
+    pub fn block_input(&self, block: &shell::Block) -> Option<String> {
         let ((row, col), out) = (block.input?, block.output_row?);
         let term = self.term.lock();
         let pushed = term.grid().lines_pushed() as i64;
@@ -421,8 +430,54 @@ impl Session {
         }
         let end = Point::new(last, Column(term.columns().saturating_sub(1)));
         let text = term.bounds_to_string(Point::new(first, Column(col)), end);
-        let text = text.trim();
-        (!text.is_empty()).then(|| text.to_owned())
+        let text = text.trim_end();
+        (!text.trim_start().is_empty()).then(|| text.to_owned())
+    }
+
+    /// What's typed at the prompt so far, when the shell is waiting at one
+    /// and the cursor is at the end of the input (trailing spaces kept).
+    pub fn prompt_input(&self) -> Option<String> {
+        let (row, col) = {
+            let shell = self.shell();
+            let block = shell.blocks.back().filter(|_| shell.integrated)?;
+            if block.output_row.is_some() {
+                return None;
+            }
+            block.input?
+        };
+        let term = self.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) || term.grid().display_offset() != 0 {
+            return None;
+        }
+        let grid = term.grid();
+        let pushed = grid.lines_pushed() as i64;
+        let start = Point::new(Line((row as i64 - pushed) as i32), Column(col));
+        let cursor = grid.cursor.point;
+        if cursor < start || start.line < term.topmost_line() {
+            return None;
+        }
+        // Something drawn at the cursor (a shell's own suggestion) wins.
+        let cols = term.columns();
+        if grid[cursor.line][cursor.column].c != ' ' {
+            return None;
+        }
+        let mut text = String::new();
+        let mut at = start;
+        while at < cursor {
+            let cell = &grid[at.line][at.column];
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                text.push(cell.c);
+                text.extend(cell.zerowidth().into_iter().flatten());
+            }
+            at.column += 1;
+            if at.column.0 >= cols {
+                at = Point::new(at.line + 1, Column(0));
+            }
+        }
+        Some(text)
     }
 
     /// Working directory of the foreground process.

@@ -24,6 +24,7 @@ use motty_theme::CursorBlink;
 
 use crate::actions::*;
 
+mod autocomplete;
 mod find;
 mod hints;
 mod links;
@@ -94,6 +95,12 @@ pub struct TerminalView {
     hints: Option<hints::HintState>,
     /// Input is refused (output still streams).
     read_only: bool,
+    /// The `autocomplete-*` settings.
+    autocomplete: motty_theme::Autocomplete,
+    /// The inline suggestion at the prompt, if any.
+    suggestion: Option<autocomplete::Suggestion>,
+    /// The prompt line whose suggestion Esc hid.
+    dismissed: Option<String>,
     _events: Task<()>,
 }
 
@@ -160,6 +167,9 @@ impl TerminalView {
             vi_key_hints: true,
             hints: None,
             read_only: false,
+            autocomplete: Default::default(),
+            suggestion: None,
+            dismissed: None,
             _events: task,
         }
     }
@@ -334,6 +344,8 @@ impl TerminalView {
             SessionEvent::CursorBlinkingChange => cx.notify(),
             SessionEvent::Exited(_) => cx.emit(TerminalEvent::Exited),
             SessionEvent::CommandFinished { exit, duration } => {
+                // Where it ran: the folder before any `cd` it did.
+                self.record_command(self.cwd.clone(), exit);
                 self.refresh_process();
                 cx.emit(TerminalEvent::CommandFinished { exit, duration });
             }
@@ -387,6 +399,11 @@ impl TerminalView {
         }
         if self.vi.is_some() {
             self.vi_key(event, window, cx);
+            return;
+        }
+        if self.suggestion_key(&event.keystroke, cx) {
+            self.reset_blink();
+            cx.stop_propagation();
             return;
         }
         let ks = &event.keystroke;
@@ -657,6 +674,9 @@ impl Render for TerminalView {
         let entity = cx.entity().downgrade();
         let input_entity = cx.entity();
         let focus = self.focus_handle.clone();
+        if focused {
+            self.update_suggestion();
+        }
         let element = TerminalElement::new(
             self.session.term.clone(),
             self.style.clone(),
@@ -671,6 +691,7 @@ impl Render for TerminalView {
             },
         )
         .preedit(self.marked_text.clone())
+        .ghost(focused.then(|| self.ghost_text()).flatten())
         .highlights(self.find_highlights())
         .underlines(self.underlines())
         .labels(self.hint_labels())
@@ -709,6 +730,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(|this, _: &AcceptSuggestion, _, cx| {
+                this.accept_suggestion(cx);
+            }))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
                 if let Some(cwd) = &this.cwd {
                     cx.write_to_clipboard(ClipboardItem::new_string(cwd.display().to_string()));

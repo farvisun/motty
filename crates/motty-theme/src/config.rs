@@ -49,11 +49,54 @@ pub struct Config {
     pub link_cmd_shift_click: LinkShiftClick,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
+    /// The `autocomplete-*` keys.
+    pub autocomplete: Autocomplete,
     /// `keybind = <trigger>=<action>` entries, in file order.
     pub keybinds: Vec<Keybind>,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+/// Inline suggestions from the commands run before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Autocomplete {
+    /// `autocomplete-shortcut`: the key that accepts a suggestion.
+    pub shortcut: AcceptKey,
+    /// `autocomplete-inline-suggestion`: draw the ghost text at all.
+    pub inline: bool,
+    /// `autocomplete-on-device-learning`: remember the commands run.
+    pub learn: bool,
+    /// `autocomplete-skip-secrets`: never remember a command that looks
+    /// like it carries a password, token or key.
+    pub skip_secrets: bool,
+    /// `autocomplete-history-ignore`: globs for commands never remembered.
+    pub history_ignore: Vec<String>,
+}
+
+impl Default for Autocomplete {
+    fn default() -> Self {
+        Self {
+            shortcut: AcceptKey::Tab,
+            inline: true,
+            learn: true,
+            skip_secrets: false,
+            history_ignore: Vec::new(),
+        }
+    }
+}
+
+/// `autocomplete-shortcut` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AcceptKey {
+    #[default]
+    Tab,
+    /// Tab or →.
+    TabRightArrow,
+    /// → only; Tab stays with the shell.
+    RightArrow,
+    CtrlSpace,
+    Disable,
 }
 
 /// One `keybind` line: a chord such as `cmd+shift+t` and what it does
@@ -275,6 +318,41 @@ impl Config {
                     _ => unknown.push(format!("config.toml {key}: unknown action {value}")),
                 },
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
+                "autocomplete-shortcut" => match value.as_str() {
+                    Some("tab") => out.autocomplete.shortcut = AcceptKey::Tab,
+                    Some("tab+right-arrow") => out.autocomplete.shortcut = AcceptKey::TabRightArrow,
+                    Some("right-arrow") => out.autocomplete.shortcut = AcceptKey::RightArrow,
+                    Some("ctrl+space") => out.autocomplete.shortcut = AcceptKey::CtrlSpace,
+                    Some("disable") => out.autocomplete.shortcut = AcceptKey::Disable,
+                    _ => unknown.push(format!("config.toml {key}: unknown key {value}")),
+                },
+                "autocomplete-inline-suggestion" => {
+                    out.autocomplete.inline = value.as_bool().unwrap_or(true)
+                }
+                "autocomplete-on-device-learning" => {
+                    out.autocomplete.learn = value.as_bool().unwrap_or(true)
+                }
+                "autocomplete-skip-secrets" => {
+                    out.autocomplete.skip_secrets = value.as_bool().unwrap_or(false)
+                }
+                // A list, a comma-separated string, or the key repeated.
+                "autocomplete-history-ignore" => {
+                    let globs: Vec<String> = match value.as_array() {
+                        Some(list) => list
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect(),
+                        None => value
+                            .as_str()
+                            .unwrap_or_default()
+                            .split(',')
+                            .map(|g| g.trim().to_owned())
+                            .collect(),
+                    };
+                    out.autocomplete
+                        .history_ignore
+                        .extend(globs.into_iter().filter(|g| !g.is_empty()));
+                }
                 "keybind" => match value.as_str().and_then(Keybind::parse) {
                     Some(keybind) => out.keybinds.push(keybind),
                     None => unknown.push(format!("config.toml keybind: can't read {value}")),

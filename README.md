@@ -116,6 +116,23 @@ cycles them. ⌘J opens straight to Current. ↩ switches, reopens, `cd`s, conne
 command or opens the file; hold ⌘ to see ⌘1–⌘9 for the first nine. A path typed from `/` or `~`
 gets its own row.
 
+## Autocomplete
+
+At a prompt (with shell integration), Motty suggests the rest of the line from commands you ran
+before, as dim text after the cursor: this folder's commands first, any folder's when it has
+none. When two are about as likely it shows only the next word they share. Tab accepts, Esc hides
+it until you change the line; the `accept_suggestion` action can be bound too. Commands that don't
+exist (exit 127) and ones typed after a space aren't remembered. History is kept in
+`~/Library/Application Support/Motty/history.json`.
+
+| Key | Meaning |
+|---|---|
+| `autocomplete-shortcut` | `tab` (default), `tab+right-arrow`, `right-arrow` (Tab stays with the shell), `ctrl+space`, `disable` |
+| `autocomplete-inline-suggestion` | Draw the suggestion (default `true`) |
+| `autocomplete-on-device-learning` | Remember commands at all (default `true`) |
+| `autocomplete-skip-secrets` | Don't remember commands that look like they carry a password, token or key |
+| `autocomplete-history-ignore` | Globs never remembered, e.g. `["ssh *", "export *TOKEN*"]` |
+
 ## Details panel
 
 ⌘⇧R (or the button at the titlebar's right end) opens a panel about the focused pane:

@@ -1,6 +1,7 @@
 mod actions;
 mod folders;
 mod fonts;
+mod history;
 mod ipc;
 mod materials;
 mod notifications;
@@ -61,7 +62,11 @@ fn main() {
             eprintln!("motty: {e:#}");
             cx.quit();
         }
-        cx.activate(true);
+        // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
+        // keyboard from whatever the user is typing into.
+        if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
+            cx.activate(true);
+        }
     });
 }
 

@@ -30,6 +30,7 @@ actions!(
         ActivateLastTab,
         ToggleTabsPanel,
         ToggleDetailsPanel,
+        AcceptSuggestion,
         DetailsInfo,
         DetailsOutline,
         DetailsGit,

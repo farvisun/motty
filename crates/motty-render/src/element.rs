@@ -126,6 +126,9 @@ const MATCH_DARK_TEXT: u32 = 0x1b1b1b;
 const LABEL_BACKGROUND: u32 = 0xffd926;
 const LABEL_INK: u32 = 0x1a1a1a;
 
+/// How strongly ghost text shows against the foreground.
+const GHOST_ALPHA: f32 = 0.4;
+
 type ResizeFn = Box<dyn FnOnce(GridSize, &mut Window, &mut App)>;
 type PaintHook = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
 
@@ -138,6 +141,8 @@ pub struct TerminalElement {
     on_resize: Option<ResizeFn>,
     on_paint: Option<PaintHook>,
     preedit: Option<SharedString>,
+    /// An inline suggestion, drawn dim from the cursor on.
+    ghost: Option<SharedString>,
     /// Sorted, non-overlapping.
     highlights: Vec<Highlight>,
     /// Links under the pointer or hint targets, underlined (OSC 8 links
@@ -165,6 +170,7 @@ impl TerminalElement {
             on_resize: Some(Box::new(on_resize)),
             on_paint: None,
             preedit: None,
+            ghost: None,
             highlights: Vec::new(),
             underlines: Vec::new(),
             labels: Vec::new(),
@@ -198,6 +204,12 @@ impl TerminalElement {
         self
     }
 
+    /// Suggested text, drawn dim from the cursor to the end of its row.
+    pub fn ghost(mut self, text: Option<SharedString>) -> Self {
+        self.ghost = text.filter(|t| !t.is_empty());
+        self
+    }
+
     /// IME composition text, drawn over the cursor.
     pub fn preedit(mut self, text: Option<SharedString>) -> Self {
         self.preedit = text.filter(|t| !t.is_empty());
@@ -217,6 +229,7 @@ pub struct Prepaint {
     cursor: Option<PaintQuad>,
     cursor_text: Option<TextSegment>,
     preedit: Option<(PaintQuad, PaintQuad, TextSegment)>,
+    ghost: Option<TextSegment>,
     line_height: Pixels,
 }
 
@@ -336,6 +349,29 @@ impl gpui::Element for TerminalElement {
                 gpui::BorderStyle::Solid,
             ));
         }
+        if let (Some(text), Some((row, col)), None) =
+            (self.ghost.clone(), snapshot.cursor_cell, &self.preedit)
+        {
+            let room = layout.cols.saturating_sub(col);
+            let text: String = text.chars().take(room).collect();
+            if !text.is_empty() {
+                let fg = style.palette[NamedColor::Foreground as usize];
+                let run = TextRun {
+                    len: text.len(),
+                    font: style.font.clone(),
+                    color: hsla(fg.with_alpha(fg.a * GHOST_ALPHA)),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line =
+                    window
+                        .text_system()
+                        .shape_line(text.into(), style.font_size, &[run], None);
+                let origin = layout.cell_bounds(row, col).origin;
+                prepaint.ghost = Some(TextSegment { origin, line });
+            }
+        }
         if let (Some(text), Some((row, col))) = (self.preedit.clone(), snapshot.cursor_cell) {
             prepaint.preedit = Some(build_preedit(text, &style, &layout, row, col, window));
             prepaint.cursor = None;
@@ -370,6 +406,16 @@ impl gpui::Element for TerminalElement {
             }
             for quad in prepaint.glyph_quads.drain(..) {
                 window.paint_quad(quad);
+            }
+            if let Some(seg) = &prepaint.ghost {
+                let _ = seg.line.paint(
+                    seg.origin,
+                    prepaint.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
             if let Some(cursor) = prepaint.cursor.take() {
                 window.paint_quad(cursor);
@@ -809,6 +855,7 @@ fn build(
         cursor,
         cursor_text,
         preedit: None,
+        ghost: None,
         line_height: lh,
     }
 }
