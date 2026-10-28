@@ -227,6 +227,30 @@ impl Session {
         process_name(self.foreground_pid()?)
     }
 
+    /// The shell's pid. On macOS the default shell is started through
+    /// `/usr/bin/login`, so the spawned process is `login` (root-owned, so
+    /// its name is unreadable) and the shell is its child.
+    fn shell_pid(&self) -> i32 {
+        let pid = self.pid as i32;
+        match process_name(pid).as_deref() {
+            None | Some("login") => first_child(pid).unwrap_or(pid),
+            _ => pid,
+        }
+    }
+
+    /// Short name of the shell, e.g. `zsh`.
+    pub fn shell_name(&self) -> Option<String> {
+        process_name(self.shell_pid())
+    }
+
+    /// Whether the shell is running a command rather than waiting at a
+    /// prompt. Non-interactive shells keep children in their own process
+    /// group, so child processes are checked as well as the foreground group.
+    pub fn is_busy(&self) -> bool {
+        let shell = self.shell_pid();
+        self.foreground_pid().is_some_and(|pgid| pgid != shell) || first_child(shell).is_some()
+    }
+
     /// Working directory of the foreground process.
     pub fn foreground_cwd(&self) -> Option<PathBuf> {
         process_cwd(self.foreground_pid()?)
@@ -254,6 +278,20 @@ fn process_cwd(pid: i32) -> Option<PathBuf> {
     // SAFETY: the kernel NUL-terminates vip_path.
     let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
     Some(PathBuf::from(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(target_os = "macos")]
+fn first_child(pid: i32) -> Option<i32> {
+    let mut buf = [0 as libc::pid_t; 16];
+    let size = std::mem::size_of_val(&buf) as i32;
+    // SAFETY: the buffer is valid for `size` bytes.
+    let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr().cast(), size) };
+    (n > 0 && buf[0] > 0).then_some(buf[0])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn first_child(_pid: i32) -> Option<i32> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]

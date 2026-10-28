@@ -71,3 +71,38 @@ fn foreground_process_is_reported() {
     assert_eq!(name.as_deref(), Some("sleep"));
     assert_eq!(s.foreground_cwd().map(|p| p.canonicalize().unwrap()), Some(std::path::Path::new("/tmp").canonicalize().unwrap()));
 }
+
+#[test]
+fn busy_while_a_child_runs() {
+    let s = run("sleep 5; true");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !s.is_busy() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(s.is_busy());
+    // macOS /bin/sh re-execs bash, so only check a name is found.
+    assert!(s.shell_name().is_some());
+}
+
+#[test]
+fn default_shell_is_named_through_login_and_idle() {
+    let size = GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 16. };
+    let s = Session::spawn(SessionConfig::default(), size).unwrap().0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut name = None;
+    while Instant::now() < deadline {
+        name = s.shell_name();
+        if name.as_deref().is_some_and(|n| n != "login") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let name = name.expect("shell name");
+    assert_ne!(name, "login");
+    // Wait out shell startup (rc files may run short-lived commands).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.is_busy() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!s.is_busy(), "{name} at a prompt should be idle");
+}
