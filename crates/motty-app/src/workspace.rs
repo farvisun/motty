@@ -25,9 +25,9 @@ const TITLE_RIGHT_INSET: f32 = 66.;
 /// Top of the "TABS" header row and the first tab card.
 const SIDEBAR_HEADER_TOP: f32 = 37.5;
 const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
-const TAB_HEIGHT: f32 = 37.;
-const TAB_GAP: f32 = 1.;
-const SIDEBAR_INSET: f32 = 7.5;
+const TAB_HEIGHT: f32 = 36.;
+const TAB_GAP: f32 = 2.;
+const SIDEBAR_INSET: f32 = 8.;
 const SIDEBAR_TEXT_INSET: f32 = 18.;
 const SIDEBAR_ICON_INSET: f32 = 16.5;
 /// Process label beside each tab title: small mono text with wide tracking.
@@ -280,6 +280,7 @@ impl Workspace {
                 let hover_bg = t.tabs.hover.background;
                 let card = div()
                     .id(("tab", ix))
+                    .relative()
                     .h(px(style.height.unwrap_or(TAB_HEIGHT)))
                     .px(px(style.padding.left))
                     .flex()
@@ -300,14 +301,15 @@ impl Workspace {
                             this.activate(ix, window, cx);
                         }),
                     )
-                    // Otty's title sits half a point below and left of where
-                    // the card's centering and padding put it.
-                    .child(div().flex_1().min_w_0().pt(px(1.)).ml(px(-0.5)).truncate().child(title))
+                    // Otty's title baseline is half a point below the card's center.
+                    .child(div().flex_1().min_w_0().pt(px(1.)).truncate().child(title))
                     .child(
                         // The label column keeps room for six characters, so
                         // titles truncate at the same place for any process.
+                        // It ends half a point inside the card's padding.
                         div()
                             .flex_none()
+                            .mr(px(0.5))
                             .min_w(px(LABEL_COLUMNS * LABEL_PITCH))
                             .flex()
                             .justify_end()
@@ -316,24 +318,18 @@ impl Workspace {
                             .text_color(hsla(if active { native_tertiary_label(t) } else { t.token.tertiary }))
                             .child(tracked(&process, LABEL_PITCH)),
                     );
-                // Inactive cards get a transparent border so text stays aligned
-                // with the bordered active card.
-                match &style.border {
-                    Some(b) => card.border(px(b.width)).border_color(hsla(t.border_color(b))),
-                    None => card.border(px(1.)).border_color(gpui::transparent_black()),
-                }
-                .into_any_element()
+                card.children(style.border.as_ref().and_then(|b| tab_border(t, b, style.radius))).into_any_element()
             })
             .collect();
 
         sidebar
             .child(header)
             .child(
-                // Cards sit on a 38pt pitch starting half a point above the
-                // list, whose top edge clips the first card's border.
+                // The list's top edge clips the outer half of the first card's
+                // border, as in Otty.
                 div()
                     .overflow_hidden()
-                    .child(div().mt(px(-0.5)).px(px(SIDEBAR_INSET)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
+                    .child(div().px(px(SIDEBAR_INSET)).pb(px(1.)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
             )
             .into_any_element()
     }
@@ -369,6 +365,29 @@ fn native_tertiary_label(t: &Theme) -> Rgba {
         Mode::Light => Rgba { r: 0., g: 0., b: 0., a: 0.26 },
         Mode::Dark => Rgba { r: 1., g: 1., b: 1., a: 0.25 },
     }
+}
+
+/// A tab card's border, stroked centered on the card's edge (half outside),
+/// as Otty draws it. Otty skips translucent tab borders (seen with the
+/// `rgba()` borders of its glass themes), so only opaque ones are drawn.
+fn tab_border(t: &Theme, b: &Border, radius: f32) -> Option<AnyElement> {
+    let color = t.border_color(b);
+    if color.a < 1. || b.width <= 0. {
+        return None;
+    }
+    let half = px(b.width / 2.);
+    Some(
+        div()
+            .absolute()
+            .top(-half)
+            .left(-half)
+            .right(-half)
+            .bottom(-half)
+            .rounded(px(radius + b.width / 2.))
+            .border(px(b.width))
+            .border_color(hsla(color))
+            .into_any_element(),
+    )
 }
 
 /// Lays out `text` one character per fixed-width cell, which emulates the

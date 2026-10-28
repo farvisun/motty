@@ -525,8 +525,7 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
             foreground: token.foreground,
             font_weight: 500.,
             indicator: accent,
-            shadow: css::parse_shadows(if dark { "0 1px 2px rgba(0,0,0,0.25)" } else { "0 1px 2px rgba(0,0,0,0.05)" })
-                .unwrap(),
+            // No shadow unless the theme asks (Otty's glass themes show none).
             ..normal.clone()
         },
         active_unfocused: normal.clone(),
