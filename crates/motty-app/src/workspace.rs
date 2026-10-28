@@ -116,10 +116,13 @@ fn spawn_shell(
     pane_id: u64,
 ) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
     // Commands from `-e` run as they are; the user's shell gets integration.
-    let mut env = if command.is_none() {
-        crate::shell_integration::env(config, &crate::shell_integration::login_shell(config))
+    let crate::shell_integration::Launch {
+        mut env,
+        command: shell_command,
+    } = if command.is_none() {
+        crate::shell_integration::launch(config)
     } else {
-        std::collections::HashMap::new()
+        Default::default()
     };
     // Programs (and agents) in the pane can drive Motty through `motty`.
     env.insert(motty_ipc::PANE_ENV.into(), pane_id.to_string());
@@ -131,7 +134,9 @@ fn spawn_shell(
         env.insert(motty_ipc::SOCKET_ENV.into(), socket.display().to_string());
     }
     let session = SessionConfig {
-        command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
+        command: command
+            .or(shell_command)
+            .or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
         env,
         working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),

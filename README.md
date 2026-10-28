@@ -42,11 +42,14 @@ registered automatically. Saving a config or theme file applies it to open windo
 
 ## Shell integration
 
-zsh and fish started by Motty load a small script (Motty's own, injected through `ZDOTDIR` or
-`XDG_DATA_DIRS` and undone before your startup files run) that reports prompts, commands with
-their exit status (OSC 133) and the working directory (OSC 7). Programs can also send OSC 9 /
-OSC 777 notifications and OSC 9;4 progress. Turn it off with `shell-integration = false`, or
-per shell with `shell-integration-disabled-shells = ["fish"]`. bash support is still to come.
+zsh, bash and fish started by Motty load a small script that reports prompts, commands with
+their exit status (OSC 133) and the working directory (OSC 7). zsh and fish get it through
+`ZDOTDIR` or `XDG_DATA_DIRS`, undone before your startup files run. bash (3.2 and later) is
+started with `--rcfile`, and the script runs the login startup files (`/etc/profile`, then
+`~/.bash_profile`, `~/.bash_login` or `~/.profile`) before hooking in; it works alongside
+bash-preexec. Programs can also send OSC 9 / OSC 777 notifications and OSC 9;4 progress. Turn
+it off with `shell-integration = false`, or per shell with
+`shell-integration-disabled-shells = ["fish"]`.
 
 ## Control from the shell (`motty`)
 

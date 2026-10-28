@@ -1,7 +1,8 @@
 //! Installs Motty's shell-integration scripts and the environment that makes
 //! a shell load them: zsh through a `ZDOTDIR` bootstrap, fish through a
-//! `vendor_conf.d` folder on `XDG_DATA_DIRS`. Both scripts undo the change
-//! before the user's own startup files run.
+//! `vendor_conf.d` folder on `XDG_DATA_DIRS`, both undone before the user's
+//! own startup files run. bash is started with `--rcfile` instead, and the
+//! script runs the login startup files itself.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ const FILES: &[(&str, &str)] = &[
     (
         "zsh/motty.zsh",
         include_str!("../assets/shell-integration/zsh/motty.zsh"),
+    ),
+    (
+        "bash/motty.bash",
+        include_str!("../assets/shell-integration/bash/motty.bash"),
     ),
     (
         "fish/vendor_conf.d/motty.fish",
@@ -47,14 +52,23 @@ fn installed() -> Option<&'static Path> {
     .as_deref()
 }
 
-/// Environment for starting `shell` (a path or name) with integration, or
-/// nothing when it's off, disabled for that shell, or not supported.
-pub fn env(config: &Config, shell: &str) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    let name = Path::new(shell)
+/// How to start the user's shell with integration: extra environment, and
+/// for bash the command itself. Nothing when integration is off, disabled
+/// for that shell, or not supported.
+#[derive(Default)]
+pub struct Launch {
+    pub env: HashMap<String, String>,
+    pub command: Option<(String, Vec<String>)>,
+}
+
+pub fn launch(config: &Config) -> Launch {
+    let shell = login_shell(config);
+    let mut launch = Launch::default();
+    let env = &mut launch.env;
+    let name = Path::new(&shell)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(shell)
+        .unwrap_or(&shell)
         .trim_start_matches('-');
     if !config.shell_integration
         || config
@@ -62,9 +76,11 @@ pub fn env(config: &Config, shell: &str) -> HashMap<String, String> {
             .iter()
             .any(|s| s == name)
     {
-        return env;
+        return launch;
     }
-    let Some(dir) = installed() else { return env };
+    let Some(dir) = installed() else {
+        return launch;
+    };
     match name {
         "zsh" => {
             if let Ok(orig) = std::env::var("ZDOTDIR") {
@@ -82,10 +98,16 @@ pub fn env(config: &Config, shell: &str) -> HashMap<String, String> {
                 env.insert("MOTTY_ORIG_XDG_DATA_DIRS".into(), orig);
             }
         }
-        _ => return env,
+        "bash" => {
+            let rcfile = dir.join("bash/motty.bash").display().to_string();
+            launch.command = Some((shell.clone(), vec!["--rcfile".into(), rcfile]));
+        }
+        _ => return launch,
     }
-    env.insert("MOTTY_SHELL_INTEGRATION".into(), dir.display().to_string());
-    env
+    launch
+        .env
+        .insert("MOTTY_SHELL_INTEGRATION".into(), dir.display().to_string());
+    launch
 }
 
 /// The shell a session starts when no command is given: `shell` from the
