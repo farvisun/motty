@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{Action, App, Global, KeyBinding, KeyBindingContextPredicate, actions};
+use gpui::{Action, App, Global, KeyBinding, KeyBindingContextPredicate, NoAction, actions};
 use motty_theme::config::Keybind;
 
 actions!(
@@ -187,6 +187,27 @@ fn defaults() -> Vec<DefaultKey> {
     ]
 }
 
+/// The ⌘ chords Open Quickly handles itself: filters, rows, open.
+const OPEN_QUICKLY_KEYS: [&str; 17] = [
+    "cmd-0",
+    "cmd-w",
+    "cmd-r",
+    "cmd-z",
+    "cmd-s",
+    "cmd-j",
+    "cmd-p",
+    "cmd-1",
+    "cmd-2",
+    "cmd-3",
+    "cmd-4",
+    "cmd-5",
+    "cmd-6",
+    "cmd-7",
+    "cmd-8",
+    "cmd-9",
+    "cmd-enter",
+];
+
 /// The keybinds last bound, so a reload that leaves them alone is free.
 #[derive(Default)]
 struct Bound(Option<Vec<Keybind>>);
@@ -233,6 +254,11 @@ pub fn bind_keys(cx: &mut App, keybinds: &[Keybind]) -> Vec<String> {
         if !user.iter().any(|(k, _)| *k == keys) {
             load(d.keys, d.action.boxed_clone(), d.context);
         }
+    }
+    // Bindings run before key handlers, so these keep the window's ⌘W, ⌘J
+    // and ⌘1–9 (default or the config's) out of Open Quickly's way.
+    for keys in OPEN_QUICKLY_KEYS {
+        load(keys, Box::new(NoAction), Some("OpenQuickly"));
     }
     for (keys, action) in user {
         let Some(action) = action else { continue };
@@ -455,6 +481,30 @@ mod tests {
         assert_eq!(chord("f6").unwrap(), "f6");
         assert!(chord("hyper+x").is_err());
         assert!(chord("cmd+nope").is_err());
+    }
+
+    #[test]
+    fn open_quickly_keys_shadow_window_bindings() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let mut bindings = vec![KeyBinding::new("cmd-w", CloseTab, WORKSPACE)];
+        bindings.extend(
+            OPEN_QUICKLY_KEYS
+                .iter()
+                .map(|keys| KeyBinding::new(keys, NoAction, Some("OpenQuickly"))),
+        );
+        let keymap = Keymap::new(bindings);
+        let stack = |names: &[&str]| -> Vec<KeyContext> {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).unwrap())
+                .collect()
+        };
+        let cmd_w = [Keystroke::parse("cmd-w").unwrap()];
+        let (in_picker, _) =
+            keymap.bindings_for_input(&cmd_w, &stack(&["Workspace", "OpenQuickly"]));
+        assert!(in_picker.is_empty());
+        let (in_pane, _) = keymap.bindings_for_input(&cmd_w, &stack(&["Workspace", "Terminal"]));
+        assert_eq!(in_pane.len(), 1);
     }
 
     #[test]
