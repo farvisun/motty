@@ -400,6 +400,7 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <key>CFBundleName</key><string>Motty</string>
     <key>CFBundleDisplayName</key><string>Motty</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>Motty</string>
     <key>CFBundleShortVersionString</key><string>{version}</string>
     <key>CFBundleVersion</key><string>{version}</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
@@ -442,12 +443,44 @@ fn bundle(release: bool) -> Result<PathBuf> {
     let cli = bin.join("motty");
     let _ = std::fs::remove_file(&cli);
     std::fs::copy(profile.join("motty"), &cli)?;
+    icns(&profile, &app.join("Contents/Resources/Motty.icns"))?;
     let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
     run(Command::new("codesign")
         .args(["--force", "--sign", "-"])
         .arg(&app))?;
     Ok(app)
+}
+
+/// Builds `out` from the 1024px icon (every size macOS asks for, via an
+/// iconset), unless it's newer than the icon already.
+fn icns(profile: &Path, out: &Path) -> Result<()> {
+    let src = root().join("crates/motty-app/assets/icon/motty.png");
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    if modified(out).is_some_and(|built| modified(&src).is_some_and(|src| built >= src)) {
+        return Ok(());
+    }
+    let set = profile.join("Motty.iconset");
+    let _ = std::fs::remove_dir_all(&set);
+    std::fs::create_dir_all(&set)?;
+    for size in [16, 32, 128, 256, 512] {
+        for (scale, suffix) in [(1, ""), (2, "@2x")] {
+            let px = (size * scale).to_string();
+            run(Command::new("sips")
+                .args(["-z", &px, &px])
+                .arg(&src)
+                .arg("--out")
+                .arg(set.join(format!("icon_{size}x{size}{suffix}.png")))
+                .stdout(std::process::Stdio::null()))?;
+        }
+    }
+    run(Command::new("iconutil")
+        .args(["-c", "icns"])
+        .arg(&set)
+        .arg("-o")
+        .arg(out))?;
+    std::fs::remove_dir_all(&set)?;
+    Ok(())
 }
 
 fn capture_motty(
