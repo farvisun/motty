@@ -61,6 +61,15 @@ motty send --pane 3 $'q'           # type into a pane
 motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
 ```
 
+`motty mcp` serves the same operations to coding agents as MCP tools (`list_panes`, `read_pane`,
+`run_command`, `send_text`, `split_pane`, `new_tab`, `focus_pane`, `close_pane`):
+
+```sh
+claude mcp add motty -- motty mcp      # Claude Code; Codex: [mcp_servers.motty] command = "motty", args = ["mcp"]
+```
+
+Agents can't type into their own pane through it; they split one off and work there.
+
 `run` and `--last-command` need shell integration. `--json` prints machine-readable output; the
 protocol (JSON lines) is in `crates/motty-ipc`.
 

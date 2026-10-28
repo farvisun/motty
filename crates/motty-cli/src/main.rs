@@ -3,6 +3,8 @@
 //! Inside a Motty pane, `$MOTTY_SOCKET` and `$MOTTY_PANE_ID` are set, so
 //! commands act on the pane they run in unless `--pane` says otherwise.
 
+mod mcp;
+
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -90,6 +92,9 @@ enum Command {
         #[arg(long)]
         pane: Option<u64>,
     },
+    /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
+    /// `claude mcp add motty -- motty mcp`.
+    Mcp,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -123,6 +128,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    if let Command::Mcp = cli.command {
+        mcp::serve()?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let mut client = Client::connect()?;
     let json = cli.json;
     let print = |value: &Value| {
@@ -249,6 +258,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Close { pane: id } => {
             let _: Value = client.call(method::CLOSE, &pane(id))?;
         }
+        Command::Mcp => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)
 }
