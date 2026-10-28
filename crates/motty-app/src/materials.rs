@@ -72,6 +72,17 @@ impl Backdrops {
     }
 }
 
+/// Floats the window over other apps' without making Motty the active
+/// app, so it draws (and can be captured) while the keyboard stays where it
+/// was. An occluded window doesn't draw, and ordering front alone stays
+/// behind the active app's windows.
+pub fn show_inactive(window: &Window) {
+    #[cfg(target_os = "macos")]
+    mac::show_inactive(window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use objc2::MainThreadMarker;
@@ -99,6 +110,13 @@ mod mac {
         // SAFETY: GPUI's AppKit handle points at its live NSView, which
         // outlives this borrow of the window, and we are on the main thread.
         Some(unsafe { handle.ns_view.cast::<NSView>().as_ref() })
+    }
+
+    pub fn show_inactive(window: &gpui::Window) {
+        if let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) {
+            ns_window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
+            ns_window.orderFrontRegardless();
+        }
     }
 
     /// Gives the traffic lights the theme's appearance, as Otty does, by
