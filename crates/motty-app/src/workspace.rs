@@ -527,7 +527,9 @@ impl Render for Workspace {
             .child(
                 div()
                     .id("titlebar")
-                    .h(px(t.titlebar.height.unwrap_or(TITLEBAR_RESERVE)))
+                    // Otty keeps the native height with a sidebar, whatever
+                    // `[titlebar] height` says (Nord sets 40).
+                    .h(px(TITLEBAR_RESERVE))
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
                         if event.click_count == 2 {
