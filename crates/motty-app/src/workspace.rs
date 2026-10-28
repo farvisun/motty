@@ -2,6 +2,8 @@
 //! around the active tab's panes.
 
 use std::collections::HashMap;
+
+use anyhow::Context as _;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -108,13 +110,23 @@ fn spawn_shell(
     command: Option<(String, Vec<String>)>,
     cwd: Option<std::path::PathBuf>,
     size: GridSize,
+    pane_id: u64,
 ) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
     // Commands from `-e` run as they are; the user's shell gets integration.
-    let env = if command.is_none() {
+    let mut env = if command.is_none() {
         crate::shell_integration::env(config, &crate::shell_integration::login_shell(config))
     } else {
-        Default::default()
+        std::collections::HashMap::new()
     };
+    // Programs (and agents) in the pane can drive Motty through `motty`.
+    env.insert(motty_ipc::PANE_ENV.into(), pane_id.to_string());
+    if let Some(dir) = cli_dir() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        env.insert("PATH".into(), format!("{}:{path}", dir.display()));
+    }
+    if let Some(socket) = crate::ipc::socket() {
+        env.insert(motty_ipc::SOCKET_ENV.into(), socket.display().to_string());
+    }
     let session = SessionConfig {
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
         env,
@@ -123,6 +135,20 @@ fn spawn_shell(
         cursor_style: cursor_style(config),
     };
     Session::spawn(session, size)
+}
+
+/// Where the `motty` CLI is: the bundle's Resources/bin, or beside the app
+/// binary in a cargo build.
+fn cli_dir() -> Option<&'static std::path::Path> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        [exe_dir.join("../Resources/bin"), exe_dir]
+            .into_iter()
+            .find(|d| d.join("motty").is_file())
+            .and_then(|d| d.canonicalize().ok())
+    })
+    .as_deref()
 }
 
 /// `cursor-style` and the blink policy's starting state, as the terminal's
@@ -252,10 +278,11 @@ impl Workspace {
         let area = self.pane_area(window);
         let pane = gpui::size(area.width * rect[2], area.height * rect[3]);
         let grid = motty_render::grid_for(&style, window, pane);
-        let (session, events) = spawn_shell(&self.config, command, cwd, grid)?;
+        let id = crate::terminal_view::next_pane_id();
+        let (session, events) = spawn_shell(&self.config, command, cwd, grid, id)?;
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
-            let mut view = TerminalView::new(session, events, style, meta, blink, window, cx);
+            let mut view = TerminalView::new(id, session, events, style, meta, blink, window, cx);
             view.refresh_process();
             view
         });
@@ -267,6 +294,7 @@ impl Workspace {
                 TerminalEvent::Exited => this.close_pane(terminal, window, cx),
                 TerminalEvent::CommandFinished { exit, duration } => {
                     tracing::debug!(?exit, ?duration, "command finished");
+                    crate::ipc::command_finished(terminal, *exit, *duration, cx);
                 }
                 TerminalEvent::Notification { title, body } => {
                     tracing::debug!(?title, body, "notification");
@@ -304,22 +332,103 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let cwd = tab.focused.read(cx).cwd.clone();
+        if let Err(e) = self.split_pane(direction, command, None, true, window, cx) {
+            tracing::error!("failed to start shell: {e:#}");
+        }
+    }
+
+    /// Splits the focused pane of the active tab; the new pane starts in
+    /// `cwd`, else where the focused one is.
+    pub fn split_pane(
+        &mut self,
+        direction: Direction,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<TerminalView>> {
+        let tab = self.tabs.get(self.active).context("no tab")?;
+        let cwd = cwd.or_else(|| tab.focused.read(cx).cwd.clone());
         let rect = direction.half(tab.root.rect_of(&tab.focused).unwrap_or([0., 0., 1., 1.]));
-        let terminal = match self.new_terminal(command, cwd, rect, window, cx) {
-            Ok(terminal) => terminal,
-            Err(e) => return tracing::error!("failed to start shell: {e:#}"),
-        };
+        let terminal = self.new_terminal(command, cwd, rect, window, cx)?;
         let id = self.next_split;
         self.next_split += 1;
         let tab = &mut self.tabs[self.active];
         tab.zoomed = false;
         tab.root
             .split(&tab.focused.clone(), terminal.clone(), direction, id);
-        self.focus_pane(terminal, window, cx);
+        if focus {
+            self.focus_pane(terminal.clone(), window, cx);
+        }
+        cx.notify();
+        Ok(terminal)
+    }
+
+    /// Opens a tab running `command` (else a shell) in `cwd` (else where the
+    /// active tab is) and activates it.
+    pub fn open_tab_with(
+        &mut self,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<TerminalView>> {
+        let cwd = cwd.or_else(|| {
+            self.tabs
+                .get(self.active)
+                .and_then(|tab| tab.focused.read(cx).cwd.clone())
+        });
+        self.add_tab(command, cwd, window, cx)?;
+        Ok(self.tabs.last().context("no tab")?.focused.clone())
+    }
+
+    /// Every pane, by tab.
+    pub fn panes(&self) -> impl Iterator<Item = (usize, &Entity<TerminalView>)> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .flat_map(|(ix, tab)| tab.root.leaves().into_iter().map(move |v| (ix, v)))
+    }
+
+    pub fn find_pane(&self, id: u64, cx: &App) -> Option<Entity<TerminalView>> {
+        self.panes()
+            .map(|(_, v)| v)
+            .find(|v| v.read(cx).id == id)
+            .cloned()
+    }
+
+    /// The pane that has focus in the active tab.
+    pub fn focused_pane(&self) -> Option<Entity<TerminalView>> {
+        self.tabs.get(self.active).map(|tab| tab.focused.clone())
+    }
+
+    pub fn is_focused_pane(&self, view: &Entity<TerminalView>) -> bool {
+        self.tabs
+            .get(self.active)
+            .is_some_and(|tab| tab.focused == *view)
+    }
+
+    /// Activates the pane's tab and focuses the pane.
+    pub fn reveal_pane(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ix) = self.tabs.iter().position(|t| t.root.contains(view)) {
+            self.activate(ix, window, cx);
+            self.focus_pane(view.clone(), window, cx);
+        }
+    }
+
+    pub fn close_pane_entity(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_pane(view, window, cx);
     }
 
     fn focus_pane(

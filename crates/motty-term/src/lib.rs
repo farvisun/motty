@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
@@ -330,10 +331,48 @@ impl Session {
         self.shell.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The visible screen as text, without trailing blank lines.
+    pub fn screen_text(&self) -> String {
+        let term = self.term.lock();
+        let last = term.screen_lines() as i32 - 1;
+        text_between(&term, Line(0), Line(last))
+            .trim_end_matches('\n')
+            .to_owned()
+    }
+
+    /// The last `n` lines, scrollback included, without trailing blank lines.
+    pub fn last_lines(&self, n: usize) -> String {
+        let term = self.term.lock();
+        let bottom = term.bottommost_line();
+        let top = Line((bottom.0 - n as i32 + 1).max(term.topmost_line().0));
+        text_between(&term, top, bottom)
+            .trim_end_matches('\n')
+            .to_owned()
+    }
+
+    /// What `block`'s command printed, if those rows are still there.
+    pub fn block_output(&self, block: &shell::Block) -> Option<String> {
+        let (start, end) = (block.output_row?, block.end_row?);
+        let term = self.term.lock();
+        let pushed = term.grid().lines_pushed() as i64;
+        let line = |row: u64| Line((row as i64 - pushed) as i32);
+        let (first, after) = (line(start), line(end));
+        if first < term.topmost_line() || after.0 <= first.0 {
+            return (after.0 == first.0).then(String::new);
+        }
+        Some(text_between(&term, first, Line(after.0 - 1)))
+    }
+
     /// Working directory of the foreground process.
     pub fn foreground_cwd(&self) -> Option<PathBuf> {
         process_cwd(self.foreground_pid()?)
     }
+}
+
+/// Whole lines `top..=bottom` as text, joining wrapped lines.
+fn text_between(term: &Terminal, top: Line, bottom: Line) -> String {
+    let end = Point::new(bottom, Column(term.columns().saturating_sub(1)));
+    term.bounds_to_string(Point::new(top, Column(0)), end)
 }
 
 #[cfg(target_os = "macos")]

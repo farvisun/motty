@@ -1,5 +1,6 @@
 mod actions;
 mod fonts;
+mod ipc;
 mod materials;
 mod panes;
 mod shell_integration;
@@ -26,6 +27,7 @@ fn main() {
     application().run(|cx: &mut App| {
         fonts::load(cx);
         actions::bind_keys(cx);
+        ipc::start(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::NewWindow, cx| {
             if let Err(e) = open_window(load_config(), None, cx) {

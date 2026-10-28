@@ -1,0 +1,16 @@
+[package]
+name = "motty-cli"
+description = "The `motty` command: drive Motty from a shell, a script or an agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "motty"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+motty-ipc.workspace = true
+serde_json = "1"

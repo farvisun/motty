@@ -9,7 +9,7 @@ with first-class support for coding agents.
 ```sh
 cargo run -p motty-app                    # login shell
 cargo run -p motty-app -- -e htop         # run a command instead
-cargo build --release -p motty-app        # optimized build: target/release/Motty
+cargo build --release -p motty-app        # optimized build: target/release/motty-app
 cargo xtask bundle --release              # app bundle: target/release/Motty.app
 ```
 
@@ -46,6 +46,23 @@ zsh and fish started by Motty load a small script (Motty's own, injected through
 their exit status (OSC 133) and the working directory (OSC 7). Programs can also send OSC 9 /
 OSC 777 notifications and OSC 9;4 progress. Turn it off with `shell-integration = false`, or
 per shell with `shell-integration-disabled-shells = ["fish"]`. bash support is still to come.
+
+## Control from the shell (`motty`)
+
+Motty listens on a Unix socket; shells it starts get `$MOTTY_SOCKET`, `$MOTTY_PANE_ID` and the
+`motty` CLI on `PATH`, so scripts and coding agents can drive it:
+
+```sh
+motty list                         # panes in every window
+motty run -- cargo test            # run in this pane's shell, wait, print output, exit with its status
+motty read --last-command          # output of the last command (also --lines N, or the screen)
+motty split -d down -- htop        # new pane; prints its id
+motty send --pane 3 $'q'           # type into a pane
+motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
+```
+
+`run` and `--last-command` need shell integration. `--json` prints machine-readable output; the
+protocol (JSON lines) is in `crates/motty-ipc`.
 
 ## Splits
 

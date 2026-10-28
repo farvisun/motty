@@ -415,7 +415,7 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 fn bundle(release: bool) -> Result<PathBuf> {
     let mut build = Command::new("cargo");
     build
-        .args(["build", "--quiet", "-p", "motty-app"])
+        .args(["build", "--quiet", "-p", "motty-app", "-p", "motty-cli"])
         .current_dir(root());
     if release {
         build.arg("--release");
@@ -434,7 +434,14 @@ fn bundle(release: bool) -> Result<PathBuf> {
     // inode, and rewriting a signed binary in place gets it killed on launch.
     let exe = macos.join("Motty");
     let _ = std::fs::remove_file(&exe);
-    std::fs::copy(profile.join("Motty"), &exe)?;
+    std::fs::copy(profile.join("motty-app"), &exe)?;
+    // The CLI can't sit beside it (`motty` and `Motty` are one name on a
+    // case-insensitive disk); shells find it on PATH.
+    let bin = app.join("Contents/Resources/bin");
+    std::fs::create_dir_all(&bin)?;
+    let cli = bin.join("motty");
+    let _ = std::fs::remove_file(&cli);
+    std::fs::copy(profile.join("motty"), &cli)?;
     let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
     run(Command::new("codesign")

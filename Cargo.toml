@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 motty-theme = { path = "crates/motty-theme" }
 motty-term = { path = "crates/motty-term" }
+motty-ipc = { path = "crates/motty-ipc" }
 motty-render = { path = "crates/motty-render" }
 
 [profile.release]

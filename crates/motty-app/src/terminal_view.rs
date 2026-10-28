@@ -36,7 +36,15 @@ pub enum TerminalEvent {
     },
 }
 
+/// A new pane id; unique for the life of the app.
+pub fn next_pane_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct TerminalView {
+    /// Stable id for the control socket (`$MOTTY_PANE_ID` in the shell).
+    pub id: u64,
     session: Session,
     style: Rc<TerminalStyle>,
     base_font_size: f32,
@@ -74,6 +82,7 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl TerminalView {
     pub fn new(
+        id: u64,
         session: Session,
         events: async_channel::Receiver<SessionEvent>,
         style: TerminalStyle,
@@ -93,6 +102,7 @@ impl TerminalView {
             }
         });
         Self {
+            id,
             session,
             base_font_size: f32::from(style.font_size),
             style: Rc::new(style),
@@ -208,6 +218,17 @@ impl TerminalView {
                 _task: Self::blink_task(cx),
             });
         }
+        cx.notify();
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Writes text to the program as if typed (no bracketed paste).
+    pub fn write_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.session.term.lock().scroll_display(Scroll::Bottom);
+        self.session.write(text.as_bytes().to_vec());
         cx.notify();
     }
 
