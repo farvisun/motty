@@ -1,0 +1,27 @@
+[package]
+name = "motty-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "Motty"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["font-kit"] }
+anyhow.workspace = true
+async-channel = "2"
+dirs.workspace = true
+motty-render.workspace = true
+motty-term.workspace = true
+motty-theme.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+default = ["runtime-shaders"]
+# Compiles Metal shaders at launch so builds don't need Xcode's Metal toolchain.
+# Release builds disable it (`--no-default-features`) to precompile.
+runtime-shaders = ["gpui_platform/runtime_shaders"]

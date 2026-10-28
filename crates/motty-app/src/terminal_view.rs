@@ -1,0 +1,444 @@
+//! One terminal pane: owns the session and translates GPUI input into PTY bytes.
+
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui::{
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, SharedString, UTF16Selection,
+    MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollEvent, Task, Window, div, prelude::*,
+};
+use motty_render::{TerminalElement, TerminalLayout, TerminalStyle};
+use motty_term::alacritty_terminal::grid::{Dimensions, Scroll};
+use motty_term::alacritty_terminal::index::{Column, Point, Side};
+use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
+use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
+use motty_term::alacritty_terminal::vte::ansi::Rgb;
+use motty_term::input::{self, KeyInput, MouseAction, Mods};
+use motty_term::{Session, SessionEvent};
+
+use crate::actions::{Clear, Copy, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, SelectAll};
+
+pub enum TerminalEvent {
+    TitleChanged,
+    Exited,
+}
+
+pub struct TerminalView {
+    session: Session,
+    style: Rc<TerminalStyle>,
+    base_font_size: f32,
+    focus_handle: FocusHandle,
+    layout: Rc<Cell<Option<TerminalLayout>>>,
+    pub title: Option<String>,
+    option_as_meta: bool,
+    /// Fractional lines carried between precise (trackpad) scroll events.
+    scroll_remainder: f32,
+    selecting: bool,
+    /// IME composition in progress.
+    marked_text: Option<SharedString>,
+    blink: Option<CursorBlink>,
+    _events: Task<()>,
+}
+
+struct CursorBlink {
+    visible: bool,
+    /// Bumped on input so the blink restarts from "visible".
+    epoch: usize,
+    _task: Task<()>,
+}
+
+const BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(530);
+
+impl EventEmitter<TerminalEvent> for TerminalView {}
+
+impl TerminalView {
+    pub fn new(
+        session: Session,
+        events: async_channel::Receiver<SessionEvent>,
+        style: TerminalStyle,
+        option_as_meta: bool,
+        cursor_blink: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let task = cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = events.recv().await {
+                let alive = this.update_in(cx, |view, window, cx| view.handle_session_event(event, window, cx));
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            session,
+            base_font_size: f32::from(style.font_size),
+            style: Rc::new(style),
+            focus_handle: cx.focus_handle(),
+            layout: Rc::new(Cell::new(None)),
+            title: None,
+            option_as_meta,
+            scroll_remainder: 0.,
+            selecting: false,
+            marked_text: None,
+            blink: cursor_blink.then(|| CursorBlink { visible: true, epoch: 0, _task: Self::blink_task(cx) }),
+            _events: task,
+        }
+    }
+
+    fn blink_task(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut seen_epoch = 0;
+            loop {
+                cx.background_executor().timer(BLINK_INTERVAL).await;
+                let alive = this.update(cx, |view, cx| {
+                    let Some(blink) = view.blink.as_mut() else { return };
+                    if blink.epoch != seen_epoch {
+                        // Input happened since the last tick: stay visible one interval.
+                        seen_epoch = blink.epoch;
+                        blink.visible = true;
+                    } else {
+                        blink.visible = !blink.visible;
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    fn reset_blink(&mut self) {
+        if let Some(blink) = self.blink.as_mut() {
+            blink.visible = true;
+            blink.epoch += 1;
+        }
+    }
+
+    pub fn set_style(&mut self, style: TerminalStyle, cx: &mut Context<Self>) {
+        self.base_font_size = f32::from(style.font_size);
+        self.style = Rc::new(style);
+        cx.notify();
+    }
+
+    fn handle_session_event(&mut self, event: SessionEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            SessionEvent::Wakeup => cx.notify(),
+            SessionEvent::Title(title) => {
+                self.title = title;
+                cx.emit(TerminalEvent::TitleChanged);
+            }
+            SessionEvent::Bell => {}
+            SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            SessionEvent::ClipboardLoad(format) => {
+                let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                self.session.write(format(&text).into_bytes());
+            }
+            SessionEvent::ColorRequest(index, format) => {
+                let c = self.style.palette.get(index).copied().unwrap_or(self.style.background);
+                let rgb = Rgb { r: (c.r * 255.).round() as u8, g: (c.g * 255.).round() as u8, b: (c.b * 255.).round() as u8 };
+                self.session.write(format(rgb).into_bytes());
+            }
+            SessionEvent::TextAreaSizeRequest(format) => {
+                let size = self.session.size();
+                let ws = motty_term::alacritty_terminal::event::WindowSize {
+                    num_cols: size.cols,
+                    num_lines: size.rows,
+                    cell_width: size.cell_width as u16,
+                    cell_height: size.cell_height as u16,
+                };
+                self.session.write(format(ws).into_bytes());
+            }
+            SessionEvent::CursorBlinkingChange => cx.notify(),
+            SessionEvent::Exited(_) => cx.emit(TerminalEvent::Exited),
+        }
+    }
+
+    /// Sends typed text (from keys or the IME) to the shell.
+    fn send_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        self.reset_blink();
+        {
+            let mut term = self.session.term.lock();
+            term.scroll_display(Scroll::Bottom);
+            term.selection = None;
+        }
+        self.session.write(text.as_bytes().to_vec());
+        cx.notify();
+    }
+
+    fn mode(&self) -> TermMode {
+        *self.session.term.lock().mode()
+    }
+
+    fn mods(m: &gpui::Modifiers) -> Mods {
+        Mods { shift: m.shift, alt: m.alt, ctrl: m.control, cmd: m.platform }
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &event.keystroke;
+        let input = KeyInput { key: &ks.key, key_char: ks.key_char.as_deref(), mods: Self::mods(&ks.modifiers) };
+        if let Some(bytes) = input::encode(&input, self.mode(), self.option_as_meta) {
+            self.reset_blink();
+            {
+                let mut term = self.session.term.lock();
+                term.scroll_display(Scroll::Bottom);
+                term.selection = None;
+            }
+            self.session.write(bytes);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    /// Viewport cell and grid point under a window position.
+    fn hit(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, usize, Point, Side)> {
+        let layout = self.layout.get()?;
+        let (row, col, right_half) = layout.cell_at(pos);
+        let offset = self.session.term.lock().grid().display_offset();
+        let point = viewport_to_point(offset, Point::new(row, Column(col)));
+        Some((row, col, point, if right_half { Side::Right } else { Side::Left }))
+    }
+
+    fn report_mouse(&self, button: input::MouseButton, action: MouseAction, pos: gpui::Point<gpui::Pixels>, mods: &gpui::Modifiers) -> bool {
+        // Shift bypasses application mouse tracking so text can still be selected.
+        if mods.shift {
+            return false;
+        }
+        let mode = self.mode();
+        if !mode.intersects(TermMode::MOUSE_MODE) {
+            return false;
+        }
+        if let Some((row, col, ..)) = self.hit(pos)
+            && let Some(bytes) = input::mouse_report(button, action, col, row, Self::mods(mods), mode)
+        {
+            self.session.write(bytes);
+        }
+        true
+    }
+
+    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle, cx);
+        if self.report_mouse(input::MouseButton::Left, MouseAction::Press, event.position, &event.modifiers) {
+            return;
+        }
+        let Some((.., point, side)) = self.hit(event.position) else { return };
+        let ty = match event.click_count {
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ if event.modifiers.alt => SelectionType::Block,
+            _ => SelectionType::Simple,
+        };
+        self.session.term.lock().selection = Some(Selection::new(ty, point, side));
+        self.selecting = true;
+        cx.notify();
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        if !self.selecting {
+            self.report_mouse(input::MouseButton::Left, MouseAction::Drag, event.position, &event.modifiers);
+            return;
+        }
+        let Some((.., point, side)) = self.hit(event.position) else { return };
+        if let Some(sel) = self.session.term.lock().selection.as_mut() {
+            sel.update(point, side);
+        }
+        cx.notify();
+    }
+
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.selecting {
+            self.selecting = false;
+            let mut term = self.session.term.lock();
+            if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
+                term.selection = None;
+            }
+            cx.notify();
+        } else {
+            self.report_mouse(input::MouseButton::Left, MouseAction::Release, event.position, &event.modifiers);
+        }
+    }
+
+    fn on_scroll(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(layout) = self.layout.get() else { return };
+        let lines = match event.delta {
+            ScrollDelta::Lines(p) => p.y,
+            ScrollDelta::Pixels(p) => f32::from(p.y) / f32::from(layout.line_height),
+        } + self.scroll_remainder;
+        let whole = lines.trunc() as i32;
+        self.scroll_remainder = lines.fract();
+        if whole == 0 {
+            return;
+        }
+        let mode = self.mode();
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            let button = if whole > 0 { input::MouseButton::WheelUp } else { input::MouseButton::WheelDown };
+            for _ in 0..whole.unsigned_abs().min(10) {
+                self.report_mouse(button, MouseAction::Press, event.position, &event.modifiers);
+            }
+        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+            let key: &[u8] = match (whole > 0, mode.contains(TermMode::APP_CURSOR)) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            self.session.write(key.repeat(whole.unsigned_abs() as usize));
+        } else {
+            self.session.term.lock().scroll_display(Scroll::Delta(whole));
+            cx.notify();
+        }
+    }
+
+    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.session.term.lock().selection_to_string() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            let bytes = input::paste_bytes(&text, self.mode());
+            self.session.term.lock().scroll_display(Scroll::Bottom);
+            self.session.write(bytes);
+        }
+    }
+
+    fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        let mut term = self.session.term.lock();
+        let top = term.grid().topmost_line();
+        let bottom = term.grid().bottommost_line();
+        let last = term.grid().last_column();
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(top, Column(0)), Side::Left);
+        sel.update(Point::new(bottom, last), Side::Right);
+        term.selection = Some(sel);
+        cx.notify();
+    }
+
+    /// Clears scrollback and screen, keeping the prompt line (like ⌘K elsewhere).
+    fn clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
+        let mut term = self.session.term.lock();
+        term.grid_mut().clear_history();
+        term.selection = None;
+        drop(term);
+        // Ask the shell to redraw its prompt at the top.
+        self.session.write(b"\x0c".as_slice());
+        cx.notify();
+    }
+
+    fn zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let mut style = (*self.style).clone();
+        let size = if delta == 0. { self.base_font_size } else { (f32::from(style.font_size) + delta).clamp(6., 72.) };
+        style.font_size = gpui::px(size);
+        self.style = Rc::new(style);
+        cx.notify();
+    }
+}
+
+impl Focusable for TerminalView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for TerminalView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Re-arm before reading so output during this frame schedules another.
+        self.session.take_wakeup();
+        let focused = self.focus_handle.is_focused(window);
+        let entity = cx.entity().downgrade();
+        let input_entity = cx.entity();
+        let focus = self.focus_handle.clone();
+        let element = TerminalElement::new(
+            self.session.term.clone(),
+            self.style.clone(),
+            focused,
+            !focused || self.blink.as_ref().is_none_or(|b| b.visible),
+            self.layout.clone(),
+            move |size, _window, cx| {
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |view, _| view.session.resize(size));
+                }
+            },
+        )
+        .preedit(self.marked_text.clone())
+        .on_paint(move |bounds, window, cx| {
+            window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
+        });
+        div()
+            .id("terminal")
+            .key_context("Terminal")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_scroll(cx.listener(Self::on_scroll))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.zoom(1., cx)))
+            .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
+            .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))
+            .child(element)
+    }
+}
+
+/// IME integration: composed text arrives here instead of as key events, and
+/// marked (in-progress) text is shown at the cursor until committed.
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(&mut self, _: std::ops::Range<usize>, _: &mut Option<std::ops::Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
+        let len = self.marked_text.as_ref().map_or(0, |t| t.encode_utf16().count());
+        Some(UTF16Selection { range: len..len, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
+        self.marked_text.as_ref().map(|t| 0..t.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked_text = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked_text = None;
+        self.send_text(text, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked_text = (!new_text.is_empty()).then(|| SharedString::from(new_text.to_owned()));
+        cx.notify();
+    }
+
+    fn bounds_for_range(&mut self, _: std::ops::Range<usize>, _: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        let layout = self.layout.get()?;
+        let (row, col) = layout.cursor?;
+        Some(layout.cell_bounds(row, col))
+    }
+
+    fn character_index_for_point(&mut self, _: gpui::Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        None
+    }
+}

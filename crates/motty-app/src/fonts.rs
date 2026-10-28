@@ -1,0 +1,45 @@
+//! Bundled fonts, user font folders, and choosing the terminal font family.
+
+use std::borrow::Cow;
+
+use gpui::App;
+use motty_theme::{Config, Theme};
+
+const BUNDLED: [&[u8]; 4] = [
+    include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf"),
+];
+
+/// Registers bundled fonts plus any files in `~/.config/{motty,otty}/fonts`.
+pub fn load(cx: &mut App) {
+    let mut fonts: Vec<Cow<'static, [u8]>> = BUNDLED.iter().map(|b| Cow::Borrowed(*b)).collect();
+    for dir in [motty_theme::config::motty_dir(), motty_theme::config::otty_dir()] {
+        let Ok(entries) = std::fs::read_dir(dir.join("fonts")) else { continue };
+        for path in entries.flatten().map(|e| e.path()) {
+            let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+            if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc"))
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                fonts.push(Cow::Owned(bytes));
+            }
+        }
+    }
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        tracing::warn!("failed to register fonts: {e:#}");
+    }
+}
+
+/// First installed family among the config's `font-family` and the theme's
+/// `font-mono` list; Menlo is always present on macOS.
+pub fn terminal_family(config: &Config, theme: &Theme, cx: &App) -> String {
+    let available = cx.text_system().all_font_names();
+    config
+        .font_family
+        .iter()
+        .chain(theme.token.font_mono.iter())
+        .find(|name| available.iter().any(|a| a.eq_ignore_ascii_case(name)))
+        .cloned()
+        .unwrap_or_else(|| "Menlo".into())
+}
