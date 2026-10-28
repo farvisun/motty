@@ -8,8 +8,8 @@ use std::io::{BufRead, Write};
 
 use anyhow::{Context, bail};
 use motty_ipc::{
-    Client, Created, Direction, NewTabParams, PaneInfo, PaneRef, ReadParams, RunParams, RunResult,
-    SendTextParams, SplitParams, TextRange, method,
+    Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneRef,
+    ReadParams, RunParams, RunResult, SendTextParams, SplitParams, TextRange, method,
 };
 use serde_json::{Value, json};
 
@@ -86,6 +86,19 @@ fn tools() -> Value {
                 "pane": pane,
                 "lines": {"type": "integer", "minimum": 1, "description": "Last N lines, scrollback included"},
                 "last_command": {"type": "boolean", "description": "Output of the last finished command (needs shell integration)"}
+            }},
+            "annotations": {"readOnlyHint": true}
+        },
+        {
+            "name": "find_in_pane",
+            "description": "Search a pane's screen and scrollback. Returns each match's line (0 is the top of the screen, negative lines are scrollback), column and the line's text.",
+            "inputSchema": {"type": "object", "required": ["pane", "query"], "properties": {
+                "pane": pane,
+                "query": {"type": "string"},
+                "regex": {"type": "boolean", "description": "Treat the query as a Rust regular expression"},
+                "case_sensitive": {"type": "boolean"},
+                "whole_word": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1, "description": "Matches to return (default 50)"}
             }},
             "annotations": {"readOnlyHint": true}
         },
@@ -201,6 +214,26 @@ fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
                 },
             )?;
             Ok(out["text"].as_str().unwrap_or_default().to_owned())
+        }
+        "find_in_pane" => {
+            let params = FindParams {
+                pane: pane()?,
+                query: args["query"]
+                    .as_str()
+                    .context("`query` is required")?
+                    .to_owned(),
+                case_sensitive: args["case_sensitive"].as_bool() == Some(true),
+                whole_word: args["whole_word"].as_bool() == Some(true),
+                regex: args["regex"].as_bool() == Some(true),
+                limit: Some(args["limit"].as_u64().unwrap_or(50) as usize),
+                show: false,
+            };
+            let result: FindResult = client.call(method::FIND, &params)?;
+            let mut out = format!("{} matches\n", result.total);
+            for m in &result.matches {
+                out.push_str(&format!("{}:{}: {}\n", m.line, m.column + 1, m.line_text));
+            }
+            Ok(out)
         }
         "run_command" => {
             let pane = pane()?;

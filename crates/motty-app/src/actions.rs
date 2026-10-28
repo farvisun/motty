@@ -60,6 +60,10 @@ actions!(
         MoveDividerRight,
         MoveDividerUp,
         MoveDividerDown,
+        Find,
+        FindNext,
+        FindPrevious,
+        GlobalSearch,
     ]
 );
 
@@ -69,6 +73,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, Some("Terminal")),
         KeyBinding::new("cmd-a", SelectAll, Some("Terminal")),
         KeyBinding::new("cmd-k", Clear, Some("Terminal")),
+        KeyBinding::new("cmd-f", Find, Some("Terminal")),
+        KeyBinding::new("cmd-g", FindNext, Some("Terminal")),
+        KeyBinding::new("cmd-shift-g", FindPrevious, Some("Terminal")),
         KeyBinding::new("cmd-=", IncreaseFontSize, Some("Terminal")),
         KeyBinding::new("cmd-+", IncreaseFontSize, Some("Terminal")),
         KeyBinding::new("cmd--", DecreaseFontSize, Some("Terminal")),

@@ -41,6 +41,9 @@ pub struct TerminalStyle {
     pub selection_background: Rgba,
     pub selection_foreground: Option<Rgba>,
     pub padding: motty_theme::Edges,
+    /// Popovers over the terminal (the find bar).
+    pub panel_background: Rgba,
+    pub dark: bool,
 }
 
 impl TerminalStyle {
@@ -122,6 +125,8 @@ impl TerminalStyle {
             selection_background: t.selection_background,
             selection_foreground: t.selection_foreground,
             padding: theme.container.padding,
+            panel_background: theme.panel.background.with_alpha(1.),
+            dark: theme.meta.mode == motty_theme::Mode::Dark,
         }
     }
 

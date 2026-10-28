@@ -56,13 +56,14 @@ Motty listens on a Unix socket; shells it starts get `$MOTTY_SOCKET`, `$MOTTY_PA
 motty list                         # panes in every window
 motty run -- cargo test            # run in this pane's shell, wait, print output, exit with its status
 motty read --last-command          # output of the last command (also --lines N, or the screen)
+motty find -e 'error\[E\d+\]'      # search screen and scrollback (-c case, -w words, --show opens the bar)
 motty split -d down -- htop        # new pane; prints its id
 motty send --pane 3 $'q'           # type into a pane
 motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
 ```
 
 `motty mcp` serves the same operations to coding agents as MCP tools (`list_panes`, `read_pane`,
-`run_command`, `send_text`, `split_pane`, `new_tab`, `focus_pane`, `close_pane`):
+`find_in_pane`, `run_command`, `send_text`, `split_pane`, `new_tab`, `focus_pane`, `close_pane`):
 
 ```sh
 claude mcp add motty -- motty mcp      # Claude Code; Codex: [mcp_servers.motty] command = "motty", args = ["mcp"]
@@ -72,6 +73,19 @@ Agents can't type into their own pane through it; they split one off and work th
 
 `run` and `--last-command` need shell integration. `--json` prints machine-readable output; the
 protocol (JSON lines) is in `crates/motty-ipc`.
+
+## Find
+
+⌘F opens the find bar on the focused pane: it searches the screen and scrollback as you type,
+highlights every match and counts them. ↩ / ⌘G go to the next match, ⇧↩ / ⇧⌘G the previous,
+Esc closes. `Aa` matches case, `ab` whole words, `.*` treats the query as a Rust regex. A
+one-line selection seeds the query.
+
+## Notifications
+
+OSC 9 and OSC 777 notifications show as macOS notifications when their pane isn't the one in
+front. macOS asks for permission the first time; allow banners for Motty in System Settings ›
+Notifications.
 
 ## Splits
 

@@ -46,6 +46,7 @@ pub mod method {
     pub const RUN: &str = "run";
     pub const FOCUS: &str = "focus";
     pub const CLOSE: &str = "close";
+    pub const FIND: &str = "find";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,6 +152,45 @@ pub struct RunResult {
     pub exit: Option<i32>,
     pub output: String,
     pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FindParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    pub query: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_word: bool,
+    /// `query` is a regular expression (Rust syntax).
+    #[serde(default)]
+    pub regex: bool,
+    /// Matches to return (default 100); `total` counts them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Also open the pane's find bar with this query.
+    #[serde(default)]
+    pub show: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoundMatch {
+    /// Screen line: 0 is the top row of the screen, negative lines are
+    /// scrollback.
+    pub line: i32,
+    pub column: usize,
+    /// The matched text.
+    pub text: String,
+    /// The whole line it is on.
+    pub line_text: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FindResult {
+    /// All matches, up to 10000.
+    pub total: usize,
+    pub matches: Vec<FoundMatch>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

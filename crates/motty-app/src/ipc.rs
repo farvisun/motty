@@ -11,9 +11,13 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow, bail};
 use gpui::{App, Entity, Global, WindowHandle};
 use motty_ipc::{
-    Created, Direction as IpcDirection, NewTabParams, PaneInfo, PaneRef, ReadParams, Request,
-    Response, RunParams, RunResult, SendTextParams, SplitParams, TextRange, method,
+    Created, Direction as IpcDirection, FindParams, FindResult, FoundMatch, NewTabParams, PaneInfo,
+    PaneRef, ReadParams, Request, Response, RunParams, RunResult, SendTextParams, SplitParams,
+    TextRange, method,
 };
+use motty_term::alacritty_terminal::grid::Dimensions;
+use motty_term::alacritty_terminal::index::{Column, Point};
+use motty_term::search::{self, SearchOptions};
 use serde_json::{Value, json};
 
 use crate::panes::Direction;
@@ -128,6 +132,7 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::NEW_TAB => parse(request.params).and_then(|p| new_tab(p, cx)),
         method::FOCUS => parse(request.params).and_then(|p| focus(p, cx)),
         method::CLOSE => parse(request.params).and_then(|p| close(p, cx)),
+        method::FIND => parse(request.params).and_then(|p| find(p, cx)),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
@@ -312,6 +317,45 @@ fn close(p: PaneRef, cx: &mut App) -> anyhow::Result<Value> {
         workspace.close_pane_entity(&view, window, cx)
     })?;
     Ok(Value::Null)
+}
+
+fn find(p: FindParams, cx: &mut App) -> anyhow::Result<Value> {
+    let (handle, view) = resolve(&p.pane, cx)?;
+    let options = SearchOptions {
+        case_sensitive: p.case_sensitive,
+        whole_word: p.whole_word,
+        regex: p.regex,
+    };
+    if p.show {
+        handle.update(cx, |workspace, window, cx| {
+            workspace.reveal_pane(&view, window, cx);
+            view.update(cx, |view, cx| view.show_find(&p.query, options, window, cx));
+        })?;
+    }
+    let term = view.read(cx).session().term.lock();
+    let all = search::find_all(&*term, &p.query, options, 10_000)
+        .map_err(|e| anyhow!("invalid pattern: {e}"))?;
+    let matches = all
+        .iter()
+        .take(p.limit.unwrap_or(100))
+        .filter_map(|m| {
+            let (start, end) = m.to_points(&*term)?;
+            let line_end = Point::new(start.line, term.grid().last_column());
+            Some(FoundMatch {
+                line: start.line.0,
+                column: start.column.0,
+                text: term.bounds_to_string(start, end),
+                line_text: term
+                    .bounds_to_string(Point::new(start.line, Column(0)), line_end)
+                    .trim_end()
+                    .to_owned(),
+            })
+        })
+        .collect();
+    Ok(json!(FindResult {
+        total: all.len(),
+        matches,
+    }))
 }
 
 /// Types `command` into the pane's shell and answers once the shell reports

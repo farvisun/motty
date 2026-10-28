@@ -20,6 +20,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 mod graphemes;
 pub mod input;
 mod pty_loop;
+pub mod search;
 pub mod shell;
 
 use pty_loop::{LoopSender, Msg, PtyLoop};

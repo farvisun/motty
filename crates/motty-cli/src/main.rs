@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use motty_ipc::{
-    Client, Created, Direction, NewTabParams, PaneInfo, PaneRef, ReadParams, RunParams, RunResult,
-    SendTextParams, SplitParams, TextRange, method,
+    Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneRef,
+    ReadParams, RunParams, RunResult, SendTextParams, SplitParams, TextRange, method,
 };
 use serde_json::Value;
 
@@ -81,6 +81,28 @@ enum Command {
         cwd: Option<String>,
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
+    },
+    /// Search a pane's screen and scrollback; prints `line:column: text`
+    /// (negative lines are scrollback). Exits 1 when nothing matches.
+    Find {
+        #[arg(long)]
+        pane: Option<u64>,
+        /// Match case exactly.
+        #[arg(long, short = 'c')]
+        case_sensitive: bool,
+        /// Match whole words only.
+        #[arg(long, short = 'w')]
+        word: bool,
+        /// The query is a regular expression (Rust syntax).
+        #[arg(long, short = 'e')]
+        regex: bool,
+        /// Matches to print.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Also open the pane's find bar with the query.
+        #[arg(long)]
+        show: bool,
+        query: String,
     },
     /// Focus a pane (and its tab and window).
     Focus {
@@ -251,6 +273,39 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 },
             )?;
             println!("{}", created.pane);
+        }
+        Command::Find {
+            pane: id,
+            case_sensitive,
+            word,
+            regex,
+            limit,
+            show,
+            query,
+        } => {
+            let params = FindParams {
+                pane: pane(id),
+                query,
+                case_sensitive,
+                whole_word: word,
+                regex,
+                limit: Some(limit),
+                show,
+            };
+            let result: FindResult = client.call(method::FIND, &params)?;
+            if json {
+                print(&serde_json::to_value(&result)?);
+            } else {
+                for m in &result.matches {
+                    println!("{}:{}: {}", m.line, m.column + 1, m.line_text);
+                }
+                if result.total > result.matches.len() {
+                    eprintln!("({} more)", result.total - result.matches.len());
+                }
+            }
+            if result.total == 0 {
+                return Ok(ExitCode::from(1));
+            }
         }
         Command::Focus { pane: id } => {
             let _: Value = client.call(method::FOCUS, &pane(id))?;

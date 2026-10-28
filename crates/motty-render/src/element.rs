@@ -109,6 +109,20 @@ pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
     }
 }
 
+/// A search match to highlight, in grid coordinates (inclusive).
+#[derive(Clone, Copy, Debug)]
+pub struct Highlight {
+    pub start: GridPoint,
+    pub end: GridPoint,
+    /// The selected match, drawn in the foreground color.
+    pub current: bool,
+}
+
+/// Other matches: a marker yellow.
+const MATCH_BACKGROUND: u32 = 0xfee382;
+/// Text on matches over a dark theme.
+const MATCH_DARK_TEXT: u32 = 0x1b1b1b;
+
 type ResizeFn = Box<dyn FnOnce(GridSize, &mut Window, &mut App)>;
 type PaintHook = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
 
@@ -121,6 +135,8 @@ pub struct TerminalElement {
     on_resize: Option<ResizeFn>,
     on_paint: Option<PaintHook>,
     preedit: Option<SharedString>,
+    /// Sorted, non-overlapping.
+    highlights: Vec<Highlight>,
 }
 
 impl TerminalElement {
@@ -141,6 +157,7 @@ impl TerminalElement {
             on_resize: Some(Box::new(on_resize)),
             on_paint: None,
             preedit: None,
+            highlights: Vec::new(),
         }
     }
 
@@ -150,6 +167,12 @@ impl TerminalElement {
         f: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_paint = Some(Box::new(f));
+        self
+    }
+
+    /// Search matches, sorted and non-overlapping.
+    pub fn highlights(mut self, highlights: Vec<Highlight>) -> Self {
+        self.highlights = highlights;
         self
     }
 
@@ -358,6 +381,8 @@ impl TerminalElement {
         } else {
             style.palette[NamedColor::Background as usize].with_alpha(1.)
         };
+        let default_fg = style.palette[NamedColor::Foreground as usize];
+        let dark = motty_theme::theme::luminance(opaque_bg) < 0.5;
 
         for indexed in content.display_iter {
             let row = (indexed.point.line.0 + display_offset) as usize;
@@ -378,6 +403,19 @@ impl TerminalElement {
             if flags.contains(Flags::INVERSE) {
                 let bg_opaque = if bg.a < 0.5 { opaque_bg } else { bg };
                 (fg, bg) = (bg_opaque, fg);
+            }
+            let ix = self.highlights.partition_point(|h| h.end < indexed.point);
+            if let Some(h) = self.highlights.get(ix)
+                && h.start <= indexed.point
+            {
+                if h.current {
+                    (fg, bg) = (opaque_bg, default_fg);
+                } else {
+                    bg = Rgba::rgb(MATCH_BACKGROUND);
+                    if dark {
+                        fg = Rgba::rgb(MATCH_DARK_TEXT);
+                    }
+                }
             }
             if selection.is_some_and(|s| {
                 s.contains_cell(&indexed, content.cursor.point, content.cursor.shape)

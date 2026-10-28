@@ -35,7 +35,7 @@ const ELLIPSIS_WIDTH: f32 = 3. * 1.75 + 2. * 2.5;
 const STROKE: f32 = 1.2;
 
 /// A canvas the size of `w`×`h` that paints with its top-left as origin.
-fn icon(
+pub(crate) fn icon(
     w: f32,
     h: f32,
     paint: impl FnOnce(Point<Pixels>, &mut Window) + 'static,
@@ -50,11 +50,11 @@ fn icon(
     .h(px(h))
 }
 
-fn at(o: Point<Pixels>, x: f32, y: f32) -> Point<Pixels> {
+pub(crate) fn at(o: Point<Pixels>, x: f32, y: f32) -> Point<Pixels> {
     point(o.x + px(x), o.y + px(y))
 }
 
-fn stroke(
+pub(crate) fn stroke(
     o: Point<Pixels>,
     color: Hsla,
     window: &mut Window,

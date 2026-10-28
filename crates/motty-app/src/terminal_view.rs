@@ -16,10 +16,13 @@ use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
 use motty_term::alacritty_terminal::vte::ansi::Rgb;
 use motty_term::input::{self, KeyInput, Mods, MouseAction};
+use motty_term::search::SearchOptions;
 use motty_term::{Session, SessionEvent};
 use motty_theme::CursorBlink;
 
 use crate::actions::*;
+
+mod find;
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -66,6 +69,10 @@ pub struct TerminalView {
     /// `None` when the cursor never blinks (`always_off`).
     blink: Option<BlinkState>,
     blink_policy: CursorBlink,
+    /// The find bar, while open.
+    find: Option<find::Find>,
+    /// The last query and options, restored when the bar reopens.
+    last_find: (String, SearchOptions),
     _events: Task<()>,
 }
 
@@ -123,6 +130,8 @@ impl TerminalView {
                 _task: Self::blink_task(cx),
             }),
             blink_policy: cursor_blink,
+            find: None,
+            last_find: Default::default(),
             _events: task,
         }
     }
@@ -246,7 +255,10 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            SessionEvent::Wakeup => cx.notify(),
+            SessionEvent::Wakeup => {
+                self.schedule_find_refresh(cx);
+                cx.notify();
+            }
             SessionEvent::Title(title) => {
                 self.title = title;
                 cx.emit(TerminalEvent::TitleChanged);
@@ -599,6 +611,7 @@ impl Render for TerminalView {
             },
         )
         .preedit(self.marked_text.clone())
+        .highlights(self.find_highlights())
         .on_paint(move |bounds, window, cx| {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
         });
@@ -606,6 +619,7 @@ impl Render for TerminalView {
             .id("terminal")
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
+            .relative()
             .size_full()
             .cursor(gpui::CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -644,7 +658,15 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.zoom(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.zoom(0., cx)))
+            .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FindNext, window, cx| this.find_step(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindPrevious, window, cx| this.find_step(false, window, cx)),
+            )
             .child(element)
+            .children(self.render_find_bar(cx))
     }
 }
 
