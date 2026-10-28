@@ -269,7 +269,9 @@ fn record_osc(
             title: title.clone(),
             body: body.clone(),
         }),
-        ShellOsc::Progress(_) | ShellOsc::Cwd(_) => Some(SessionEvent::ShellChanged),
+        ShellOsc::Progress(_) | ShellOsc::Cwd(_) | ShellOsc::OutputStart => {
+            Some(SessionEvent::ShellChanged)
+        }
         _ => None,
     };
     // Full-screen programs own the alternate screen; marks there would

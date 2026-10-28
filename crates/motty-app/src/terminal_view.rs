@@ -25,10 +25,12 @@ use motty_theme::CursorBlink;
 use crate::actions::*;
 
 mod autocomplete;
+mod behavior;
 mod context_menu;
 mod find;
 mod hints;
 mod links;
+mod paste;
 mod vi;
 
 pub use links::LinkOptions;
@@ -72,6 +74,21 @@ pub struct TerminalView {
     pub busy: bool,
     /// The agent's state, or how the last command went, for the tab.
     pub status: Option<crate::agents::Status>,
+    /// OSC 9;4 progress, or a spinner for a slow command.
+    pub progress: Option<motty_term::shell::Progress>,
+    /// Selection, clipboard and Secure Keyboard Entry switches.
+    behavior: motty_theme::Behavior,
+    progress_commands: Vec<String>,
+    /// Whether the running command (by prompt row) gets a spinner.
+    auto_progress: Option<(u64, bool)>,
+    /// A ⇧-arrow selection's anchor and moving end, as cell boundaries.
+    kb_select: Option<((i32, i32), (i32, i32))>,
+    /// The pane is at a password prompt and asked for Secure Keyboard Entry.
+    secret: bool,
+    /// Files dragged over the pane: where they'd land, and whether there's
+    /// a folder among them.
+    drop_zone: Option<paste::DropZone>,
+    drop_folder: bool,
     option_as_meta: bool,
     /// Fractional lines carried between precise (trackpad) scroll events.
     scroll_remainder: f32,
@@ -106,6 +123,7 @@ pub struct TerminalView {
     dismissed: Option<String>,
     events: async_channel::Receiver<SessionEvent>,
     _events: Task<()>,
+    _focus_out: gpui::Subscription,
 }
 
 struct BlinkState {
@@ -132,18 +150,30 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let task = Self::event_task(events.clone(), window, cx);
+        let focus_handle = cx.focus_handle();
+        let focus_out = cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
+            this.release_secret(cx)
+        });
         Self {
             id,
             session,
             base_font_size: f32::from(style.font_size),
             style: Rc::new(style),
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             layout: Rc::new(Cell::new(None)),
             title: None,
             process: None,
             cwd: None,
             busy: false,
             status: None,
+            progress: None,
+            behavior: Default::default(),
+            progress_commands: Vec::new(),
+            auto_progress: None,
+            kb_select: None,
+            secret: false,
+            drop_zone: None,
+            drop_folder: false,
             option_as_meta,
             scroll_remainder: 0.,
             selecting: false,
@@ -168,6 +198,7 @@ impl TerminalView {
             dismissed: None,
             events,
             _events: task,
+            _focus_out: focus_out,
         }
     }
 
@@ -248,6 +279,7 @@ impl TerminalView {
             .or_else(|| self.session.foreground_cwd());
         let busy = self.session.is_busy();
         let changed = process != self.process || cwd != self.cwd || busy != self.busy;
+        let changed = self.refresh_progress() || changed;
         if cwd != self.cwd
             && let Some(dir) = &cwd
         {
@@ -315,19 +347,20 @@ impl TerminalView {
     fn handle_session_event(
         &mut self,
         event: SessionEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             SessionEvent::Wakeup => {
                 self.schedule_find_refresh(cx);
+                self.check_secret(window, cx);
                 cx.notify();
             }
             SessionEvent::Title(title) => {
                 self.title = title;
                 cx.emit(TerminalEvent::TitleChanged);
             }
-            SessionEvent::Bell => _window.play_system_bell(),
+            SessionEvent::Bell => window.play_system_bell(),
             SessionEvent::ClipboardStore(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -391,11 +424,8 @@ impl TerminalView {
             return;
         }
         self.reset_blink();
-        {
-            let mut term = self.session.term.lock();
-            term.scroll_display(Scroll::Bottom);
-            term.selection = None;
-        }
+        self.typed();
+        self.session.term.lock().scroll_display(Scroll::Bottom);
         self.session.write(text.as_bytes().to_vec());
         cx.notify();
     }
@@ -428,6 +458,10 @@ impl TerminalView {
             return;
         }
         let ks = &event.keystroke;
+        if self.shift_select(ks, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let input = KeyInput {
             key: &ks.key,
             key_char: ks.key_char.as_deref(),
@@ -440,11 +474,8 @@ impl TerminalView {
                 return;
             }
             self.reset_blink();
-            {
-                let mut term = self.session.term.lock();
-                term.scroll_display(Scroll::Bottom);
-                term.selection = None;
-            }
+            self.typed();
+            self.session.term.lock().scroll_display(Scroll::Bottom);
             self.session.write(bytes);
             cx.stop_propagation();
             cx.notify();
@@ -523,6 +554,7 @@ impl TerminalView {
             _ => SelectionType::Simple,
         };
         self.session.term.lock().selection = Some(Selection::new(ty, point, side));
+        self.kb_select = None;
         self.selecting = true;
         cx.notify();
     }
@@ -562,6 +594,8 @@ impl TerminalView {
             if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
                 term.selection = None;
             }
+            drop(term);
+            self.copy_on_select(cx);
             cx.notify();
         } else {
             self.report_mouse(
@@ -615,15 +649,18 @@ impl TerminalView {
     }
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.session.term.lock().selection_to_string() {
+        if let Some(text) = self.selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            if self.behavior.clear_selection_on_copy && !self.behavior.copy_on_select {
+                self.session.term.lock().selection = None;
+                self.kb_select = None;
+                cx.notify();
+            }
         }
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-            self.paste_text(&text, false, window);
-        }
+        self.paste_clipboard(window, cx);
     }
 
     /// Pastes `text` as the program asked for it (bracketed or not), or
@@ -646,7 +683,7 @@ impl TerminalView {
     fn paste_selection(&mut self, _: &PasteSelection, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.session.term.lock().selection_to_string();
         match text {
-            Some(text) => self.paste_text(&text, false, window),
+            Some(text) => self.paste_checked(text, window, cx),
             None => window.play_system_bell(),
         }
         cx.notify();
@@ -829,6 +866,16 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_right_mouse_up))
             .on_scroll(cx.listener(Self::on_scroll))
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<gpui::ExternalPaths>, _, cx| {
+                    this.drag_moved(event, cx)
+                },
+            ))
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                    this.dropped(paths, window, cx)
+                }),
+            )
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
@@ -914,6 +961,7 @@ impl Render for TerminalView {
             .children(self.render_link_status())
             .children(self.render_vi_key_hints())
             .children(self.render_find_bar(cx))
+            .children(self.render_drop_zone(cx))
     }
 }
 

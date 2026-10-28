@@ -61,6 +61,11 @@ pub struct Config {
     pub keybinds: Vec<Keybind>,
     /// The `privilege-*` keys for tab badges and agent notifications.
     pub badges: Badges,
+    /// Selection, clipboard, mouse and Secure Keyboard Entry switches.
+    pub behavior: Behavior,
+    /// `progress-bar-commands`: command prefixes that show a spinner while
+    /// they run; `None` for the built-in list.
+    pub progress_bar_commands: Option<Vec<String>>,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -98,6 +103,113 @@ impl Default for Badges {
             caffeinate: false,
         }
     }
+}
+
+/// Otty's on/off switches for selection, the clipboard, the mouse, Secure
+/// Keyboard Entry and the Dock icon, with Otty's defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Behavior {
+    /// `copy-on-select`
+    pub copy_on_select: bool,
+    /// `clipboard-trim-trailing-spaces`
+    pub trim_trailing_spaces: bool,
+    /// `clipboard-paste-protection`: ask before a risky paste.
+    pub paste_protection: bool,
+    /// `clipboard-paste-bracketed-safe`: no asking when the program takes
+    /// bracketed paste (the text arrives inert).
+    pub paste_bracketed_safe: bool,
+    /// `selection-clear-on-typing`
+    pub clear_selection_on_typing: bool,
+    /// `selection-clear-on-copy`: after ⌘C (not with copy-on-select).
+    pub clear_selection_on_copy: bool,
+    /// `shift-arrow-select`: ⇧-arrows select instead of reaching the program.
+    pub shift_arrow_select: bool,
+    /// `mouse-hide-while-typing`
+    pub hide_mouse_while_typing: bool,
+    /// `focus-follows-mouse`
+    pub focus_follows_mouse: bool,
+    /// `auto-secure-input`: Secure Keyboard Entry at password prompts.
+    pub auto_secure_input: bool,
+    /// `secure-input-indication`: the titlebar pill while it's on.
+    pub secure_input_indication: bool,
+    /// `dock-icon-animate-progress`
+    pub dock_progress: bool,
+    /// `dock-icon-error-badge`: a red Dock icon after a failure.
+    pub dock_error_badge: bool,
+}
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Self {
+            copy_on_select: false,
+            trim_trailing_spaces: false,
+            paste_protection: true,
+            paste_bracketed_safe: true,
+            clear_selection_on_typing: true,
+            clear_selection_on_copy: false,
+            shift_arrow_select: true,
+            hide_mouse_while_typing: false,
+            focus_follows_mouse: false,
+            auto_secure_input: true,
+            secure_input_indication: true,
+            dock_progress: false,
+            dock_error_badge: true,
+        }
+    }
+}
+
+/// Commands that get a spinner while they run, matched as whole-word
+/// prefixes (`git push` matches `git push origin`, not `git status`).
+pub const PROGRESS_BAR_COMMANDS: &[&str] = &[
+    "curl",
+    "wget",
+    "rsync",
+    "scp",
+    "git fetch",
+    "git pull",
+    "git push",
+    "git clone",
+    "brew install",
+    "brew update",
+    "brew upgrade",
+    "npm install",
+    "npm ci",
+    "pnpm install",
+    "yarn install",
+    "bun install",
+    "pip install",
+    "pip3 install",
+    "cargo build",
+    "cargo install",
+    "cargo update",
+    "docker pull",
+    "docker push",
+    "docker build",
+    "apt install",
+    "apt update",
+    "apt upgrade",
+    "apt-get install",
+    "apt-get update",
+    "apt-get upgrade",
+];
+
+impl Config {
+    /// The command prefixes that show a spinner.
+    pub fn progress_commands(&self) -> Vec<String> {
+        match &self.progress_bar_commands {
+            Some(list) => list.clone(),
+            None => PROGRESS_BAR_COMMANDS
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
+        }
+    }
+}
+
+/// Whether `command` starts with `prefix` as whole words.
+pub fn matches_prefix(command: &str, prefix: &str) -> bool {
+    let mut words = command.split_whitespace();
+    prefix.split_whitespace().all(|p| words.next() == Some(p)) && !prefix.trim().is_empty()
 }
 
 /// Inline suggestions from the commands run before.
@@ -378,6 +490,56 @@ impl Config {
                     }
                     None => unknown.push(format!("config.toml {key}: expected true or false")),
                 },
+                "copy-on-select"
+                | "clipboard-trim-trailing-spaces"
+                | "clipboard-paste-protection"
+                | "clipboard-paste-bracketed-safe"
+                | "selection-clear-on-typing"
+                | "selection-clear-on-copy"
+                | "shift-arrow-select"
+                | "mouse-hide-while-typing"
+                | "focus-follows-mouse"
+                | "auto-secure-input"
+                | "secure-input-indication"
+                | "dock-icon-animate-progress"
+                | "dock-icon-error-badge" => match value.as_bool() {
+                    Some(on) => {
+                        let b = &mut out.behavior;
+                        *match key {
+                            "copy-on-select" => &mut b.copy_on_select,
+                            "clipboard-trim-trailing-spaces" => &mut b.trim_trailing_spaces,
+                            "clipboard-paste-protection" => &mut b.paste_protection,
+                            "clipboard-paste-bracketed-safe" => &mut b.paste_bracketed_safe,
+                            "selection-clear-on-typing" => &mut b.clear_selection_on_typing,
+                            "selection-clear-on-copy" => &mut b.clear_selection_on_copy,
+                            "shift-arrow-select" => &mut b.shift_arrow_select,
+                            "mouse-hide-while-typing" => &mut b.hide_mouse_while_typing,
+                            "focus-follows-mouse" => &mut b.focus_follows_mouse,
+                            "auto-secure-input" => &mut b.auto_secure_input,
+                            "secure-input-indication" => &mut b.secure_input_indication,
+                            "dock-icon-animate-progress" => &mut b.dock_progress,
+                            _ => &mut b.dock_error_badge,
+                        } = on;
+                    }
+                    None => unknown.push(format!("config.toml {key}: expected true or false")),
+                },
+                // A list or a comma-separated string; empty turns it off.
+                "progress-bar-commands" => {
+                    let list: Vec<String> = match value.as_array() {
+                        Some(list) => list
+                            .iter()
+                            .filter_map(|v| v.as_str().map(|s| s.trim().to_owned()))
+                            .collect(),
+                        None => value
+                            .as_str()
+                            .unwrap_or_default()
+                            .split(',')
+                            .map(|c| c.trim().to_owned())
+                            .collect(),
+                    };
+                    out.progress_bar_commands =
+                        Some(list.into_iter().filter(|c| !c.is_empty()).collect());
+                }
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }
@@ -908,6 +1070,21 @@ mod tests {
         assert_eq!(d.cursor_style, CursorStyle::Block);
         assert!(d.sidebar_visible && !Config::parse("sidebar-visible = false\n").sidebar_visible);
         assert_eq!(d.confirm_close_window, ConfirmClose::Process);
+        assert!(d.behavior.paste_protection && !d.behavior.copy_on_select);
+        let cfg = Config::parse(
+            "copy-on-select = true\nauto-secure-input = false\nprogress-bar-commands = [\"make\", \"git push\"]\n",
+        );
+        assert!(cfg.behavior.copy_on_select && !cfg.behavior.auto_secure_input);
+        assert_eq!(cfg.progress_commands(), ["make", "git push"]);
+        assert!(
+            Config::parse("progress-bar-commands = \"\"\n")
+                .progress_commands()
+                .is_empty()
+        );
+        assert!(matches_prefix("git push origin main", "git push"));
+        assert!(!matches_prefix("git status", "git push"));
+        assert!(!matches_prefix("curlie x", "curl"));
+        assert!(!matches_prefix("ls", ""));
         let cfg = Config::parse(
             "confirm-close-pane = \"never\"\nconfirm-close-tab = \"always\"\nconfirm-close-window = \"multiple_tabs\"\n",
         );

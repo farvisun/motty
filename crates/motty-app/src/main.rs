@@ -1,5 +1,6 @@
 mod actions;
 mod agents;
+mod dock;
 mod editor;
 mod folders;
 mod fonts;
@@ -11,6 +12,7 @@ mod native_menu;
 mod notifications;
 mod panes;
 mod recovery;
+mod secure_input;
 mod settings;
 mod shell_integration;
 mod terminal_view;
@@ -45,6 +47,8 @@ fn main() {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(a.text.clone()))
             });
             cx.on_action(|a: &actions::OpenUrl, cx| cx.open_url(&a.url));
+            cx.on_action(|_: &actions::ToggleSecureKeyboardEntry, cx| secure_input::toggle(cx));
+            workspace::cursor_hiding(&load_config(), cx);
             cx.on_action(|_: &actions::HideApp, cx| cx.hide());
             cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
             cx.on_action(|_: &actions::ShowAll, cx| cx.unhide_other_apps());

@@ -7,8 +7,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Axis, Bounds, Entity, Hsla, MouseButton, Pixels, canvas, div, prelude::*, px,
-    relative,
+    AnyElement, App, Axis, Bounds, Entity, Hsla, MouseButton, MouseMoveEvent, Pixels, Window,
+    canvas, div, prelude::*, px, relative,
 };
 
 use crate::terminal_view::TerminalView;
@@ -77,7 +77,11 @@ pub struct PaneStyle<'a> {
     pub dim_opacity: f32,
     /// Called with a split's id when its divider is pressed.
     pub on_drag_start: Rc<DragStart>,
+    /// `focus-follows-mouse`: called with the pane under a moving pointer.
+    pub on_hover: Option<Rc<PaneHover>>,
 }
+
+pub type PaneHover = dyn Fn(&Entity<TerminalView>, &MouseMoveEvent, &mut Window, &mut App);
 
 impl<T: Clone + PartialEq> Pane<T> {
     pub fn leaves(&self) -> Vec<&T> {
@@ -274,6 +278,10 @@ impl Pane {
                 .size_full()
                 .overflow_hidden()
                 .when((style.dimmed)(view), |d| d.opacity(style.dim_opacity))
+                .when_some(style.on_hover.clone(), |d, hover| {
+                    let view = view.clone();
+                    d.on_mouse_move(move |event, window, cx| hover(&view, event, window, cx))
+                })
                 .child(view.clone())
                 .into_any_element(),
             Pane::Split(s) => {

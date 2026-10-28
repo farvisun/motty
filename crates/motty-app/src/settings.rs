@@ -1045,6 +1045,94 @@ impl SettingsWindow {
             },
         ));
 
+        let b = &c.behavior;
+        let toggle = |key: &'static str, on: bool| Control::Toggle {
+            key,
+            on,
+            invert: false,
+        };
+        for (group, label, note, key, on) in [
+            (
+                "Mouse",
+                "Mouse Over to Focus",
+                "The pane under the pointer takes focus without a click",
+                "focus-follows-mouse",
+                b.focus_follows_mouse,
+            ),
+            (
+                "Mouse",
+                "Hide When Typing",
+                "The pointer hides while you type and comes back when it moves",
+                "mouse-hide-while-typing",
+                b.hide_mouse_while_typing,
+            ),
+            (
+                "Clipboard",
+                "Copy on Select",
+                "Every selection goes straight to the clipboard",
+                "copy-on-select",
+                b.copy_on_select,
+            ),
+            (
+                "Clipboard",
+                "Trim Trailing Spaces",
+                "Copied lines lose their trailing spaces",
+                "clipboard-trim-trailing-spaces",
+                b.trim_trailing_spaces,
+            ),
+            (
+                "Clipboard",
+                "Paste Protection",
+                "Ask before pasting several lines, a newline, sudo or control characters",
+                "clipboard-paste-protection",
+                b.paste_protection,
+            ),
+            (
+                "Clipboard",
+                "Trust Bracketed Paste",
+                "Don't ask when the program takes bracketed paste: the text arrives inert",
+                "clipboard-paste-bracketed-safe",
+                b.paste_bracketed_safe,
+            ),
+            (
+                "Selection",
+                "Shift+Arrow Select",
+                "⇧-arrows select from the cursor (⌥ for a block) instead of reaching the program",
+                "shift-arrow-select",
+                b.shift_arrow_select,
+            ),
+            (
+                "Selection",
+                "Clear Selection on Typing",
+                "Any key sent to the program drops the selection",
+                "selection-clear-on-typing",
+                b.clear_selection_on_typing,
+            ),
+            (
+                "Selection",
+                "Clear Selection on Copy",
+                "⌘C drops the selection (not with Copy on Select)",
+                "selection-clear-on-copy",
+                b.clear_selection_on_copy,
+            ),
+            (
+                "Secure Input",
+                "Auto Secure Input",
+                "Secure Keyboard Entry while a password prompt waits (sudo, ssh, login)",
+                "auto-secure-input",
+                b.auto_secure_input,
+            ),
+            (
+                "Secure Input",
+                "Secure Input Indicator",
+                "A titlebar pill while Secure Keyboard Entry is on",
+                "secure-input-indication",
+                b.secure_input_indication,
+            ),
+        ] {
+            rows.push(row(Controls, group, label, Some(note), toggle(key, on)));
+        }
+
         // Editor
         let a = &c.autocomplete;
         rows.push(row(
@@ -1317,6 +1405,33 @@ impl SettingsWindow {
                     .collect(),
             },
         ));
+
+        for (label, note, key, on) in [
+            (
+                "Animate Icon on Progress",
+                "A progress bar on the Dock icon while a command reports progress",
+                "dock-icon-animate-progress",
+                c.behavior.dock_progress,
+            ),
+            (
+                "Red Icon on Error",
+                "The Dock icon turns red when a command fails in a tab you haven't looked at",
+                "dock-icon-error-badge",
+                c.behavior.dock_error_badge,
+            ),
+        ] {
+            rows.push(row(
+                Appearance,
+                "Dock Icon",
+                label,
+                Some(note),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
 
         // Key bindings
         rows.push(row(

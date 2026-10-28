@@ -309,6 +309,17 @@ impl Session {
         (pgid > 0).then_some(pgid)
     }
 
+    /// Whether the program reading the terminal hides what's typed, as a
+    /// password prompt does (sudo, ssh, login): echo off, line mode on.
+    pub fn reading_secret(&self) -> bool {
+        // SAFETY: tcgetattr only fills the struct from the descriptor.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(self.master_fd, &mut t) } != 0 {
+            return false;
+        }
+        t.c_lflag & libc::ECHO == 0 && t.c_lflag & libc::ICANON != 0
+    }
+
     /// Short name of the foreground process, e.g. `zsh` or `vim`.
     pub fn foreground_process_name(&self) -> Option<String> {
         process_name(self.foreground_pid()?)

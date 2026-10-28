@@ -119,3 +119,13 @@ fn default_shell_is_named_through_login_and_idle() {
     }
     assert!(!s.is_busy(), "{name} at a prompt should be idle");
 }
+
+#[test]
+fn password_prompt_is_seen() {
+    let s = run("printf 'ready'; stty -echo; printf ' secret'; sleep 3");
+    assert_eq!(wait_for(&s, 0, "ready secret"), "ready secret");
+    assert!(s.reading_secret());
+    let plain = run("printf 'plain'; sleep 3");
+    assert_eq!(wait_for(&plain, 0, "plain"), "plain");
+    assert!(!plain.reading_secret());
+}

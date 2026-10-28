@@ -354,6 +354,7 @@ impl Workspace {
             }),
             // The menus describe the frontmost window.
             cx.observe_window_activation(window, |_, window, cx| {
+                crate::secure_input::set_active(window.is_window_active(), cx);
                 if window.is_window_active() {
                     cx.defer(crate::menus::refresh);
                 }
@@ -378,6 +379,7 @@ impl Workspace {
                     }
                     if changed {
                         cx.notify();
+                        cx.defer(refresh_dock);
                     }
                     this.refresh_details(false, cx);
                     // Now and then for what the menus show: ports, git.
@@ -652,6 +654,7 @@ impl Workspace {
         let terminal = cx.new(|cx| {
             let mut view = TerminalView::new(id, session, events, style, meta, blink, window, cx);
             view.set_link_options(crate::terminal_view::LinkOptions::from_config(&self.config));
+            view.set_behavior(self.config.behavior, self.config.progress_commands());
             view.set_autocomplete(self.config.autocomplete.clone(), cx);
             view.refresh_process();
             view
@@ -672,13 +675,17 @@ impl Workspace {
             terminal,
             window,
             |this, terminal, event, window, cx| match event {
-                TerminalEvent::TitleChanged => cx.notify(),
+                TerminalEvent::TitleChanged => {
+                    cx.notify();
+                    cx.defer(refresh_dock);
+                }
                 TerminalEvent::Exited => this.close_pane(terminal, window, cx),
                 TerminalEvent::CommandFinished { exit, duration } => {
                     tracing::debug!(?exit, ?duration, "command finished");
                     crate::ipc::command_finished(terminal, *exit, *duration, cx);
                     this.command_status(terminal, *exit, window, cx);
                     cx.defer(crate::menus::refresh);
+                    cx.defer(refresh_dock);
                 }
                 TerminalEvent::Notification { title, body } => {
                     // Only for panes the user can't see right now.
@@ -825,6 +832,46 @@ impl Workspace {
             .position(|t| t.terms().is_some_and(|t| t.root.contains(view)))
     }
 
+    /// `focus-follows-mouse`: the pane under the pointer takes focus from
+    /// the focused one (not from the palette, a rename or the find bar).
+    fn follow_mouse(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(focused) = self.focused_pane() else {
+            return;
+        };
+        if focused != *view
+            && window.is_window_active()
+            && focused.focus_handle(cx).is_focused(window)
+        {
+            self.focus_pane(view.clone(), window, cx);
+        }
+    }
+
+    /// A folder dropped on a pane's edge: a terminal there, in the folder.
+    fn drop_split(&mut self, a: &DropSplit, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self
+            .panes()
+            .map(|(_, v)| v.clone())
+            .find(|v| v.read(cx).id == a.pane)
+        else {
+            return;
+        };
+        let direction = match a.side.as_str() {
+            "left" => Direction::Left,
+            "up" => Direction::Up,
+            "down" => Direction::Down,
+            _ => Direction::Right,
+        };
+        self.reveal_pane(&view, window, cx);
+        if let Err(e) = self.split_pane(direction, None, Some(a.path.clone()), true, window, cx) {
+            tracing::error!("failed to start shell: {e:#}");
+        }
+    }
+
     /// Activates the pane's tab and focuses the pane.
     pub fn reveal_pane(
         &mut self,
@@ -945,6 +992,7 @@ impl Workspace {
         self.active = ix;
         self.clear_seen(ix, cx);
         cx.defer(crate::menus::refresh);
+        cx.defer(refresh_dock);
         let tab = &self.tabs[ix];
         let focus = match &tab.content {
             Content::Terminals(t) => t.focused.focus_handle(cx),
@@ -1144,9 +1192,12 @@ impl Workspace {
         let scrollback = self.config.scrollback.unwrap_or(10_000);
         let links = crate::terminal_view::LinkOptions::from_config(&self.config);
         let autocomplete = self.config.autocomplete.clone();
+        let (behavior, progress) = (self.config.behavior, self.config.progress_commands());
+        cursor_hiding(&self.config, cx);
         for view in self.panes().map(|(_, v)| v) {
             view.update(cx, |t, cx| {
                 t.set_link_options(links.clone());
+                t.set_behavior(behavior, progress.clone());
                 t.set_autocomplete(autocomplete.clone(), cx);
                 t.apply_config(meta, blink, cursor, scrollback, cx)
             });
@@ -1198,6 +1249,21 @@ impl Workspace {
                 if let Some(this) = weak.upgrade() {
                     this.update(cx, |this, _| this.dragging = Some(id));
                 }
+            }),
+            on_hover: (split && self.config.behavior.focus_follows_mouse).then(|| {
+                let weak = cx.entity().downgrade();
+                Rc::new(
+                    move |view: &Entity<TerminalView>,
+                          event: &gpui::MouseMoveEvent,
+                          window: &mut Window,
+                          cx: &mut App| {
+                        if event.pressed_button.is_some() || cx.has_active_drag() {
+                            return;
+                        }
+                        let Some(this) = weak.upgrade() else { return };
+                        this.update(cx, |this, cx| this.follow_mouse(view, window, cx));
+                    },
+                ) as Rc<crate::panes::PaneHover>
             }),
         };
         Some(tab.root.render(&style))
@@ -1417,11 +1483,13 @@ impl Workspace {
                     badge: None,
                     line: None,
                     running: false,
+                    progress: None,
                 };
                 let mut best = usize::MAX;
                 for pane in panes {
                     let pane = pane.read(cx);
                     summary.running |= pane.busy;
+                    summary.progress = most_pressing(summary.progress, pane.progress);
                     let Some(status) = &pane.status else { continue };
                     let rank = status.badge.map_or(9, badge_rank);
                     if rank < best || summary.line.is_none() {
@@ -1454,6 +1522,7 @@ impl Workspace {
                     badge: None,
                     line: dirty.then(|| "Unsaved changes".to_owned()),
                     running: false,
+                    progress: None,
                 }
             }
         }
@@ -1481,9 +1550,12 @@ impl Workspace {
         } else {
             t.token.tertiary
         });
-        let label = match summary.badge {
-            Some(badge) => badge_icon(badge, ix, t),
-            None => tracked(&summary.process, LABEL_PITCH).into_any_element(),
+        // Progress shows unless something needs the user.
+        let label = match (summary.badge, summary.progress) {
+            (Some(badge), _) if badge.needs_you() => badge_icon(badge, ix, t),
+            (_, Some(progress)) => progress_icon(progress, ix, t),
+            (Some(badge), None) => badge_icon(badge, ix, t),
+            (None, None) => tracked(&summary.process, LABEL_PITCH).into_any_element(),
         };
         let title = div()
             .flex_1()
@@ -1724,6 +1796,7 @@ impl Workspace {
     pub(crate) fn snapshot_for_menus(&self, cx: &App) -> crate::menus::Snapshot {
         let mut s = crate::menus::Snapshot {
             pinned: self.pinned,
+            secure: crate::secure_input::manual(cx),
             ..Default::default()
         };
         if let Some(view) = self.focused_pane() {
@@ -1790,6 +1863,50 @@ impl Workspace {
 }
 
 /// The frontmost window's state for the menu bar.
+/// `mouse-hide-while-typing`: GPUI hides the pointer on typing unless told
+/// not to.
+pub(crate) fn cursor_hiding(config: &Config, cx: &mut App) {
+    cx.set_cursor_hide_mode(if config.behavior.hide_mouse_while_typing {
+        gpui::CursorHideMode::OnTyping
+    } else {
+        gpui::CursorHideMode::Never
+    });
+}
+
+/// The Dock icon from every window's tabs: red while a failure waits to
+/// be looked at, a bar while something reports progress.
+pub(crate) fn refresh_dock(cx: &mut App) {
+    use motty_term::shell::Progress;
+    let mut error = false;
+    let mut progress: Option<Progress> = None;
+    let mut behavior = None;
+    for window in cx.windows() {
+        let Some(workspace) = window.downcast::<Workspace>() else {
+            continue;
+        };
+        let Ok(this) = workspace.read(cx) else {
+            continue;
+        };
+        behavior.get_or_insert(this.config.behavior);
+        for tab in &this.tabs {
+            let summary = this.tab_summary(tab, cx);
+            error |= summary.badge == Some(Badge::Error);
+            progress = most_pressing(progress, summary.progress);
+        }
+    }
+    let behavior = behavior.unwrap_or_default();
+    let state = match progress {
+        _ if error && behavior.dock_error_badge => crate::dock::DockState::Error,
+        Some(Progress::Error(_)) if behavior.dock_error_badge => crate::dock::DockState::Error,
+        Some(Progress::Normal(p)) if behavior.dock_progress => {
+            crate::dock::DockState::Progress(Some(p))
+        }
+        Some(_) if behavior.dock_progress => crate::dock::DockState::Progress(None),
+        _ => crate::dock::DockState::Normal,
+    };
+    crate::dock::set(state, cx);
+}
+
 pub(crate) fn menu_snapshot(cx: &App) -> Option<crate::menus::Snapshot> {
     let window = cx
         .active_window()
@@ -1826,6 +1943,8 @@ struct TabSummary {
     line: Option<String>,
     /// A command or an agent's turn is under way.
     running: bool,
+    /// The panes' progress, the most pressing first.
+    progress: Option<motty_term::shell::Progress>,
 }
 
 /// Which badge a tab shows when its panes have several: the one most in
@@ -1842,6 +1961,62 @@ fn badge_rank(badge: Badge) -> usize {
 
 /// Otty's tab badges: a spinner, a hand, a check, an accent dot, a
 /// triangle.
+/// Of two progress reports, the one to show: an error, else the further
+/// along, else a spinner.
+fn most_pressing(
+    a: Option<motty_term::shell::Progress>,
+    b: Option<motty_term::shell::Progress>,
+) -> Option<motty_term::shell::Progress> {
+    use motty_term::shell::Progress::*;
+    let rank = |p: &motty_term::shell::Progress| match p {
+        Error(_) => 3,
+        Normal(_) => 1,
+        _ => 0,
+    };
+    match (a, b) {
+        (Some(Normal(x)), Some(Normal(y))) => Some(Normal(x.max(y))),
+        (Some(a), Some(b)) => Some(if rank(&b) > rank(&a) { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// A ring filled to the percentage (red on error), or a spinner when
+/// the amount isn't known.
+fn progress_icon(progress: motty_term::shell::Progress, ix: usize, t: &Theme) -> AnyElement {
+    use motty_term::shell::Progress;
+    let (share, color) = match progress {
+        Progress::Normal(p) => (f32::from(p.min(100)) / 100., hsla(t.token.accent)),
+        Progress::Error(p) => (
+            f32::from(p.min(100)).max(1.) / 100.,
+            gpui::rgb(0xff3b30).into(),
+        ),
+        _ => return badge_icon(Badge::Running, ix, t),
+    };
+    let track = hsla(t.token.tertiary).opacity(0.35);
+    titlebar::icon(12., 12., move |o, window| {
+        let (cx, cy, r) = (6., 6., 4.5);
+        let ring = |from: f32, to: f32| {
+            let mut path = gpui::PathBuilder::stroke(px(1.8));
+            let at = |a: f32| titlebar::at(o, cx + r * a.sin(), cy - r * a.cos());
+            let tau = std::f32::consts::TAU;
+            path.move_to(at(from * tau));
+            // Arcs over half a turn go in two halves.
+            let mid = (from + to) / 2.;
+            for end in [mid, to] {
+                path.arc_to(point(px(r), px(r)), px(0.), false, true, at(end * tau));
+            }
+            path
+        };
+        if let Ok(path) = ring(0., 0.9999).build() {
+            window.paint_path(path, track);
+        }
+        if let Ok(path) = ring(0., share).build() {
+            window.paint_path(path, color);
+        }
+    })
+    .into_any_element()
+}
+
 fn badge_icon(badge: Badge, ix: usize, t: &Theme) -> AnyElement {
     let icon = |path: &'static str, color: Hsla| {
         svg().path(path).flex_none().size(px(12.)).text_color(color)
@@ -1988,6 +2163,51 @@ impl Workspace {
 
     /// The focused pane's vi or read-only mode, as a pill left of the details
     /// toggle (measured from Otty's READ ONLY pill).
+    /// The titlebar pills at the right: Secure Keyboard Entry, and the
+    /// focused pane's mode.
+    fn render_pills(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let secure = (self.config.behavior.secure_input_indication
+            && window.is_window_active()
+            && crate::secure_input::is_on(cx))
+        .then(|| self.render_secure_pill());
+        let mode = self.render_mode_pill(cx);
+        if secure.is_none() && mode.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .top(px(6.))
+                .right(px(43.5))
+                .flex()
+                .gap(px(6.))
+                .children(secure)
+                .children(mode)
+                .into_any_element(),
+        )
+    }
+
+    fn render_secure_pill(&self) -> AnyElement {
+        let t = &self.theme;
+        let ink = hsla(native_label(t, 1., 1.));
+        div()
+            .id("secure-input")
+            .h(px(20.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .bg(hsla(native_label(t, 0.065, 0.1)))
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ink)
+            .child(titlebar::lock(ink))
+            .child("SECURE INPUT")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .into_any_element()
+    }
+
     fn render_mode_pill(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let view = self.focused_pane()?;
         let mode = view.read(cx).mode()?;
@@ -2002,9 +2222,6 @@ impl Workspace {
         };
         Some(
             div()
-                .absolute()
-                .top(px(6.))
-                .right(px(43.5))
                 .h(px(20.))
                 .flex()
                 .items_center()
@@ -2515,6 +2732,14 @@ impl Render for Workspace {
                 this.show_open_quickly(open_quickly::Filter::Files, window, cx)
             }))
             .on_action(
+                cx.listener(|this, a: &DropSplit, window, cx| this.drop_split(a, window, cx)),
+            )
+            .on_action(cx.listener(|this, a: &EditFiles, window, cx| {
+                for path in &a.paths {
+                    this.open_editor(Some(path.clone()), window, cx);
+                }
+            }))
+            .on_action(
                 cx.listener(|this, _: &GlobalSearch, window, cx| {
                     this.open_global_search(window, cx)
                 }),
@@ -2549,7 +2774,7 @@ impl Render for Workspace {
             .children(details)
             .children(titlebar_buttons)
             .children(details_button)
-            .children(self.render_mode_pill(cx))
+            .children(self.render_pills(window, cx))
             .children(self.render_palette(window, cx))
             .children(self.render_open_quickly(window, cx))
             .children(self.render_global_search(window, cx))

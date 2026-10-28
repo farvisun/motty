@@ -114,6 +114,7 @@ actions!(
         InsertFilePath,
         PinWindow,
         OpenFile,
+        ToggleSecureKeyboardEntry,
     ]
 );
 
@@ -169,6 +170,23 @@ impl TypeCommand {
             run,
         }
     }
+}
+
+/// A folder dropped on a pane's edge: a new pane on that `side` (`left`,
+/// `right`, `up`, `down`) of pane `pane`, starting in `path`.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct DropSplit {
+    pub pane: u64,
+    pub side: String,
+    pub path: std::path::PathBuf,
+}
+
+/// Opens files in editor tabs (files dropped on a pane's edge).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct EditFiles {
+    pub paths: Vec<std::path::PathBuf>,
 }
 
 const TERMINAL: Option<&str> = Some("Terminal");

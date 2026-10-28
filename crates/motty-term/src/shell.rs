@@ -201,6 +201,8 @@ impl ShellState {
                 }
             }
             ShellOsc::CommandEnd(exit) => {
+                // Progress belongs to the command; a crash mustn't leave it.
+                self.progress = None;
                 let b = self.blocks.back_mut()?;
                 // A bare prompt (empty line, ^C) ends without running anything.
                 if b.started.is_none() || b.finished.is_some() {

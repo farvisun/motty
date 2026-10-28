@@ -20,6 +20,8 @@ use crate::actions::*;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub pinned: bool,
+    /// Secure Keyboard Entry turned on by hand.
+    pub secure: bool,
     pub pane: Option<u64>,
     pub cwd: Option<PathBuf>,
     /// The focused pane's last command.
@@ -222,6 +224,8 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
             MenuItem::submenu(
                 Menu::new("Insert from").items([MenuItem::action("File Path…", InsertFilePath)]),
             ),
+            MenuItem::separator(),
+            MenuItem::action("Secure Keyboard Entry", ToggleSecureKeyboardEntry).checked(s.secure),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette…", CommandPalette),
