@@ -25,6 +25,7 @@ use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
+mod open_quickly;
 mod palette;
 mod picker;
 
@@ -64,6 +65,10 @@ struct ClosedTabs(Vec<ClosedTab>);
 impl gpui::Global for ClosedTabs {}
 
 struct ClosedTab {
+    /// Unique for the run, so Open Quickly can reopen this one.
+    id: u64,
+    title: String,
+    cwd: Option<std::path::PathBuf>,
     state: TabState,
     /// Where it was in its window's tab list.
     index: usize,
@@ -104,6 +109,8 @@ pub struct Workspace {
     window_title: String,
     /// The command palette, while open.
     palette: Option<palette::Palette>,
+    /// Open Quickly, while open.
+    open_quickly: Option<open_quickly::OpenQuickly>,
     backdrops: Backdrops,
     /// Last background appearance and edited flag given to the native window;
     /// both reach AppKit on every call, so they are only set on change.
@@ -280,6 +287,7 @@ impl Workspace {
             mono_font,
             window_title: String::new(),
             palette: None,
+            open_quickly: None,
             backdrops: Backdrops::default(),
             native_state: None,
             sidebar_visible,
@@ -739,11 +747,17 @@ impl Workspace {
             }),
             cx,
         );
+        let focused = self.tabs[ix].focused.read(cx);
+        let (title, cwd) = (focused.display_title(), focused.cwd.clone());
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let closed = &mut cx.default_global::<ClosedTabs>().0;
         if closed.len() == MAX_CLOSED_TABS {
             closed.remove(0);
         }
         closed.push(ClosedTab {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            title,
+            cwd,
             state,
             index: ix,
             scrollback,
@@ -786,24 +800,27 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(e) = self.reopen_tab(window, cx) {
+        if let Err(e) = self.reopen_tab(None, window, cx) {
             tracing::info!("{e:#}");
             window.play_system_bell();
         }
     }
 
-    /// ⇧⌘T: the last closed tab comes back where it was, with its splits,
-    /// folders and scrollback (and new shells). Returns its focused pane.
+    /// ⇧⌘T: the last closed tab (or the one with `id`) comes back where it
+    /// was, with its splits, folders and scrollback (and new shells).
+    /// Returns its focused pane.
     pub fn reopen_tab(
         &mut self,
+        id: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
-        let closed = cx
-            .default_global::<ClosedTabs>()
-            .0
-            .pop()
-            .context("no closed tab to reopen")?;
+        let stack = &mut cx.default_global::<ClosedTabs>().0;
+        let ix = match id {
+            Some(id) => stack.iter().position(|c| c.id == id),
+            None => stack.len().checked_sub(1),
+        };
+        let closed = stack.remove(ix.context("no closed tab to reopen")?);
         let scrollback = |name: &str| {
             let i: usize = name.parse().ok()?;
             closed.scrollback.get(i).cloned()
@@ -1659,6 +1676,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::reopen_closed_tab))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(|this, _: &OpenQuickly, window, cx| {
+                this.show_open_quickly(open_quickly::Filter::All, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &JumpTo, window, cx| {
+                this.show_open_quickly(open_quickly::Filter::Current, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenFilesQuickly, window, cx| {
+                this.show_open_quickly(open_quickly::Filter::Files, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenConfigFile, _, _| this.open_config_file()))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
@@ -1689,6 +1715,7 @@ impl Render for Workspace {
             .children(details_button)
             .children(self.render_mode_pill(cx))
             .children(self.render_palette(window, cx))
+            .children(self.render_open_quickly(window, cx))
     }
 }
 

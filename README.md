@@ -87,6 +87,16 @@ protocol (JSON lines) is in `crates/motty-ipc`.
 pane, terminal, settings) and showing its keys. Type to narrow it; ↑↓ (or ⌃P/⌃N) pick, ↩ runs
 in the focused pane, ⌘↩ runs and keeps the palette open, Esc closes.
 
+## Open Quickly
+
+⇧⌘O jumps to anything: open windows and tabs, recently closed tabs, frequent folders (ranked by
+how often and how lately panes visited them), hosts from `~/.ssh/config`, the focused pane's
+commands and links, and the files in its folder (what git tracks, newest first). Filters run
+across the top: ⌘0 All, ⌘W Opened, ⌘R Recent, ⌘Z Folders, ⌘S SSH, ⌘J Current, ⌘P Files; Tab
+cycles them. ⌘J opens straight to Current. ↩ switches, reopens, `cd`s, connects, jumps to the
+command or opens the file; hold ⌘ to see ⌘1–⌘9 for the first nine. A path typed from `/` or `~`
+gets its own row.
+
 ## Find
 
 ⌘F opens the find bar on the focused pane: it searches the screen and scrollback as you type,

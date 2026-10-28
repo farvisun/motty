@@ -217,6 +217,11 @@ impl TerminalView {
             .or_else(|| self.session.foreground_cwd());
         let busy = self.session.is_busy();
         let changed = process != self.process || cwd != self.cwd || busy != self.busy;
+        if cwd != self.cwd
+            && let Some(dir) = &cwd
+        {
+            crate::folders::record(dir);
+        }
         self.process = process;
         self.cwd = cwd;
         self.busy = busy;

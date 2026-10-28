@@ -72,6 +72,9 @@ fn commands(sidebar_visible: bool, target: &TerminalView) -> Vec<Command> {
         Command::new("View", "Increase Font Size", IncreaseFontSize),
         Command::new("View", "Decrease Font Size", DecreaseFontSize),
         Command::new("View", "Reset Font Size", ResetFontSize),
+        Command::new("Go", "Open Quickly", OpenQuickly),
+        Command::new("Go", "Jump To", JumpTo),
+        Command::new("Go", "Open Files Quickly", OpenFilesQuickly),
         Command::new("Window", "New Tab", NewTab),
         Command::new("Window", "Close Tab", CloseTab),
         Command::new("Window", "Reopen Closed Tab", ReopenClosedTab),
@@ -175,6 +178,7 @@ impl Workspace {
         let Some(target) = self.focused_pane() else {
             return;
         };
+        self.open_quickly = None;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.palette = Some(Palette {

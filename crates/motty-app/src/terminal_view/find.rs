@@ -247,6 +247,16 @@ impl TerminalView {
         }
     }
 
+    /// Scrolls so the stable `row` (see [`motty_term::shell::Block`]) is at
+    /// the top of the screen, as far as the scrollback allows.
+    pub fn reveal_row(&mut self, row: u64, cx: &mut Context<Self>) {
+        let mut term = self.session.term.lock();
+        let top = term.grid().lines_pushed() as i64 - term.grid().display_offset() as i64;
+        term.scroll_display(Scroll::Delta((top - row as i64) as i32));
+        drop(term);
+        cx.notify();
+    }
+
     /// Matches on screen, for the terminal element.
     pub(super) fn find_highlights(&self) -> Vec<Highlight> {
         let Some(find) = &self.find else {

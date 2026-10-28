@@ -333,6 +333,17 @@ impl Session {
     /// prompt. Non-interactive shells keep children in their own process
     /// group, so child processes are checked as well as the foreground group.
     pub fn is_busy(&self) -> bool {
+        // With shell integration the marks say exactly; children of the
+        // shell may be prompt helpers (async git status and the like).
+        {
+            let state = self.shell();
+            if state.integrated {
+                return state
+                    .blocks
+                    .back()
+                    .is_some_and(|b| b.started.is_some() && b.finished.is_none());
+            }
+        }
         let shell = self.shell_pid();
         self.foreground_pid().is_some_and(|pgid| pgid != shell) || first_child(shell).is_some()
     }
@@ -372,6 +383,23 @@ impl Session {
             return (after.0 == first.0).then(String::new);
         }
         Some(text_between(&term, first, Line(after.0 - 1)))
+    }
+
+    /// The command typed at `block`'s prompt (from where input started to
+    /// where its output did), if it's still in the scrollback.
+    pub fn block_command(&self, block: &shell::Block) -> Option<String> {
+        let ((row, col), out) = (block.input?, block.output_row?);
+        let term = self.term.lock();
+        let pushed = term.grid().lines_pushed() as i64;
+        let line = |row: u64| Line((row as i64 - pushed) as i32);
+        let (first, last) = (line(row), line(out.max(row + 1)) - 1);
+        if first < term.topmost_line() || last < first {
+            return None;
+        }
+        let end = Point::new(last, Column(term.columns().saturating_sub(1)));
+        let text = term.bounds_to_string(Point::new(first, Column(col)), end);
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
     }
 
     /// Working directory of the foreground process.

@@ -304,7 +304,7 @@ fn new_tab(p: NewTabParams, cx: &mut App) -> anyhow::Result<Value> {
     let command = command_of(p.command)?;
     let created = handle.update(cx, |workspace, window, cx| {
         if p.reopen {
-            workspace.reopen_tab(window, cx)
+            workspace.reopen_tab(None, window, cx)
         } else {
             workspace.open_tab_with(command, p.cwd.map(PathBuf::from), window, cx)
         }
@@ -451,7 +451,9 @@ fn run(p: RunParams, id: u64, reply: &Reply, cx: &mut App) -> anyhow::Result<Opt
     let (_, view) = resolve(&p.pane, cx)?;
     let (pane, integrated, busy) = {
         let v = view.read(cx);
-        (v.id, v.session().shell().integrated, v.busy)
+        // One at a time: `is_busy` takes the shell state's lock too.
+        let integrated = v.session().shell().integrated;
+        (v.id, integrated, v.session().is_busy())
     };
     if !integrated {
         bail!("pane {pane} has no shell integration, so Motty can't tell when a command ends");

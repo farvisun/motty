@@ -1,4 +1,5 @@
 mod actions;
+mod folders;
 mod fonts;
 mod ipc;
 mod materials;
