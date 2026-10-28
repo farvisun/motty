@@ -1,5 +1,7 @@
 #!/bin/sh
 # Rendering fixture: exercises colors, styles, box drawing and wide text.
+# Clears first so terminals that echo the launch command show the same grid.
+printf '\033[H\033[2J\033[3J'
 printf '\033[1mMotty render fixture\033[0m  \033[2mdim\033[0m \033[3mitalic\033[0m \033[4munderline\033[0m \033[9mstrike\033[0m \033[7minverse\033[0m\n'
 for i in 0 1 2 3 4 5 6 7; do printf "\033[4${i}m  \033[0m"; done; printf '\n'
 for i in 0 1 2 3 4 5 6 7; do printf "\033[10${i}m  \033[0m"; done; printf '\n'
