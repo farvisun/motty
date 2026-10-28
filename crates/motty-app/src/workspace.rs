@@ -121,7 +121,6 @@ fn spawn_shell(
         working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),
         cursor_style: cursor_style(config),
-        ..Default::default()
     };
     Session::spawn(session, size)
 }
