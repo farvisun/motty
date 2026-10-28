@@ -2920,6 +2920,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

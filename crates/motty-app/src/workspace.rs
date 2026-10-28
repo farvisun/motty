@@ -20,6 +20,7 @@ use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 use crate::actions::*;
 use crate::materials::{Backdrop, Backdrops, Region};
 use crate::panes::{Direction, Pane, PaneStyle};
+use crate::recovery::{PaneState, TabState, WindowState};
 use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
@@ -110,6 +111,7 @@ fn spawn_shell(
     config: &Config,
     command: Option<(String, Vec<String>)>,
     cwd: Option<std::path::PathBuf>,
+    preload: Option<Vec<u8>>,
     size: GridSize,
     pane_id: u64,
 ) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
@@ -134,6 +136,7 @@ fn spawn_shell(
         working_directory: cwd.or_else(dirs::home_dir),
         scrollback: config.scrollback.unwrap_or(10_000),
         cursor_style: cursor_style(config),
+        preload,
     };
     Session::spawn(session, size)
 }
@@ -177,6 +180,7 @@ impl Workspace {
         config: Config,
         command: Option<(String, Vec<String>)>,
         cwd: Option<std::path::PathBuf>,
+        restore: Option<&WindowState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -256,10 +260,176 @@ impl Workspace {
             _process_poll: process_poll,
             _config_poll: config_poll,
         };
-        if let Err(e) = this.add_tab(command, cwd, window, cx) {
+        if let Some(state) = restore {
+            this.restore(state, window, cx);
+        }
+        if this.tabs.is_empty()
+            && let Err(e) = this.add_tab(command, cwd, window, cx)
+        {
             tracing::error!("failed to start shell: {e:#}");
         }
         this
+    }
+
+    /// What session recovery saves of this window. With `scrollback_dir`,
+    /// each pane's scrollback is written there too (`files` numbers them).
+    pub fn snapshot(
+        &self,
+        window: &Window,
+        scrollback_dir: Option<&std::path::Path>,
+        files: &mut usize,
+        cx: &App,
+    ) -> WindowState {
+        fn save(
+            pane: &Pane,
+            dir: Option<&std::path::Path>,
+            files: &mut usize,
+            cx: &App,
+        ) -> PaneState {
+            match pane {
+                Pane::Leaf(view) => {
+                    let view = view.read(cx);
+                    let scrollback = dir.and_then(|dir| {
+                        let term = view.session().term.lock();
+                        let bytes = motty_term::snapshot::serialize(
+                            &*term,
+                            crate::recovery::scrollback_lines(),
+                        )?;
+                        drop(term);
+                        if bytes.is_empty() {
+                            return None;
+                        }
+                        *files += 1;
+                        let name = format!("{files}.ansi");
+                        std::fs::write(dir.join(&name), bytes).ok()?;
+                        Some(name)
+                    });
+                    PaneState::Leaf {
+                        cwd: view.cwd.clone(),
+                        scrollback,
+                    }
+                }
+                Pane::Split(split) => PaneState::Split {
+                    vertical: split.axis == gpui::Axis::Vertical,
+                    ratio: split.ratio,
+                    first: Box::new(save(&split.first, dir, files, cx)),
+                    second: Box::new(save(&split.second, dir, files, cx)),
+                },
+            }
+        }
+        let b = window.bounds();
+        WindowState {
+            bounds: [
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+            ],
+            sidebar_visible: self.sidebar_visible,
+            active: self.active,
+            tabs: self
+                .tabs
+                .iter()
+                .map(|tab| TabState {
+                    root: save(&tab.root, scrollback_dir, files, cx),
+                    focused: tab
+                        .root
+                        .leaves()
+                        .iter()
+                        .position(|v| **v == tab.focused)
+                        .unwrap_or(0),
+                    zoomed: tab.zoomed,
+                })
+                .collect(),
+        }
+    }
+
+    /// Reopens a saved window's tabs and splits, each pane in its folder
+    /// with its scrollback.
+    fn restore(&mut self, state: &WindowState, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_visible = state.sidebar_visible;
+        for tab in &state.tabs {
+            match self.restore_pane(&tab.root, [0., 0., 1., 1.], window, cx) {
+                Ok(root) => {
+                    let leaves: Vec<_> = root.leaves().into_iter().cloned().collect();
+                    let focused = leaves
+                        .get(tab.focused)
+                        .or(leaves.first())
+                        .cloned()
+                        .expect("a pane tree has a leaf");
+                    self.tabs.push(Tab {
+                        root,
+                        focused,
+                        zoomed: tab.zoomed,
+                    });
+                }
+                Err(e) => tracing::error!("couldn't restore a tab: {e:#}"),
+            }
+        }
+        if !self.tabs.is_empty() {
+            self.activate(state.active.min(self.tabs.len() - 1), window, cx);
+        }
+    }
+
+    fn restore_pane(
+        &mut self,
+        state: &PaneState,
+        rect: [f32; 4],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Pane> {
+        Ok(match state {
+            PaneState::Leaf { cwd, scrollback } => {
+                let cwd = cwd.clone().filter(|d| d.is_dir());
+                let preload = scrollback
+                    .as_deref()
+                    .and_then(crate::recovery::read_scrollback);
+                Pane::Leaf(self.new_terminal_with(None, cwd, preload, rect, window, cx)?)
+            }
+            PaneState::Split {
+                vertical,
+                ratio,
+                first,
+                second,
+            } => {
+                let ratio = ratio.clamp(0.05, 0.95);
+                let [x, y, w, h] = rect;
+                let (a, b) = if *vertical {
+                    (
+                        [x, y, w, h * ratio],
+                        [x, y + h * ratio, w, h * (1. - ratio)],
+                    )
+                } else {
+                    (
+                        [x, y, w * ratio, h],
+                        [x + w * ratio, y, w * (1. - ratio), h],
+                    )
+                };
+                let first = self.restore_pane(first, a, window, cx)?;
+                let second = match self.restore_pane(second, b, window, cx) {
+                    Ok(pane) => pane,
+                    // Keep what started.
+                    Err(e) => {
+                        tracing::error!("couldn't restore a pane: {e:#}");
+                        return Ok(first);
+                    }
+                };
+                let id = self.next_split;
+                self.next_split += 1;
+                Pane::Split(crate::panes::Split {
+                    id,
+                    axis: if *vertical {
+                        gpui::Axis::Vertical
+                    } else {
+                        gpui::Axis::Horizontal
+                    },
+                    ratio,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                    bounds: Default::default(),
+                })
+            }
+        })
     }
 
     /// A terminal view for `session`, closing its pane when the shell exits.
@@ -273,6 +443,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
+        self.new_terminal_with(command, cwd, None, rect, window, cx)
+    }
+
+    /// [`Self::new_terminal`], first showing `preload` (restored scrollback).
+    fn new_terminal_with(
+        &mut self,
+        command: Option<(String, Vec<String>)>,
+        cwd: Option<std::path::PathBuf>,
+        preload: Option<Vec<u8>>,
+        rect: [f32; 4],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Entity<TerminalView>> {
         let style = terminal_style(&self.config, &self.theme, cx);
         // The PTY starts at the pane's size: programs read it on startup,
         // and output from before a resize would be reflowed.
@@ -280,7 +463,7 @@ impl Workspace {
         let pane = gpui::size(area.width * rect[2], area.height * rect[3]);
         let grid = motty_render::grid_for(&style, window, pane);
         let id = crate::terminal_view::next_pane_id();
-        let (session, events) = spawn_shell(&self.config, command, cwd, grid, id)?;
+        let (session, events) = spawn_shell(&self.config, command, cwd, preload, grid, id)?;
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
             let mut view = TerminalView::new(id, session, events, style, meta, blink, window, cx);

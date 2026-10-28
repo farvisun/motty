@@ -112,6 +112,8 @@ enum Command {
         #[arg(value_enum)]
         mode: Mode,
     },
+    /// Quit Motty (saving the session, as ⌘Q does).
+    Quit,
     /// Focus a pane (and its tab and window).
     Focus {
         #[arg(long)]
@@ -335,6 +337,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 mode,
             };
             let _: Value = client.call(method::SET_MODE, &params)?;
+        }
+        Command::Quit => {
+            let _: Value = client.call(method::QUIT, &Value::Null)?;
         }
         Command::Focus { pane: id } => {
             let _: Value = client.call(method::FOCUS, &pane(id))?;

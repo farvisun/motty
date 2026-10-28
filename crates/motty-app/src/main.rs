@@ -4,6 +4,7 @@ mod ipc;
 mod materials;
 mod notifications;
 mod panes;
+mod recovery;
 mod shell_integration;
 mod terminal_view;
 mod titlebar;
@@ -31,7 +32,7 @@ fn main() {
         ipc::start(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::NewWindow, cx| {
-            if let Err(e) = open_window(load_config(), None, cx) {
+            if let Err(e) = open_window(load_config(), None, None, cx) {
                 tracing::error!("failed to open a window: {e:#}");
             }
         });
@@ -42,7 +43,18 @@ fn main() {
         })
         .detach();
 
-        if let Err(e) = open_window(load_config(), command_arg(), cx) {
+        recovery::start(cx);
+        let config = load_config();
+        let restored = recovery::to_restore(config.restore_session);
+        let windows = restored.map(|s| s.windows).unwrap_or_default();
+        let mut opened = false;
+        for state in &windows {
+            match open_window(config.clone(), None, Some(state), cx) {
+                Ok(()) => opened = true,
+                Err(e) => tracing::error!("couldn't restore a window: {e:#}"),
+            }
+        }
+        if !opened && let Err(e) = open_window(config, command_arg(), None, cx) {
             eprintln!("motty: {e:#}");
             cx.quit();
         }
@@ -114,11 +126,24 @@ fn command_arg() -> Option<(String, Vec<String>)> {
 fn open_window(
     config: Config,
     command: Option<(String, Vec<String>)>,
+    restore: Option<&recovery::WindowState>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
-    let bounds = bounds_arg(cx);
+    let bounds = match restore {
+        Some(state) => {
+            let [x, y, w, h] = state.bounds;
+            let saved = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+            // A window left on a display that's gone comes back centered.
+            if cx.displays().iter().any(|d| d.bounds().intersects(&saved)) {
+                saved
+            } else {
+                Bounds::centered(None, saved.size, cx)
+            }
+        }
+        None => bounds_arg(cx),
+    };
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -139,7 +164,7 @@ fn open_window(
     let split = split_arg();
     let window = cx.open_window(options, |window, cx| {
         cx.new(|cx| {
-            let mut workspace = Workspace::new(config, command.clone(), cwd, window, cx);
+            let mut workspace = Workspace::new(config, command.clone(), cwd, restore, window, cx);
             for _ in 0..extra_tabs {
                 workspace.open_tab(window, cx);
             }

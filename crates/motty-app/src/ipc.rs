@@ -133,6 +133,11 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::FOCUS => parse(request.params).and_then(|p| focus(p, cx)),
         method::CLOSE => parse(request.params).and_then(|p| close(p, cx)),
         method::FIND => parse(request.params).and_then(|p| find(p, cx)),
+        method::QUIT => {
+            // Answer first; quitting closes the socket.
+            cx.defer(|cx| cx.quit());
+            Ok(Value::Null)
+        }
         method::SET_MODE => parse(request.params).and_then(|p| set_mode(p, cx)),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.

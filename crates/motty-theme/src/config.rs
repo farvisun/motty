@@ -39,6 +39,9 @@ pub struct Config {
     pub cursor_text: Option<Rgba>,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
+    /// `on-launch = restore_session` (default) reopens the last session;
+    /// `new_window` starts fresh (a crash still restores).
+    pub restore_session: bool,
     /// `link-detection`: find URLs and paths under the pointer (OSC 8
     /// links work either way).
     pub link_detection: bool,
@@ -137,6 +140,7 @@ impl Config {
             sidebar_visible: true,
             shell_integration: true,
             link_detection: true,
+            restore_session: true,
             ..Default::default()
         };
         let (entries, mut warnings) = parse_entries(src);
@@ -221,6 +225,11 @@ impl Config {
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }
+                "on-launch" => match value.as_str() {
+                    Some("restore_session") => out.restore_session = true,
+                    Some("new_window") => out.restore_session = false,
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
                 "link-detection" => {
                     out.link_detection = value.as_bool().unwrap_or(value.as_str() != Some("off"))
                 }

@@ -48,6 +48,7 @@ pub mod method {
     pub const CLOSE: &str = "close";
     pub const FIND: &str = "find";
     pub const SET_MODE: &str = "set-mode";
+    pub const QUIT: &str = "quit";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -226,11 +227,21 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(default_socket_path)
 }
 
-/// Where the first running Motty listens.
+/// Unix socket paths must fit in `sockaddr_un` (104 bytes on macOS), with
+/// room for a second instance's `motty-<pid>.sock`.
+const MAX_SOCKET_PATH: usize = 90;
+
+/// Where the first running Motty listens: in Application Support, or the
+/// per-user temp folder when that path is too long for a socket.
 pub fn default_socket_path() -> PathBuf {
-    dirs::data_dir()
+    let preferred = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("Motty/motty.sock")
+        .join("Motty/motty.sock");
+    if preferred.as_os_str().len() <= MAX_SOCKET_PATH {
+        preferred
+    } else {
+        std::env::temp_dir().join("Motty/motty.sock")
+    }
 }
 
 /// A blocking client, one request at a time.

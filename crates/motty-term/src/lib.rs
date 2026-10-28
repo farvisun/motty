@@ -23,6 +23,7 @@ pub mod links;
 mod pty_loop;
 pub mod search;
 pub mod shell;
+pub mod snapshot;
 
 use pty_loop::{LoopSender, Msg, PtyLoop};
 
@@ -171,6 +172,8 @@ pub struct SessionConfig {
     pub scrollback: usize,
     /// Shape and blinking until the program asks for another (DECSCUSR).
     pub cursor_style: CursorStyle,
+    /// Output to show before the program's (restored scrollback).
+    pub preload: Option<Vec<u8>>,
 }
 
 pub struct Session {
@@ -229,7 +232,13 @@ impl Session {
             default_cursor_style: config.cursor_style,
             ..Default::default()
         };
-        let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));
+        let mut terminal = Term::new(term_config, &size, proxy.clone());
+        if let Some(bytes) = &config.preload {
+            let mut parser: alacritty_terminal::vte::ansi::Processor =
+                alacritty_terminal::vte::ansi::Processor::new();
+            parser.advance(&mut terminal, bytes);
+        }
+        let term = Arc::new(FairMutex::new(terminal));
         let shell = Arc::new(std::sync::Mutex::new(shell::ShellState::default()));
         let (pty_loop, pty_tx) = PtyLoop::new(pty, term.clone(), proxy, shell.clone())?;
         let _ = pty_tx_cell.set(pty_tx.clone());

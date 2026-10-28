@@ -37,6 +37,7 @@ registered automatically. Saving a config or theme file applies it to open windo
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
 | `sidebar-visible` | Open windows with the tabs sidebar (default `true`; toggle with ⌘⇧L) |
 | `unfocused-split-opacity` | Opacity of split panes without focus (default `0.6`) |
+| `on-launch` | `restore_session` (default) reopens last session's windows; `new_window` starts fresh |
 | `scrollback-lines`, `shell` | Behaviour |
 
 ## Shell integration
@@ -61,6 +62,7 @@ motty find -e 'error\[E\d+\]'      # search screen and scrollback (-c case, -w w
 motty split -d down -- htop        # new pane; prints its id
 motty send --pane 3 $'q'           # type into a pane
 motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
+motty quit                         # quit Motty, saving the session
 ```
 
 `motty mcp` serves the same operations to coding agents as MCP tools (`list_panes`, `read_pane`,
@@ -106,6 +108,14 @@ paths resolve against the shell's directory) and see its target at the bottom le
 opens it; ⌘⇧-click reveals a path in Finder or copies a URL. OSC 8 hyperlinks are always
 underlined. Config: `link-detection = off`, `link-cmd-click = open | copy | nothing`,
 `link-cmd-shift-click = reveal-finder | open-system-default`.
+
+## Session recovery
+
+Windows, tabs, splits and each pane's folder are saved every few seconds, and with each pane's
+scrollback (colors included, up to 10 000 lines) on quit, to
+`~/Library/Application Support/Motty`. The next launch reopens them; set `on-launch =
+"new_window"` to start fresh. After a crash the last snapshot comes back either way. Runs
+started with `-e`, `--bounds` or another socket leave the saved session alone.
 
 ## Notifications
 
