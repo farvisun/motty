@@ -81,6 +81,7 @@ const BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(530
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl TerminalView {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         session: Session,

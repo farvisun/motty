@@ -57,7 +57,7 @@ pub fn start(cx: &mut App) {
     cx.set_global(Waiters::default());
     cx.spawn(async move |cx| {
         while let Ok((request, reply)) = rx.recv().await {
-            let _ = cx.update(|cx| dispatch(request, reply, cx));
+            cx.update(|cx| dispatch(request, reply, cx));
         }
     })
     .detach();
@@ -339,7 +339,7 @@ fn run(p: RunParams, id: u64, reply: &Reply, cx: &mut App) -> anyhow::Result<Opt
             cx.background_executor()
                 .timer(Duration::from_millis(ms))
                 .await;
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 let waiters = cx.global_mut::<Waiters>();
                 if let Some(list) = waiters.0.get_mut(&pane) {
                     list.retain(|(waiting, _)| *waiting != id);
