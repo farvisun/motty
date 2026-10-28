@@ -1,5 +1,7 @@
-//! `config.toml`: flat kebab-case keys, compatible with Otty's config file.
-//! Unknown keys are preserved so settings written back keep them.
+//! `config.toml`: flat kebab-case `key = value` lines, compatible with Otty's
+//! config file. Values are TOML literals, but keys may repeat: a repeated key
+//! is a list (e.g. several `open-with-app` entries), so the file is parsed
+//! line by line rather than as a strict TOML document.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +24,8 @@ pub struct Config {
     pub scrollback: Option<usize>,
     pub shell: Option<String>,
     pub cursor_blink: bool,
+    /// `open-with-app = "Name|bundle.id"` entries, in file order.
+    pub open_with_apps: Vec<String>,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -50,15 +54,8 @@ impl Config {
     }
 
     pub fn parse(src: &str) -> Self {
-        let mut cfg = Config { ligatures: true, option_as_meta: true, cursor_blink: true, ..Default::default() };
-        let table: toml::Table = match toml::from_str(src) {
-            Ok(t) => t,
-            Err(e) => {
-                cfg.warnings.push(format!("config.toml: {e}"));
-                return cfg;
-            }
-        };
-        let mut warnings = Vec::new();
+        let mut out = Config { ligatures: true, option_as_meta: true, cursor_blink: true, ..Default::default() };
+        let (entries, mut warnings) = parse_entries(src);
         let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
         let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
         let num_of = |v: &toml::Value| v.as_float().map(|f| f as f32).or_else(|| v.as_integer().map(|i| i as f32));
@@ -70,9 +67,9 @@ impl Config {
             }
             None => None,
         };
-        let mut out = cfg.clone();
-        for (key, value) in &table {
-            match key.as_str() {
+        for (key, value) in &entries {
+            let key = key.as_str();
+            match key {
                 "theme" => out.theme = str_of(value),
                 "theme-dark" => out.theme_dark = str_of(value),
                 "foreground" => out.foreground = color_of(key, value),
@@ -86,10 +83,12 @@ impl Config {
                 "scrollback" | "scrollback-lines" => out.scrollback = value.as_integer().map(|i| i.max(0) as usize),
                 "shell" => out.shell = str_of(value),
                 "cursor-blink" => out.cursor_blink = value.as_bool().unwrap_or(true),
-                k if k.starts_with("palette-") => match k["palette-".len()..].parse::<usize>() {
-                    Ok(i) if i < 16 => out.palette[i] = color_of(key, value),
-                    _ => {}
-                },
+                "open-with-app" => out.open_with_apps.extend(str_of(value)),
+                k if k.starts_with("palette-") => {
+                    if let Ok(i @ 0..16) = k["palette-".len()..].parse::<usize>() {
+                        out.palette[i] = color_of(key, value);
+                    }
+                }
                 _ => {}
             }
         }
@@ -140,6 +139,36 @@ impl Config {
             }
         }
     }
+}
+
+/// Splits the file into `(key, value)` entries in order, keeping repeats.
+/// A value may span lines while brackets are open (multi-line arrays).
+fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    let mut lines = src.lines().enumerate();
+    while let Some((n, line)) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut stmt = trimmed.to_owned();
+        let depth = |s: &str| s.matches('[').count() as i32 - s.matches(']').count() as i32;
+        while depth(&stmt) > 0 {
+            match lines.next() {
+                Some((_, more)) => {
+                    stmt.push('\n');
+                    stmt.push_str(more);
+                }
+                None => break,
+            }
+        }
+        match toml::from_str::<toml::Table>(&stmt) {
+            Ok(table) => entries.extend(table),
+            Err(e) => warnings.push(format!("config.toml line {}: {}", n + 1, e.message())),
+        }
+    }
+    (entries, warnings)
 }
 
 const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
@@ -230,6 +259,16 @@ mod tests {
         assert_eq!(cfg.theme_name(Mode::Dark), Some("Nord"));
         assert_eq!(cfg.palette[1], Some(Rgba::rgb(0xa33a3a)));
         assert_eq!(cfg.sidebar_width, Some(225.));
+    }
+
+    #[test]
+    fn repeated_keys_accumulate_and_bad_lines_are_skipped() {
+        let cfg = Config::parse(
+            "open-with-app = \"VS Code|com.microsoft.VSCode\"\nopen-with-app = \"Zed|dev.zed.Zed\"\nfont-size = oops\ntheme = \"Nord\"\n",
+        );
+        assert_eq!(cfg.open_with_apps.len(), 2);
+        assert_eq!(cfg.theme.as_deref(), Some("Nord"));
+        assert_eq!(cfg.warnings.len(), 1);
     }
 
     #[test]

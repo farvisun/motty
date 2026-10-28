@@ -106,7 +106,9 @@ pub struct Titlebar {
     pub unfocused_foreground: Rgba,
     pub font_size: f32,
     pub font_weight: f32,
-    pub height: f32,
+    /// Explicit band height; the sidebar layout reserves the native 28pt
+    /// titlebar when unset.
+    pub height: Option<f32>,
     pub material: Option<Material>,
 }
 
@@ -192,6 +194,12 @@ impl Theme {
     pub fn border_color(&self, b: &Border) -> Rgba {
         b.color.unwrap_or(self.panel.border)
     }
+}
+
+/// Black (light mode) or white (dark mode) text at the given alpha, like
+/// AppKit's label colors.
+fn overlay_text(dark: bool, light_alpha: f32, dark_alpha: f32) -> Rgba {
+    if dark { Rgba { r: 1., g: 1., b: 1., a: dark_alpha } } else { Rgba { r: 0., g: 0., b: 0., a: light_alpha } }
 }
 
 /// Mixes `a` toward `b` by `t` (0 = a, 1 = b).
@@ -460,11 +468,12 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let tb = s("titlebar");
     let titlebar = Titlebar {
         background: tb.color("background"),
-        foreground: tb.color("foreground").unwrap_or(token.secondary),
-        unfocused_foreground: s("titlebar.unfocused").color("foreground").unwrap_or(token.tertiary),
+        // Unthemed titles use the native secondary/tertiary label colors.
+        foreground: tb.color("foreground").unwrap_or(overlay_text(dark, 0.5, 0.55)),
+        unfocused_foreground: s("titlebar.unfocused").color("foreground").unwrap_or(overlay_text(dark, 0.26, 0.25)),
         font_size: tb.num("font-size").unwrap_or(13.),
         font_weight: tb.num("font-weight").unwrap_or(500.),
-        height: tb.num("height").unwrap_or(40.),
+        height: tb.num("height"),
         material: tb.material("material"),
     };
 
