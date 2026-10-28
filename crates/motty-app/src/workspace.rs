@@ -343,10 +343,13 @@ impl Workspace {
     /// Native materials behind the window and the sidebar, bottom-most first.
     fn backdrops_wanted(&self) -> Vec<Backdrop> {
         let t = &self.theme;
-        vec![
-            Backdrop { region: Region::Window, material: t.window.material },
-            Backdrop { region: Region::Sidebar { width: self.sidebar_width() }, material: t.sidebar.material },
-        ]
+        let mut wanted = vec![Backdrop { region: Region::Window, material: t.window.material }];
+        // A sidebar on the window's own material is the same surface in Otty,
+        // not a second layer (stacked glass would lighten the column).
+        if t.sidebar.material != t.window.material {
+            wanted.push(Backdrop { region: Region::Sidebar { width: self.sidebar_width() }, material: t.sidebar.material });
+        }
+        wanted
     }
 }
 
@@ -443,7 +446,7 @@ impl Render for Workspace {
             self.native_state = Some(state);
         }
         let backdrops = self.backdrops_wanted();
-        self.backdrops.sync(window, &backdrops);
+        self.backdrops.sync(window, &backdrops, self.theme.meta.mode == Mode::Dark);
 
         let title_band = div()
             .absolute()
@@ -458,22 +461,25 @@ impl Render for Workspace {
             .text_size(px(t.titlebar.font_size))
             .child(title);
 
-        let container = with_border(
-            div()
-                .flex_1()
-                .min_h_0()
-                .mt(px(c.margin.top))
-                .mr(px(c.margin.right))
-                .mb(px(c.margin.bottom))
-                .ml(px(c.margin.left))
-                .rounded(px(c.radius))
-                .overflow_hidden()
-                .bg(hsla(c.background))
-                .shadow(shadows(&c.shadow))
-                .children(active),
-            t,
-            &c.border,
-        );
+        // Otty draws the container border over the padding rather than
+        // inside it, so the grid doesn't move when a theme adds a border.
+        let border_overlay = c.border.as_ref().map(|_| {
+            with_border(div().absolute().inset_0().rounded(px(c.radius)), t, &c.border)
+        });
+        let container = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .mt(px(c.margin.top))
+            .mr(px(c.margin.right))
+            .mb(px(c.margin.bottom))
+            .ml(px(c.margin.left))
+            .rounded(px(c.radius))
+            .overflow_hidden()
+            .bg(hsla(c.background))
+            .shadow(shadows(&c.shadow))
+            .children(active)
+            .children(border_overlay);
 
         let main = div()
             .relative()
@@ -482,7 +488,9 @@ impl Render for Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .bg(hsla(t.terminal.background))
+            // Behind the container card is the window itself (a material when
+            // the theme has one); the card paints the terminal's color.
+            .bg(hsla(t.window.background))
             .child(
                 div()
                     .id("titlebar")
@@ -521,7 +529,9 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            .bg(hsla(t.window.background))
+            // The window fill only shows under the sidebar (the main column
+            // paints its own); a sidebar material must not be covered by it.
+            .when(t.sidebar.material == Material::None, |d| d.bg(hsla(t.window.background)))
             .font_family(self.ui_font.clone())
             .child(sidebar)
             .child(main)

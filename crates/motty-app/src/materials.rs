@@ -28,6 +28,7 @@ pub struct Backdrop {
 #[derive(Default)]
 pub struct Backdrops {
     installed: Vec<Backdrop>,
+    dark: bool,
     #[cfg(target_os = "macos")]
     views: Vec<objc2::rc::Retained<objc2_app_kit::NSView>>,
 }
@@ -35,9 +36,10 @@ pub struct Backdrops {
 impl Backdrops {
     /// Installs `wanted` (bottom-most first), replacing what was there when it
     /// changed. Cheap to call every frame.
-    pub fn sync(&mut self, window: &Window, wanted: &[Backdrop]) {
+    /// `dark` gives the materials the dark appearance.
+    pub fn sync(&mut self, window: &Window, wanted: &[Backdrop], dark: bool) {
         let wanted: Vec<Backdrop> = wanted.iter().copied().filter(|b| b.material != Material::None).collect();
-        if wanted == self.installed {
+        if wanted == self.installed && dark == self.dark {
             return;
         }
         #[cfg(target_os = "macos")]
@@ -45,7 +47,7 @@ impl Backdrops {
             for view in self.views.drain(..) {
                 view.removeFromSuperview();
             }
-            match mac::install(window, &wanted) {
+            match mac::install(window, &wanted, dark) {
                 Some(views) => self.views = views,
                 None => tracing::warn!("could not install window materials"),
             }
@@ -53,6 +55,7 @@ impl Backdrops {
         #[cfg(not(target_os = "macos"))]
         let _ = window;
         self.installed = wanted;
+        self.dark = dark;
     }
 }
 
@@ -62,7 +65,7 @@ mod mac {
     use objc2::rc::Retained;
     use objc2::runtime::AnyClass;
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode,
         NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -71,7 +74,7 @@ mod mac {
     use super::{Backdrop, Region};
     use motty_theme::Material;
 
-    pub fn install(window: &gpui::Window, backdrops: &[Backdrop]) -> Option<Vec<Retained<NSView>>> {
+    pub fn install(window: &gpui::Window, backdrops: &[Backdrop], dark: bool) -> Option<Vec<Retained<NSView>>> {
         let mtm = MainThreadMarker::new()?;
         let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw() else { return None };
         // SAFETY: GPUI's AppKit handle points at its live NSView, and we are
@@ -82,7 +85,7 @@ mod mac {
         let mut views = Vec::new();
         for backdrop in backdrops {
             let (frame, mask) = placement(backdrop.region, bounds);
-            let view = make_view(backdrop.material, frame, mtm);
+            let view = make_view(backdrop.material, dark, frame, mtm);
             view.setAutoresizingMask(mask);
             // Each view goes directly below GPUI's, so later ones stack above
             // earlier ones.
@@ -106,21 +109,32 @@ mod mac {
         }
     }
 
-    fn make_view(material: Material, frame: NSRect, mtm: MainThreadMarker) -> Retained<NSView> {
-        // Liquid Glass (macOS 26+) for `glass`, when the system has it.
+    /// Materials follow the theme's mode rather than the system appearance.
+    fn set_appearance(view: &NSView, dark: bool) {
+        // SAFETY: the appearance names are AppKit constants.
+        let name = unsafe { if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua } };
+        view.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
+    }
+
+    fn make_view(material: Material, dark: bool, frame: NSRect, mtm: MainThreadMarker) -> Retained<NSView> {
+        // Liquid Glass (macOS 26+) for `glass`, when the system has it; its
+        // regular style matches Otty's glass exactly over a solid backdrop.
         if material == Material::Glass && AnyClass::get(c"NSGlassEffectView").is_some() {
             let glass = NSGlassEffectView::initWithFrame(mtm.alloc(), frame);
             glass.setStyle(NSGlassEffectViewStyle::Regular);
+            set_appearance(&glass, dark);
             glass.setCornerRadius(0.);
             return Retained::into_super(glass);
         }
         let view = NSVisualEffectView::initWithFrame(mtm.alloc(), frame);
+        // Measured against Otty over a solid backdrop: thin and regular blur
+        // identically to the sidebar material, in light and dark. No Otty
+        // theme uses thick, so its heavier window material is a guess.
         view.setMaterial(match material {
-            Material::VibrancyThin => NSVisualEffectMaterial::HeaderView,
-            Material::VibrancyRegular => NSVisualEffectMaterial::Sidebar,
             Material::VibrancyThick => NSVisualEffectMaterial::WindowBackground,
-            Material::Glass | Material::None => NSVisualEffectMaterial::UnderWindowBackground,
+            _ => NSVisualEffectMaterial::Sidebar,
         });
+        set_appearance(&view, dark);
         view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
         view.setState(NSVisualEffectState::FollowsWindowActiveState);
         Retained::into_super(view)

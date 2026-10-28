@@ -23,7 +23,7 @@ raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "NSGlassEffectView", "NSResponder", "NSColor", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "NSGlassEffectView", "NSResponder", "NSColor", "NSGraphics", "NSAppearance"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 
 [features]
