@@ -490,7 +490,9 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let sb = s("sidebar");
     let default_side_border = Some(Border { width: 1., color: None });
     let side = |sec: &Section, base: Option<&SidePanel>, default_width: f32| -> SidePanel {
-        let mut padding = sec.edges("padding").or(base.map(|b| b.padding)).unwrap_or_default();
+        // Otty insets the sidebar's cards and header 8pt unless the theme
+        // says otherwise (April and Ayu Light run cards edge to edge with 0).
+        let mut padding = sec.edges("padding").or(base.map(|b| b.padding)).unwrap_or(Edges::all(8.));
         if let Some(r) = sec.num("padding-right") {
             padding.right = r;
         }

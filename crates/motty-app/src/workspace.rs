@@ -27,9 +27,9 @@ const SIDEBAR_HEADER_TOP: f32 = 37.5;
 const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
 const TAB_HEIGHT: f32 = 36.;
 const TAB_GAP: f32 = 2.;
-const SIDEBAR_INSET: f32 = 8.;
-const SIDEBAR_TEXT_INSET: f32 = 18.;
-const SIDEBAR_ICON_INSET: f32 = 16.5;
+/// The header's text and icon sit this far inside the sidebar's padding.
+const SIDEBAR_TEXT_INSET: f32 = 10.;
+const SIDEBAR_ICON_INSET: f32 = 8.5;
 /// Process label beside each tab title: small mono text with wide tracking.
 const LABEL_FONT_SIZE: f32 = 9.5;
 const LABEL_PITCH: f32 = 6.25;
@@ -256,8 +256,8 @@ impl Workspace {
         let header = div()
             .mt(px(SIDEBAR_HEADER_TOP))
             .h(px(SIDEBAR_HEADER_HEIGHT))
-            .pl(px(SIDEBAR_TEXT_INSET))
-            .pr(px(SIDEBAR_ICON_INSET))
+            .pl(px(t.sidebar.padding.left + SIDEBAR_TEXT_INSET))
+            .pr(px(t.sidebar.padding.right + SIDEBAR_ICON_INSET))
             .flex()
             .items_center()
             .justify_between()
@@ -289,7 +289,10 @@ impl Workspace {
                     .gap_2()
                     .rounded(px(style.radius))
                     .bg(hsla(style.background))
-                    .shadow(shadows(&style.shadow))
+                    // GPUI paints a shadow under the whole box, where it would
+                    // show through a translucent fill; CSS (and Otty) only
+                    // draw it outside, so translucent cards go without.
+                    .when(style.background.a >= 1., |d| d.shadow(shadows(&style.shadow)))
                     .text_color(hsla(style.foreground))
                     .text_size(px(style.font_size))
                     .font_weight(FontWeight(style.font_weight))
@@ -343,7 +346,7 @@ impl Workspace {
                 // border, as in Otty.
                 div()
                     .overflow_hidden()
-                    .child(div().px(px(SIDEBAR_INSET)).pb(px(1.)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
+                    .child(div().pl(px(t.sidebar.padding.left)).pr(px(t.sidebar.padding.right)).pb(px(1.)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
             )
             .into_any_element()
     }
