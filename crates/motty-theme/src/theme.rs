@@ -504,7 +504,8 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         background: tab_s.color("background").unwrap_or(Rgba::TRANSPARENT),
         foreground: tab_s.color("foreground").unwrap_or(token.secondary),
         radius: tab_s.num("radius").unwrap_or(token.radius),
-        font_size: tab_s.num("font-size").unwrap_or(13.),
+        // Otty draws sidebar tab titles a point below the 13pt UI size.
+        font_size: tab_s.num("font-size").unwrap_or(12.),
         font_weight: tab_s.num("font-weight").unwrap_or(400.),
         padding: tab_s.edges("padding").unwrap_or(Edges::all(10.)),
         height: tab_s.num("height"),
