@@ -452,7 +452,11 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
 
     let pan = s("panel");
     let panel = Panel {
-        background: pan.color("background").unwrap_or(base_bg),
+        // Measured from Otty's minimal themes (One Light, Dracula): chrome
+        // sits a step off the terminal, darker in light mode, lighter in dark.
+        background: pan
+            .color("background")
+            .unwrap_or_else(|| if dark { mix(base_bg, Rgba::rgb(0xffffff), 0.05) } else { mix(base_bg, Rgba::rgb(0x000000), 0.03) }),
         surface: pan.color("surface").unwrap_or_else(|| mix(base_bg, tok_fg, if dark { 0.06 } else { 0.03 })),
         border: pan.color("border").unwrap_or(overlay(if dark { 0.06 } else { 0.08 })),
     };
@@ -521,7 +525,9 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let tab_defaults = TabStates {
         hover: TabStyle { background: token.hover_bg, ..normal.clone() },
         active: TabStyle {
-            background: panel.surface,
+            // A translucent step over the sidebar (or its material), as Otty
+            // draws it when a theme doesn't say.
+            background: overlay(if dark { 0.08 } else { 0.06 }),
             foreground: token.foreground,
             font_weight: 500.,
             indicator: accent,
@@ -679,6 +685,18 @@ palette = ["#000000","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff"
         let plain = parse(MINIMAL).unwrap().theme;
         assert_eq!(plain.window.background.a, 1.);
         assert_eq!(plain.sidebar.background.a, 1.);
+    }
+
+    #[test]
+    fn minimal_themes_derive_chrome_like_otty() {
+        // Dracula's terminal colors; Otty draws its sidebar at #33353f and the
+        // active card at #43454e.
+        let t = parse(&MINIMAL.replace("#000000\"\n", "#282A36\"\n")).unwrap().theme;
+        let hex = |c: Rgba| [c.r, c.g, c.b].map(|v| (v * 255.).round() as u8);
+        assert_eq!(hex(t.panel.background), [0x33, 0x35, 0x40]);
+        assert_eq!(hex(t.sidebar.background), [0x33, 0x35, 0x40]);
+        let card = mix(t.sidebar.background, t.tabs.active.background.with_alpha(1.), t.tabs.active.background.a);
+        assert_eq!(hex(card), [0x43, 0x45, 0x4f]);
     }
 
     #[test]
