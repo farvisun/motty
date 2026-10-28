@@ -5,7 +5,9 @@ mod terminal_view;
 mod titlebar;
 mod workspace;
 
-use gpui::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size};
+use gpui::{
+    App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size,
+};
 use gpui_platform::application;
 use motty_theme::Config;
 
@@ -13,7 +15,10 @@ use crate::workspace::{Workspace, mode_for};
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("MOTTY_LOG").unwrap_or_else(|_| "warn".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("MOTTY_LOG")
+                .unwrap_or_else(|_| "warn".into()),
+        )
         .init();
 
     application().run(|cx: &mut App| {
@@ -27,18 +32,23 @@ fn main() {
         })
         .detach();
 
-        let mut config = Config::load();
-        // `--theme NAME` overrides the configured theme for both appearances.
-        if let Some(name) = flag_value("--theme") {
-            config.theme = Some(name.clone());
-            config.theme_dark = Some(name);
-        }
-        if let Err(e) = open_window(config, command_arg(), cx) {
+        if let Err(e) = open_window(load_config(), command_arg(), cx) {
             eprintln!("motty: {e:#}");
             cx.quit();
         }
         cx.activate(true);
     });
+}
+
+/// The config files with command-line overrides applied: `--theme NAME`
+/// replaces the configured theme for both appearances.
+pub fn load_config() -> Config {
+    let mut config = Config::load();
+    if let Some(name) = flag_value("--theme") {
+        config.theme = Some(name.clone());
+        config.theme_dark = Some(name);
+    }
+    config
 }
 
 /// `--bounds x,y,w,h` places the first window exactly (used by the parity harness).
@@ -60,12 +70,16 @@ fn bounds_arg(cx: &App) -> Bounds<gpui::Pixels> {
 /// The value after `flag`, among the arguments before `-e`.
 fn flag_value(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().take_while(|a| a != "-e").collect();
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 /// `--extra-tabs N` opens N more shell tabs (used by the parity harness).
 fn extra_tabs_arg() -> usize {
-    flag_value("--extra-tabs").and_then(|n| n.parse().ok()).unwrap_or(0)
+    flag_value("--extra-tabs")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 /// `Motty -e program [args...]` runs a command instead of the login shell.
@@ -75,7 +89,11 @@ fn command_arg() -> Option<(String, Vec<String>)> {
     Some((program, args.collect()))
 }
 
-fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut App) -> anyhow::Result<()> {
+fn open_window(
+    config: Config,
+    command: Option<(String, Vec<String>)>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
     let bounds = bounds_arg(cx);
@@ -92,7 +110,9 @@ fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut 
         ..Default::default()
     };
     // Launched from a shell, start there; from Finder the cwd is `/`.
-    let cwd = std::env::current_dir().ok().filter(|d| d.parent().is_some());
+    let cwd = std::env::current_dir()
+        .ok()
+        .filter(|d| d.parent().is_some());
     let (session, events) = workspace::spawn_shell(&config, command, cwd)?;
     let extra_tabs = extra_tabs_arg();
     cx.open_window(options, |window, cx| {

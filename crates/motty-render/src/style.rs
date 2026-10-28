@@ -7,11 +7,22 @@ use motty_term::alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use motty_theme::{Rgba, Theme};
 
 pub fn hsla(c: Rgba) -> Hsla {
-    GpuiRgba { r: c.r, g: c.g, b: c.b, a: c.a }.into()
+    GpuiRgba {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: c.a,
+    }
+    .into()
 }
 
 fn rgb_to_rgba(c: Rgb) -> Rgba {
-    Rgba { r: c.r as f32 / 255., g: c.g as f32 / 255., b: c.b as f32 / 255., a: 1. }
+    Rgba {
+        r: c.r as f32 / 255.,
+        g: c.g as f32 / 255.,
+        b: c.b as f32 / 255.,
+        a: 1.,
+    }
 }
 
 #[derive(Clone)]
@@ -33,13 +44,28 @@ pub struct TerminalStyle {
 }
 
 impl TerminalStyle {
-    pub fn from_theme(theme: &Theme, font_family: Option<&str>, font_size: Option<f32>, ligatures: bool) -> Self {
+    pub fn from_theme(
+        theme: &Theme,
+        font_family: Option<&str>,
+        font_size: Option<f32>,
+        ligatures: bool,
+    ) -> Self {
         let family = font_family
             .map(str::to_owned)
-            .or_else(|| theme.token.font_mono.iter().find(|f| !f.starts_with('-') && *f != "monospace").cloned())
+            .or_else(|| {
+                theme
+                    .token
+                    .font_mono
+                    .iter()
+                    .find(|f| !f.starts_with('-') && *f != "monospace")
+                    .cloned()
+            })
             .unwrap_or_else(|| "Menlo".into());
         let features = if ligatures {
-            FontFeatures(std::sync::Arc::new(vec![("calt".into(), 1), ("liga".into(), 1)]))
+            FontFeatures(std::sync::Arc::new(vec![
+                ("calt".into(), 1),
+                ("liga".into(), 1),
+            ]))
         } else {
             FontFeatures::disable_ligatures()
         };
@@ -67,15 +93,21 @@ impl TerminalStyle {
         // Default background is painted by the container, so cells with the
         // default background stay transparent (needed for vibrancy themes).
         let bg = t.background;
-        let opaque_bg = if bg.a > 0.5 { bg } else { theme.panel.background.with_alpha(1.) };
+        let opaque_bg = if bg.a > 0.5 {
+            bg
+        } else {
+            theme.panel.background.with_alpha(1.)
+        };
         palette[NamedColor::Foreground as usize] = t.foreground;
         palette[NamedColor::Background as usize] = bg;
         palette[NamedColor::Cursor as usize] = theme.cursor.color;
         for i in 0..8 {
-            palette[NamedColor::DimBlack as usize + i] = motty_theme::theme::mix(t.palette[i], opaque_bg, 0.34);
+            palette[NamedColor::DimBlack as usize + i] =
+                motty_theme::theme::mix(t.palette[i], opaque_bg, 0.34);
         }
         palette[NamedColor::BrightForeground as usize] = t.foreground;
-        palette[NamedColor::DimForeground as usize] = motty_theme::theme::mix(t.foreground, opaque_bg, 0.34);
+        palette[NamedColor::DimForeground as usize] =
+            motty_theme::theme::mix(t.foreground, opaque_bg, 0.34);
 
         Self {
             font,
@@ -94,7 +126,11 @@ impl TerminalStyle {
     }
 
     /// Resolves a cell color, honoring runtime overrides (OSC 4/10/11).
-    pub fn resolve(&self, color: Color, overrides: &motty_term::alacritty_terminal::term::color::Colors) -> Rgba {
+    pub fn resolve(
+        &self,
+        color: Color,
+        overrides: &motty_term::alacritty_terminal::term::color::Colors,
+    ) -> Rgba {
         let index = match color {
             Color::Spec(rgb) => return rgb_to_rgba(rgb),
             Color::Named(n) => n as usize,

@@ -4,12 +4,13 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, SharedString,
-    Subscription, Task, Window, WindowAppearance, WindowBackgroundAppearance, div, point, prelude::*, px,
+    AnyElement, App, BoxShadow, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
+    SharedString, Subscription, Task, Window, WindowAppearance, WindowBackgroundAppearance, div,
+    point, prelude::*, px,
 };
 use motty_render::{TerminalStyle, hsla};
-use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
 use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
+use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
 use motty_theme::{Border, Config, Material, Mode, Rgba, Shadow, Theme};
 
 use crate::actions::*;
@@ -37,6 +38,8 @@ const SIDEBAR_TEXT_INSET: f32 = 10.;
 const SIDEBAR_ICON_INSET: f32 = 8.5;
 /// Process label beside each tab title: small mono text with wide tracking.
 const LABEL_FONT_SIZE: f32 = 9.5;
+/// How often config and theme files are checked for changes.
+const CONFIG_POLL: Duration = Duration::from_millis(500);
 const LABEL_PITCH: f32 = 6.25;
 const LABEL_COLUMNS: f32 = 6.;
 
@@ -66,6 +69,7 @@ pub struct Workspace {
     pointer_inside: bool,
     _subscriptions: Vec<Subscription>,
     _process_poll: Task<()>,
+    _config_poll: Task<()>,
 }
 
 pub fn mode_for(appearance: WindowAppearance) -> Mode {
@@ -89,20 +93,28 @@ pub fn spawn_shell(
         cursor_style: cursor_style(config),
         ..Default::default()
     };
-    let initial = GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 16. };
+    let initial = GridSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 8.,
+        cell_height: 16.,
+    };
     Session::spawn(session, initial)
 }
 
 /// `cursor-style` and the blink policy's starting state, as the terminal's
 /// default cursor.
-fn cursor_style(config: &Config) -> CursorStyle {
+pub fn cursor_style(config: &Config) -> CursorStyle {
     let shape = match config.cursor_style {
         motty_theme::CursorStyle::Block => CursorShape::Block,
         motty_theme::CursorStyle::Bar => CursorShape::Beam,
         motty_theme::CursorStyle::Underline => CursorShape::Underline,
         motty_theme::CursorStyle::BlockHollow => CursorShape::HollowBlock,
     };
-    CursorStyle { shape, blinking: config.cursor_blink.initial() }
+    CursorStyle {
+        shape,
+        blinking: config.cursor_blink.initial(),
+    }
 }
 
 pub fn terminal_style(config: &Config, theme: &Theme, cx: &App) -> TerminalStyle {
@@ -152,6 +164,23 @@ impl Workspace {
             }
         });
 
+        let config_poll = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            let fingerprint = || executor.spawn(async { motty_theme::config::files_fingerprint() });
+            let mut seen = fingerprint().await;
+            loop {
+                executor.timer(CONFIG_POLL).await;
+                let now = fingerprint().await;
+                if now == seen {
+                    continue;
+                }
+                seen = now;
+                if this.update(cx, |this, cx| this.reload_config(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+
         let sidebar_visible = config.sidebar_visible;
 
         let mut this = Self {
@@ -170,12 +199,19 @@ impl Workspace {
             pointer_inside: false,
             _subscriptions: subscriptions,
             _process_poll: process_poll,
+            _config_poll: config_poll,
         };
         this.add_tab(session, events, window, cx);
         this
     }
 
-    fn add_tab(&mut self, session: Session, events: async_channel::Receiver<SessionEvent>, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_tab(
+        &mut self,
+        session: Session,
+        events: async_channel::Receiver<SessionEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let style = terminal_style(&self.config, &self.theme, cx);
         let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
         let terminal = cx.new(|cx| {
@@ -183,15 +219,22 @@ impl Workspace {
             view.refresh_process();
             view
         });
-        let subscription = cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| match event {
-            TerminalEvent::TitleChanged => cx.notify(),
-            TerminalEvent::Exited => {
-                if let Some(ix) = this.tabs.iter().position(|t| &t.terminal == terminal) {
-                    this.close_tab_at(ix, window, cx);
+        let subscription = cx.subscribe_in(
+            &terminal,
+            window,
+            |this, terminal, event, window, cx| match event {
+                TerminalEvent::TitleChanged => cx.notify(),
+                TerminalEvent::Exited => {
+                    if let Some(ix) = this.tabs.iter().position(|t| &t.terminal == terminal) {
+                        this.close_tab_at(ix, window, cx);
+                    }
                 }
-            }
+            },
+        );
+        self.tabs.push(Tab {
+            terminal,
+            _subscription: subscription,
         });
-        self.tabs.push(Tab { terminal, _subscription: subscription });
         self.activate(self.tabs.len() - 1, window, cx);
     }
 
@@ -212,7 +255,11 @@ impl Workspace {
             window.remove_window();
             return;
         }
-        let next = if self.active > ix || self.active >= self.tabs.len() { self.active.saturating_sub(1) } else { self.active };
+        let next = if self.active > ix || self.active >= self.tabs.len() {
+            self.active.saturating_sub(1)
+        } else {
+            self.active
+        };
         self.activate(next.min(self.tabs.len() - 1), window, cx);
     }
 
@@ -223,7 +270,10 @@ impl Workspace {
     /// Opens a shell tab and activates it.
     pub fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // New tabs start where the active tab is, like Otty.
-        let cwd = self.tabs.get(self.active).and_then(|tab| tab.terminal.read(cx).cwd.clone());
+        let cwd = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.terminal.read(cx).cwd.clone());
         match spawn_shell(&self.config, None, cwd) {
             Ok((session, events)) => self.add_tab(session, events, window, cx),
             Err(e) => tracing::error!("failed to start shell: {e:#}"),
@@ -237,8 +287,37 @@ impl Workspace {
     fn cycle(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let n = self.tabs.len() as isize;
         if n > 0 {
-            self.activate((self.active as isize + delta).rem_euclid(n) as usize, window, cx);
+            self.activate(
+                (self.active as isize + delta).rem_euclid(n) as usize,
+                window,
+                cx,
+            );
         }
+    }
+
+    /// Re-reads config.toml and the themes after one of them changed on disk.
+    pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        let config = crate::load_config();
+        for w in &config.warnings {
+            tracing::warn!("{w}");
+        }
+        // The toggle wins until the key itself changes.
+        if config.sidebar_visible != self.config.sidebar_visible {
+            self.sidebar_visible = config.sidebar_visible;
+        }
+        self.config = config;
+        let (meta, blink, cursor) = (
+            self.config.option_as_meta,
+            self.config.cursor_blink,
+            cursor_style(&self.config),
+        );
+        let scrollback = self.config.scrollback.unwrap_or(10_000);
+        for tab in &self.tabs {
+            tab.terminal.update(cx, |t, cx| {
+                t.apply_config(meta, blink, cursor, scrollback, cx)
+            });
+        }
+        self.reload_theme(cx);
     }
 
     pub fn reload_theme(&mut self, cx: &mut Context<Self>) {
@@ -251,7 +330,8 @@ impl Workspace {
         self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
         let style = terminal_style(&self.config, &self.theme, cx);
         for tab in &self.tabs {
-            tab.terminal.update(cx, |t, cx| t.set_style(style.clone(), cx));
+            tab.terminal
+                .update(cx, |t, cx| t.set_style(style.clone(), cx));
         }
         cx.notify();
     }
@@ -259,7 +339,10 @@ impl Workspace {
     /// `sidebar-width` excludes the border, which sits outside it.
     fn sidebar_width(&self) -> f32 {
         let border = self.theme.sidebar.border.as_ref().map_or(0., |b| b.width);
-        self.config.sidebar_width.unwrap_or(self.theme.sidebar.width) + border
+        self.config
+            .sidebar_width
+            .unwrap_or(self.theme.sidebar.width)
+            + border
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -302,7 +385,11 @@ impl Workspace {
                 let title = view.display_title();
                 let process = view.process.clone().unwrap_or_default();
                 let active = ix == self.active;
-                let style = if active { &t.tabs.active } else { &t.tabs.normal };
+                let style = if active {
+                    &t.tabs.active
+                } else {
+                    &t.tabs.normal
+                };
                 let hover_bg = t.tabs.hover.background;
                 let card = div()
                     .id(("tab", ix))
@@ -318,7 +405,9 @@ impl Workspace {
                     // GPUI paints a shadow under the whole box, where it would
                     // show through a translucent fill; CSS (and Otty) only
                     // draw it outside, so translucent cards go without.
-                    .when(style.background.a >= 1., |d| d.shadow(shadows(&style.shadow)))
+                    .when(style.background.a >= 1., |d| {
+                        d.shadow(shadows(&style.shadow))
+                    })
                     .text_color(hsla(style.foreground))
                     .text_size(px(style.font_size))
                     .font_weight(FontWeight(style.font_weight))
@@ -358,10 +447,20 @@ impl Workspace {
                             .justify_end()
                             .font_family(self.mono_font.clone())
                             .text_size(px(LABEL_FONT_SIZE))
-                            .text_color(hsla(if active { native_tertiary_label(t) } else { t.token.tertiary }))
+                            .text_color(hsla(if active {
+                                native_tertiary_label(t)
+                            } else {
+                                t.token.tertiary
+                            }))
                             .child(tracked(&process, LABEL_PITCH)),
                     );
-                card.children(style.border.as_ref().and_then(|b| tab_border(t, b, style.radius))).into_any_element()
+                card.children(
+                    style
+                        .border
+                        .as_ref()
+                        .and_then(|b| tab_border(t, b, style.radius)),
+                )
+                .into_any_element()
             })
             .collect();
 
@@ -370,9 +469,16 @@ impl Workspace {
             .child(
                 // The list's top edge clips the outer half of the first card's
                 // border, as in Otty.
-                div()
-                    .overflow_hidden()
-                    .child(div().pl(px(t.sidebar.padding.left)).pr(px(t.sidebar.padding.right)).pb(px(1.)).flex().flex_col().gap(px(TAB_GAP)).children(tabs)),
+                div().overflow_hidden().child(
+                    div()
+                        .pl(px(t.sidebar.padding.left))
+                        .pr(px(t.sidebar.padding.right))
+                        .pb(px(1.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(TAB_GAP))
+                        .children(tabs),
+                ),
             )
             .into_any_element()
     }
@@ -388,7 +494,10 @@ impl Workspace {
     /// new tab, notifications and the tabs panel toggle (at the sidebar's
     /// edge, or after the traffic lights when it is hidden), and the details
     /// panel toggle at the right.
-    fn render_titlebar_buttons(&self, cx: &mut Context<Self>) -> (Option<AnyElement>, Option<AnyElement>) {
+    fn render_titlebar_buttons(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> (Option<AnyElement>, Option<AnyElement>) {
         if !self.pointer_inside {
             return (None, None);
         }
@@ -436,18 +545,35 @@ impl Workspace {
             .absolute()
             .top(px(titlebar::TOP))
             .right(px(titlebar::DETAILS_RIGHT))
-            .child(button("details-panel", titlebar::BUTTON).child(titlebar::panel(icon, hsla(native_tertiary_label(t)), true)));
-        (Some(group.into_any_element()), Some(details.into_any_element()))
+            .child(
+                button("details-panel", titlebar::BUTTON).child(titlebar::panel(
+                    icon,
+                    hsla(native_tertiary_label(t)),
+                    true,
+                )),
+            );
+        (
+            Some(group.into_any_element()),
+            Some(details.into_any_element()),
+        )
     }
 
     /// Native materials behind the window and the sidebar, bottom-most first.
     fn backdrops_wanted(&self) -> Vec<Backdrop> {
         let t = &self.theme;
-        let mut wanted = vec![Backdrop { region: Region::Window, material: t.window.material }];
+        let mut wanted = vec![Backdrop {
+            region: Region::Window,
+            material: t.window.material,
+        }];
         // A sidebar on the window's own material is the same surface in Otty,
         // not a second layer (stacked glass would lighten the column).
         if self.sidebar_visible && t.sidebar.material != t.window.material {
-            wanted.push(Backdrop { region: Region::Sidebar { width: self.sidebar_width() }, material: t.sidebar.material });
+            wanted.push(Backdrop {
+                region: Region::Sidebar {
+                    width: self.sidebar_width(),
+                },
+                material: t.sidebar.material,
+            });
         }
         wanted
     }
@@ -472,8 +598,18 @@ fn native_tertiary_label(t: &Theme) -> Rgba {
 /// system's label colors.
 fn native_label(t: &Theme, light: f32, dark: f32) -> Rgba {
     match t.meta.mode {
-        Mode::Light => Rgba { r: 0., g: 0., b: 0., a: light },
-        Mode::Dark => Rgba { r: 1., g: 1., b: 1., a: dark },
+        Mode::Light => Rgba {
+            r: 0.,
+            g: 0.,
+            b: 0.,
+            a: light,
+        },
+        Mode::Dark => Rgba {
+            r: 1.,
+            g: 1.,
+            b: 1.,
+            a: dark,
+        },
     }
 }
 
@@ -503,9 +639,13 @@ fn tab_border(t: &Theme, b: &Border, radius: f32) -> Option<AnyElement> {
 /// Lays out `text` one character per fixed-width cell, which emulates the
 /// letter-spacing AppKit applies to small labels (GPUI has no tracking).
 fn tracked(text: &str, pitch: f32) -> gpui::Div {
-    div()
-        .flex()
-        .children(text.chars().map(|c| div().w(px(pitch)).flex().justify_center().child(c.to_string())))
+    div().flex().children(text.chars().map(|c| {
+        div()
+            .w(px(pitch))
+            .flex()
+            .justify_center()
+            .child(c.to_string())
+    }))
 }
 
 /// Three-line "list" glyph used beside section headers.
@@ -544,7 +684,9 @@ fn with_border<E: Styled>(el: E, t: &Theme, border: &Option<Border>) -> E {
 
 fn with_border_right<E: Styled>(el: E, t: &Theme, border: &Option<Border>) -> E {
     match border {
-        Some(b) => el.border_r(px(b.width)).border_color(hsla(t.border_color(b))),
+        Some(b) => el
+            .border_r(px(b.width))
+            .border_color(hsla(t.border_color(b))),
         None => el,
     }
 }
@@ -562,7 +704,10 @@ impl Render for Workspace {
         let t = &self.theme;
         let c = &t.container;
         let active = self.tabs.get(self.active).map(|tab| tab.terminal.clone());
-        let title = active.as_ref().map(|a| a.read(cx).display_title()).unwrap_or_default();
+        let title = active
+            .as_ref()
+            .map(|a| a.read(cx).display_title())
+            .unwrap_or_default();
         if title != self.window_title {
             window.set_window_title(&title);
             self.window_title = title.clone();
@@ -570,20 +715,28 @@ impl Render for Workspace {
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
         let busy = self.tabs.iter().any(|tab| tab.terminal.read(cx).busy);
-        let state = (background_appearance(t), busy && !self.config.hide_dirty_indicator);
+        let state = (
+            background_appearance(t),
+            busy && !self.config.hide_dirty_indicator,
+        );
         if self.native_state != Some(state) {
             window.set_background_appearance(state.0);
             window.set_window_edited(state.1);
             self.native_state = Some(state);
         }
         let backdrops = self.backdrops_wanted();
-        self.backdrops.sync(window, &backdrops, self.theme.meta.mode == Mode::Dark);
+        self.backdrops
+            .sync(window, &backdrops, self.theme.meta.mode == Mode::Dark);
 
         let title_band = div()
             .absolute()
             .top_0()
             .left_0()
-            .right(px(if self.sidebar_visible { TITLE_RIGHT_INSET } else { COLLAPSED_TITLE_RIGHT_INSET }))
+            .right(px(if self.sidebar_visible {
+                TITLE_RIGHT_INSET
+            } else {
+                COLLAPSED_TITLE_RIGHT_INSET
+            }))
             .h(px(TITLE_BAND))
             .flex()
             .items_center()
@@ -630,7 +783,11 @@ impl Render for Workspace {
         // Otty draws the container border over the padding rather than
         // inside it, so the grid doesn't move when a theme adds a border.
         let border_overlay = c.border.as_ref().map(|_| {
-            with_border(div().absolute().inset_0().rounded(px(c.radius)), t, &c.border)
+            with_border(
+                div().absolute().inset_0().rounded(px(c.radius)),
+                t,
+                &c.border,
+            )
         });
         let container = div()
             .relative()
@@ -708,7 +865,9 @@ impl Render for Workspace {
             .flex_row()
             // The window fill only shows under the sidebar (the main column
             // paints its own); a sidebar material must not be covered by it.
-            .when(t.sidebar.material == Material::None, |d| d.bg(hsla(t.window.background)))
+            .when(t.sidebar.material == Material::None, |d| {
+                d.bg(hsla(t.window.background))
+            })
             .font_family(self.ui_font.clone())
             .children(sidebar)
             .child(main)

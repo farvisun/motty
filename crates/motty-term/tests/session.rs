@@ -11,7 +11,12 @@ fn run(cmd: &str) -> Session {
         command: Some(("/bin/sh".into(), vec!["-c".into(), cmd.into()])),
         ..Default::default()
     };
-    let size = GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 16. };
+    let size = GridSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 8.,
+        cell_height: 16.,
+    };
     Session::spawn(config, size).unwrap().0
 }
 
@@ -69,7 +74,10 @@ fn foreground_process_is_reported() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(name.as_deref(), Some("sleep"));
-    assert_eq!(s.foreground_cwd().map(|p| p.canonicalize().unwrap()), Some(std::path::Path::new("/tmp").canonicalize().unwrap()));
+    assert_eq!(
+        s.foreground_cwd().map(|p| p.canonicalize().unwrap()),
+        Some(std::path::Path::new("/tmp").canonicalize().unwrap())
+    );
 }
 
 #[test]
@@ -86,7 +94,12 @@ fn busy_while_a_child_runs() {
 
 #[test]
 fn default_shell_is_named_through_login_and_idle() {
-    let size = GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 16. };
+    let size = GridSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 8.,
+        cell_height: 16.,
+    };
     let s = Session::spawn(SessionConfig::default(), size).unwrap().0;
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut name = None;

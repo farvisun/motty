@@ -4,9 +4,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, SharedString, UTF16Selection,
-    MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollEvent, Task, Window, div, prelude::*,
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, SharedString, Task, UTF16Selection, Window,
+    div, prelude::*,
 };
 use motty_render::{TerminalElement, TerminalLayout, TerminalStyle};
 use motty_term::alacritty_terminal::grid::{Dimensions, Scroll};
@@ -14,11 +15,13 @@ use motty_term::alacritty_terminal::index::{Column, Point, Side};
 use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
 use motty_term::alacritty_terminal::vte::ansi::Rgb;
-use motty_term::input::{self, KeyInput, MouseAction, Mods};
-use motty_theme::CursorBlink;
+use motty_term::input::{self, KeyInput, Mods, MouseAction};
 use motty_term::{Session, SessionEvent};
+use motty_theme::CursorBlink;
 
-use crate::actions::{Clear, Copy, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, SelectAll};
+use crate::actions::{
+    Clear, Copy, DecreaseFontSize, IncreaseFontSize, Paste, ResetFontSize, SelectAll,
+};
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -73,7 +76,9 @@ impl TerminalView {
     ) -> Self {
         let task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = events.recv().await {
-                let alive = this.update_in(cx, |view, window, cx| view.handle_session_event(event, window, cx));
+                let alive = this.update_in(cx, |view, window, cx| {
+                    view.handle_session_event(event, window, cx)
+                });
                 if alive.is_err() {
                     break;
                 }
@@ -93,8 +98,11 @@ impl TerminalView {
             scroll_remainder: 0.,
             selecting: false,
             marked_text: None,
-            blink: (cursor_blink != CursorBlink::AlwaysOff)
-                .then(|| BlinkState { visible: true, epoch: 0, _task: Self::blink_task(cx) }),
+            blink: (cursor_blink != CursorBlink::AlwaysOff).then(|| BlinkState {
+                visible: true,
+                epoch: 0,
+                _task: Self::blink_task(cx),
+            }),
             blink_policy: cursor_blink,
             _events: task,
         }
@@ -108,8 +116,12 @@ impl TerminalView {
                 let alive = this.update(cx, |view, cx| {
                     // Programs turn blinking on and off (DECSCUSR, DECSET 12);
                     // the policy decides whether that counts.
-                    let wanted = view.blink_policy.resolve(view.session.term.lock().cursor_style().blinking);
-                    let Some(blink) = view.blink.as_mut() else { return };
+                    let wanted = view
+                        .blink_policy
+                        .resolve(view.session.term.lock().cursor_style().blinking);
+                    let Some(blink) = view.blink.as_mut() else {
+                        return;
+                    };
                     if !wanted || blink.epoch != seen_epoch {
                         // Not blinking, or input happened since the last tick:
                         // stay visible, repainting only if that changes anything.
@@ -154,12 +166,35 @@ impl TerminalView {
         if let Some(t) = self.title.as_deref().filter(|t| !t.is_empty()) {
             return t.to_owned();
         }
-        let Some(cwd) = &self.cwd else { return "~".into() };
+        let Some(cwd) = &self.cwd else {
+            return "~".into();
+        };
         match dirs::home_dir().and_then(|h| cwd.strip_prefix(h).ok().map(|p| p.to_path_buf())) {
             Some(rel) if rel.as_os_str().is_empty() => "~".into(),
             Some(rel) => format!("~/{}", rel.display()),
             None => cwd.display().to_string(),
         }
+    }
+
+    pub fn apply_config(
+        &mut self,
+        option_as_meta: bool,
+        cursor_blink: CursorBlink,
+        cursor_style: motty_term::alacritty_terminal::vte::ansi::CursorStyle,
+        scrollback: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.option_as_meta = option_as_meta;
+        self.session.set_options(cursor_style, scrollback);
+        if cursor_blink != self.blink_policy {
+            self.blink_policy = cursor_blink;
+            self.blink = (cursor_blink != CursorBlink::AlwaysOff).then(|| BlinkState {
+                visible: true,
+                epoch: 0,
+                _task: Self::blink_task(cx),
+            });
+        }
+        cx.notify();
     }
 
     pub fn set_style(&mut self, style: TerminalStyle, cx: &mut Context<Self>) {
@@ -168,7 +203,12 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn handle_session_event(&mut self, event: SessionEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_session_event(
+        &mut self,
+        event: SessionEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             SessionEvent::Wakeup => cx.notify(),
             SessionEvent::Title(title) => {
@@ -176,14 +216,28 @@ impl TerminalView {
                 cx.emit(TerminalEvent::TitleChanged);
             }
             SessionEvent::Bell => {}
-            SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            SessionEvent::ClipboardStore(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text))
+            }
             SessionEvent::ClipboardLoad(format) => {
-                let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                let text = cx
+                    .read_from_clipboard()
+                    .and_then(|c| c.text())
+                    .unwrap_or_default();
                 self.session.write(format(&text).into_bytes());
             }
             SessionEvent::ColorRequest(index, format) => {
-                let c = self.style.palette.get(index).copied().unwrap_or(self.style.background);
-                let rgb = Rgb { r: (c.r * 255.).round() as u8, g: (c.g * 255.).round() as u8, b: (c.b * 255.).round() as u8 };
+                let c = self
+                    .style
+                    .palette
+                    .get(index)
+                    .copied()
+                    .unwrap_or(self.style.background);
+                let rgb = Rgb {
+                    r: (c.r * 255.).round() as u8,
+                    g: (c.g * 255.).round() as u8,
+                    b: (c.b * 255.).round() as u8,
+                };
                 self.session.write(format(rgb).into_bytes());
             }
             SessionEvent::TextAreaSizeRequest(format) => {
@@ -221,12 +275,21 @@ impl TerminalView {
     }
 
     fn mods(m: &gpui::Modifiers) -> Mods {
-        Mods { shift: m.shift, alt: m.alt, ctrl: m.control, cmd: m.platform }
+        Mods {
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.control,
+            cmd: m.platform,
+        }
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
-        let input = KeyInput { key: &ks.key, key_char: ks.key_char.as_deref(), mods: Self::mods(&ks.modifiers) };
+        let input = KeyInput {
+            key: &ks.key,
+            key_char: ks.key_char.as_deref(),
+            mods: Self::mods(&ks.modifiers),
+        };
         if let Some(bytes) = input::encode(&input, self.mode(), self.option_as_meta) {
             self.reset_blink();
             {
@@ -246,10 +309,21 @@ impl TerminalView {
         let (row, col, right_half) = layout.cell_at(pos);
         let offset = self.session.term.lock().grid().display_offset();
         let point = viewport_to_point(offset, Point::new(row, Column(col)));
-        Some((row, col, point, if right_half { Side::Right } else { Side::Left }))
+        Some((
+            row,
+            col,
+            point,
+            if right_half { Side::Right } else { Side::Left },
+        ))
     }
 
-    fn report_mouse(&self, button: input::MouseButton, action: MouseAction, pos: gpui::Point<gpui::Pixels>, mods: &gpui::Modifiers) -> bool {
+    fn report_mouse(
+        &self,
+        button: input::MouseButton,
+        action: MouseAction,
+        pos: gpui::Point<gpui::Pixels>,
+        mods: &gpui::Modifiers,
+    ) -> bool {
         // Shift bypasses application mouse tracking so text can still be selected.
         if mods.shift {
             return false;
@@ -259,19 +333,32 @@ impl TerminalView {
             return false;
         }
         if let Some((row, col, ..)) = self.hit(pos)
-            && let Some(bytes) = input::mouse_report(button, action, col, row, Self::mods(mods), mode)
+            && let Some(bytes) =
+                input::mouse_report(button, action, col, row, Self::mods(mods), mode)
         {
             self.session.write(bytes);
         }
         true
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle, cx);
-        if self.report_mouse(input::MouseButton::Left, MouseAction::Press, event.position, &event.modifiers) {
+        if self.report_mouse(
+            input::MouseButton::Left,
+            MouseAction::Press,
+            event.position,
+            &event.modifiers,
+        ) {
             return;
         }
-        let Some((.., point, side)) = self.hit(event.position) else { return };
+        let Some((.., point, side)) = self.hit(event.position) else {
+            return;
+        };
         let ty = match event.click_count {
             2 => SelectionType::Semantic,
             3 => SelectionType::Lines,
@@ -283,15 +370,27 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if event.pressed_button != Some(MouseButton::Left) {
             return;
         }
         if !self.selecting {
-            self.report_mouse(input::MouseButton::Left, MouseAction::Drag, event.position, &event.modifiers);
+            self.report_mouse(
+                input::MouseButton::Left,
+                MouseAction::Drag,
+                event.position,
+                &event.modifiers,
+            );
             return;
         }
-        let Some((.., point, side)) = self.hit(event.position) else { return };
+        let Some((.., point, side)) = self.hit(event.position) else {
+            return;
+        };
         if let Some(sel) = self.session.term.lock().selection.as_mut() {
             sel.update(point, side);
         }
@@ -307,12 +406,19 @@ impl TerminalView {
             }
             cx.notify();
         } else {
-            self.report_mouse(input::MouseButton::Left, MouseAction::Release, event.position, &event.modifiers);
+            self.report_mouse(
+                input::MouseButton::Left,
+                MouseAction::Release,
+                event.position,
+                &event.modifiers,
+            );
         }
     }
 
     fn on_scroll(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(layout) = self.layout.get() else { return };
+        let Some(layout) = self.layout.get() else {
+            return;
+        };
         let lines = match event.delta {
             ScrollDelta::Lines(p) => p.y,
             ScrollDelta::Pixels(p) => f32::from(p.y) / f32::from(layout.line_height),
@@ -324,7 +430,11 @@ impl TerminalView {
         }
         let mode = self.mode();
         if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
-            let button = if whole > 0 { input::MouseButton::WheelUp } else { input::MouseButton::WheelDown };
+            let button = if whole > 0 {
+                input::MouseButton::WheelUp
+            } else {
+                input::MouseButton::WheelDown
+            };
             for _ in 0..whole.unsigned_abs().min(10) {
                 self.report_mouse(button, MouseAction::Press, event.position, &event.modifiers);
             }
@@ -335,9 +445,13 @@ impl TerminalView {
                 (false, true) => b"\x1bOB",
                 (false, false) => b"\x1b[B",
             };
-            self.session.write(key.repeat(whole.unsigned_abs() as usize));
+            self.session
+                .write(key.repeat(whole.unsigned_abs() as usize));
         } else {
-            self.session.term.lock().scroll_display(Scroll::Delta(whole));
+            self.session
+                .term
+                .lock()
+                .scroll_display(Scroll::Delta(whole));
             cx.notify();
         }
     }
@@ -361,7 +475,11 @@ impl TerminalView {
         let top = term.grid().topmost_line();
         let bottom = term.grid().bottommost_line();
         let last = term.grid().last_column();
-        let mut sel = Selection::new(SelectionType::Simple, Point::new(top, Column(0)), Side::Left);
+        let mut sel = Selection::new(
+            SelectionType::Simple,
+            Point::new(top, Column(0)),
+            Side::Left,
+        );
         sel.update(Point::new(bottom, last), Side::Right);
         term.selection = Some(sel);
         cx.notify();
@@ -380,7 +498,11 @@ impl TerminalView {
 
     fn zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
         let mut style = (*self.style).clone();
-        let size = if delta == 0. { self.base_font_size } else { (f32::from(style.font_size) + delta).clamp(6., 72.) };
+        let size = if delta == 0. {
+            self.base_font_size
+        } else {
+            (f32::from(style.font_size) + delta).clamp(6., 72.)
+        };
         style.font_size = gpui::px(size);
         self.style = Rc::new(style);
         cx.notify();
@@ -443,17 +565,40 @@ impl Render for TerminalView {
 /// IME integration: composed text arrives here instead of as key events, and
 /// marked (in-progress) text is shown at the cursor until committed.
 impl EntityInputHandler for TerminalView {
-    fn text_for_range(&mut self, _: std::ops::Range<usize>, _: &mut Option<std::ops::Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
+    fn text_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
         None
     }
 
-    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        let len = self.marked_text.as_ref().map_or(0, |t| t.encode_utf16().count());
-        Some(UTF16Selection { range: len..len, reversed: false })
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let len = self
+            .marked_text
+            .as_ref()
+            .map_or(0, |t| t.encode_utf16().count());
+        Some(UTF16Selection {
+            range: len..len,
+            reversed: false,
+        })
     }
 
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
-        self.marked_text.as_ref().map(|t| 0..t.encode_utf16().count())
+    fn marked_text_range(
+        &self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.marked_text
+            .as_ref()
+            .map(|t| 0..t.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -461,7 +606,13 @@ impl EntityInputHandler for TerminalView {
         cx.notify();
     }
 
-    fn replace_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.marked_text = None;
         self.send_text(text, cx);
     }
@@ -478,13 +629,24 @@ impl EntityInputHandler for TerminalView {
         cx.notify();
     }
 
-    fn bounds_for_range(&mut self, _: std::ops::Range<usize>, _: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
         let layout = self.layout.get()?;
         let (row, col) = layout.cursor?;
         Some(layout.cell_bounds(row, col))
     }
 
-    fn character_index_for_point(&mut self, _: gpui::Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
         None
     }
 }

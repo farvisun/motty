@@ -15,10 +15,18 @@ const BUNDLED: [&[u8]; 4] = [
 /// Registers bundled fonts plus any files in `~/.config/{motty,otty}/fonts`.
 pub fn load(cx: &mut App) {
     let mut fonts: Vec<Cow<'static, [u8]>> = BUNDLED.iter().map(|b| Cow::Borrowed(*b)).collect();
-    for dir in [motty_theme::config::motty_dir(), motty_theme::config::otty_dir()] {
-        let Ok(entries) = std::fs::read_dir(dir.join("fonts")) else { continue };
+    for dir in [
+        motty_theme::config::motty_dir(),
+        motty_theme::config::otty_dir(),
+    ] {
+        let Ok(entries) = std::fs::read_dir(dir.join("fonts")) else {
+            continue;
+        };
         for path in entries.flatten().map(|e| e.path()) {
-            let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
             if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc"))
                 && let Ok(bytes) = std::fs::read(&path)
             {
@@ -50,10 +58,13 @@ pub fn ui_family(list: &[String], cx: &App) -> String {
     let available = cx.text_system().all_font_names();
     for name in list {
         match name.as_str() {
-            "-apple-system" | "BlinkMacSystemFont" | "system-ui" | "SF Pro" | "SF Pro Text" | "sans-serif" => {
+            "-apple-system" | "BlinkMacSystemFont" | "system-ui" | "SF Pro" | "SF Pro Text"
+            | "sans-serif" => {
                 return ".SystemUIFont".into();
             }
-            other if available.iter().any(|a| a.eq_ignore_ascii_case(other)) => return other.to_owned(),
+            other if available.iter().any(|a| a.eq_ignore_ascii_case(other)) => {
+                return other.to_owned();
+            }
             _ => {}
         }
     }

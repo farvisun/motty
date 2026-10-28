@@ -92,7 +92,8 @@ impl Config {
         for dir in [motty_dir(), otty_dir()] {
             let path = dir.join("config.toml");
             if let Ok(src) = std::fs::read_to_string(&path) {
-                let local = std::fs::read_to_string(dir.join("config.local.toml")).unwrap_or_default();
+                let local =
+                    std::fs::read_to_string(dir.join("config.local.toml")).unwrap_or_default();
                 let mut cfg = Self::parse(&format!("{src}\n{local}"));
                 cfg.path = Some(path);
                 return cfg;
@@ -103,11 +104,19 @@ impl Config {
 
     /// Defaults follow Otty's: ligatures on, Option is not Alt, no blinking.
     pub fn parse(src: &str) -> Self {
-        let mut out = Config { ligatures: true, sidebar_visible: true, ..Default::default() };
+        let mut out = Config {
+            ligatures: true,
+            sidebar_visible: true,
+            ..Default::default()
+        };
         let (entries, mut warnings) = parse_entries(src);
         let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
         let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
-        let num_of = |v: &toml::Value| v.as_float().map(|f| f as f32).or_else(|| v.as_integer().map(|i| i as f32));
+        let num_of = |v: &toml::Value| {
+            v.as_float()
+                .map(|f| f as f32)
+                .or_else(|| v.as_integer().map(|i| i as f32))
+        };
         let mut color_of = |k: &str, v: &toml::Value| match v.as_str().map(css::parse_color) {
             Some(Ok(c)) => Some(c),
             Some(Err(e)) => {
@@ -129,7 +138,9 @@ impl Config {
                 "font-size" => out.font_size = num_of(value),
                 // `off`, `calt` or `dlig` (older configs use a bool).
                 "font-ligatures" | "ligatures" => {
-                    out.ligatures = value.as_bool().unwrap_or_else(|| value.as_str() != Some("off"))
+                    out.ligatures = value
+                        .as_bool()
+                        .unwrap_or_else(|| value.as_str() != Some("off"))
                 }
                 "sidebar-width" => out.sidebar_width = num_of(value),
                 "sidebar-visible" => out.sidebar_visible = value.as_bool().unwrap_or(true),
@@ -137,9 +148,13 @@ impl Config {
                 // `true`, `false`, `left` or `right`; one side counts as on
                 // until left/right modifiers are told apart.
                 "macos-option-as-alt" | "option-as-meta" => {
-                    out.option_as_meta = value.as_bool().unwrap_or_else(|| value.as_str().is_some_and(|v| v != "false"))
+                    out.option_as_meta = value
+                        .as_bool()
+                        .unwrap_or_else(|| value.as_str().is_some_and(|v| v != "false"))
                 }
-                "scrollback" | "scrollback-lines" => out.scrollback = value.as_integer().map(|i| i.max(0) as usize),
+                "scrollback" | "scrollback-lines" => {
+                    out.scrollback = value.as_integer().map(|i| i.max(0) as usize)
+                }
                 "shell" => out.shell = str_of(value),
                 "cursor-style" => match value.as_str() {
                     Some("block") => out.cursor_style = CursorStyle::Block,
@@ -149,15 +164,21 @@ impl Config {
                     _ => unknown.push(format!("config.toml {key}: unknown cursor style {value}")),
                 },
                 "cursor-style-blink" | "cursor-blink" => match (value.as_bool(), value.as_str()) {
-                    (Some(true), _) | (_, Some("default_on")) => out.cursor_blink = CursorBlink::DefaultOn,
-                    (Some(false), _) | (_, Some("default_off")) => out.cursor_blink = CursorBlink::DefaultOff,
+                    (Some(true), _) | (_, Some("default_on")) => {
+                        out.cursor_blink = CursorBlink::DefaultOn
+                    }
+                    (Some(false), _) | (_, Some("default_off")) => {
+                        out.cursor_blink = CursorBlink::DefaultOff
+                    }
                     (_, Some("always_on")) => out.cursor_blink = CursorBlink::AlwaysOn,
                     (_, Some("always_off")) => out.cursor_blink = CursorBlink::AlwaysOff,
                     _ => unknown.push(format!("config.toml {key}: unknown blink policy {value}")),
                 },
                 "cursor-color" => out.cursor_color = color_of(key, value),
                 "cursor-text" => out.cursor_text = color_of(key, value),
-                "window-hide-dirty-indicator" => out.hide_dirty_indicator = value.as_bool().unwrap_or(false),
+                "window-hide-dirty-indicator" => {
+                    out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
+                }
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
                 k if k.starts_with("palette-") => {
                     if let Ok(i @ 0..16) = k["palette-".len()..].parse::<usize>() {
@@ -269,11 +290,49 @@ const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
 const MOTTY_LIGHT: &str = include_str!("../themes/motty-light.ottytheme");
 
 pub fn builtin(mode: Mode) -> ParsedTheme {
-    theme::parse(if mode == Mode::Dark { MOTTY_DARK } else { MOTTY_LIGHT }).expect("built-in theme parses")
+    theme::parse(if mode == Mode::Dark {
+        MOTTY_DARK
+    } else {
+        MOTTY_LIGHT
+    })
+    .expect("built-in theme parses")
 }
 
 pub fn theme_dirs() -> Vec<PathBuf> {
     vec![motty_dir().join("themes"), otty_dir().join("themes")]
+}
+
+/// Changes whenever a config file or theme file is added, removed or saved,
+/// for polling-based hot reload (a few dozen `stat` calls).
+pub fn files_fingerprint() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut stamp = |path: &Path| {
+        path.hash(&mut hasher);
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .hash(&mut hasher);
+    };
+    for dir in [motty_dir(), otty_dir()] {
+        stamp(&dir.join("config.toml"));
+        stamp(&dir.join("config.local.toml"));
+    }
+    for dir in theme_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_theme_file(p))
+            .collect();
+        paths.sort();
+        for path in paths {
+            stamp(&path);
+        }
+    }
+    hasher.finish()
 }
 
 /// Finds a theme by `[meta] name` or file stem, case-insensitively.
@@ -287,12 +346,20 @@ pub fn find_theme(name: &str) -> Option<ParsedTheme> {
         }
     }
     for dir in theme_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| is_theme_file(p)).collect();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_theme_file(p))
+            .collect();
         paths.sort();
         // File stems are cheap to check first; fall back to parsing names.
-        if let Some(p) = paths.iter().find(|p| p.file_stem().is_some_and(|s| normalize(&s.to_string_lossy()) == wanted))
-            && let Some(t) = load_file(p)
+        if let Some(p) = paths.iter().find(|p| {
+            p.file_stem()
+                .is_some_and(|s| normalize(&s.to_string_lossy()) == wanted)
+        }) && let Some(t) = load_file(p)
         {
             return Some(t);
         }
@@ -314,10 +381,18 @@ pub fn list_themes() -> Vec<(String, Mode, Option<PathBuf>)> {
         .map(|p| (p.theme.meta.name, p.theme.meta.mode, None))
         .collect();
     for dir in theme_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for path in entries.flatten().map(|e| e.path()).filter(|p| is_theme_file(p)) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for path in entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_theme_file(p))
+        {
             if let Some(t) = load_file(&path)
-                && !out.iter().any(|(n, ..)| normalize(n) == normalize(&t.theme.meta.name))
+                && !out
+                    .iter()
+                    .any(|(n, ..)| normalize(n) == normalize(&t.theme.meta.name))
             {
                 out.push((t.theme.meta.name, t.theme.meta.mode, Some(path)));
             }
@@ -328,7 +403,10 @@ pub fn list_themes() -> Vec<(String, Mode, Option<PathBuf>)> {
 }
 
 fn is_theme_file(p: &Path) -> bool {
-    matches!(p.extension().and_then(|e| e.to_str()), Some("ottytheme" | "toml"))
+    matches!(
+        p.extension().and_then(|e| e.to_str()),
+        Some("ottytheme" | "toml")
+    )
 }
 
 fn load_file(p: &Path) -> Option<ParsedTheme> {
@@ -336,7 +414,10 @@ fn load_file(p: &Path) -> Option<ParsedTheme> {
 }
 
 fn normalize(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -375,16 +456,27 @@ mod tests {
             "font-ligatures = \"off\"\nmacos-option-as-alt = \"left\"\ncursor-style-blink = \"default_on\"\nwindow-hide-dirty-indicator = true\n",
         );
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
-        assert!(!cfg.ligatures && cfg.option_as_meta && cfg.cursor_blink == CursorBlink::DefaultOn && cfg.hide_dirty_indicator);
+        assert!(
+            !cfg.ligatures
+                && cfg.option_as_meta
+                && cfg.cursor_blink == CursorBlink::DefaultOn
+                && cfg.hide_dirty_indicator
+        );
         let cursor = Config::parse(
             "cursor-style = \"block_hollow\"\ncursor-style-blink = \"always_off\"\ncursor-color = \"#ff0000\"\n",
         );
         assert!(cursor.warnings.is_empty(), "{:?}", cursor.warnings);
-        assert_eq!((cursor.cursor_style, cursor.cursor_blink), (CursorStyle::BlockHollow, CursorBlink::AlwaysOff));
+        assert_eq!(
+            (cursor.cursor_style, cursor.cursor_blink),
+            (CursorStyle::BlockHollow, CursorBlink::AlwaysOff)
+        );
         assert_eq!(cursor.cursor_color.map(|c| c.r), Some(1.));
         assert!(!CursorBlink::AlwaysOff.resolve(true) && CursorBlink::DefaultOff.resolve(true));
         // A later file (config.local.toml) overrides earlier keys.
-        assert!(!Config::parse("macos-option-as-alt = true\nmacos-option-as-alt = \"false\"\n").option_as_meta);
+        assert!(
+            !Config::parse("macos-option-as-alt = true\nmacos-option-as-alt = \"false\"\n")
+                .option_as_meta
+        );
     }
 
     #[test]
@@ -399,9 +491,15 @@ mod tests {
     #[test]
     fn theme_colors_beat_config_colors() {
         let themed = Config::parse("theme = \"Motty Light\"\nbackground = \"#ff0000\"\n");
-        assert_ne!(themed.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
+        assert_ne!(
+            themed.resolve_theme(Mode::Light).theme.terminal.background,
+            Rgba::rgb(0xff0000)
+        );
         let bare = Config::parse("background = \"#ff0000\"\n");
-        assert_eq!(bare.resolve_theme(Mode::Light).theme.terminal.background, Rgba::rgb(0xff0000));
+        assert_eq!(
+            bare.resolve_theme(Mode::Light).theme.terminal.background,
+            Rgba::rgb(0xff0000)
+        );
     }
 
     #[test]
@@ -410,9 +508,14 @@ mod tests {
         let cfg = Config::parse("cursor-color = \"#ff0000\"\ncursor-text = \"#00ff00\"\n");
         let mut plain = theme::parse(base).unwrap().theme;
         cfg.apply_cursor(&mut plain);
-        assert_eq!((plain.cursor.block, plain.cursor.bar), (Rgba::rgb(0xff0000), Rgba::rgb(0xff0000)));
+        assert_eq!(
+            (plain.cursor.block, plain.cursor.bar),
+            (Rgba::rgb(0xff0000), Rgba::rgb(0xff0000))
+        );
         assert_eq!(plain.cursor.block_text, Some(Rgba::rgb(0x00ff00)));
-        let mut themed = theme::parse(&format!("{base}cursor = '#0000ff'\n")).unwrap().theme;
+        let mut themed = theme::parse(&format!("{base}cursor = '#0000ff'\n"))
+            .unwrap()
+            .theme;
         cfg.apply_cursor(&mut themed);
         assert_eq!(themed.cursor.block, Rgba::rgb(0x0000ff));
     }

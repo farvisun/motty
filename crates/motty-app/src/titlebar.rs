@@ -6,7 +6,10 @@
 //! Geometry is measured from Otty at 2x. Icons are drawn as vector shapes in
 //! the style of the system's symbols; none of Otty's assets are used.
 
-use gpui::{App, Bounds, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, div, point, prelude::*, px};
+use gpui::{
+    App, Bounds, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, div, point,
+    prelude::*, px,
+};
 
 /// Buttons are square boxes this tall, 4pt below the window's top.
 pub const BUTTON: f32 = 24.;
@@ -32,10 +35,19 @@ const ELLIPSIS_WIDTH: f32 = 3. * 1.75 + 2. * 2.5;
 const STROKE: f32 = 1.2;
 
 /// A canvas the size of `w`×`h` that paints with its top-left as origin.
-fn icon(w: f32, h: f32, paint: impl FnOnce(Point<Pixels>, &mut Window) + 'static) -> impl IntoElement {
-    canvas(|_, _, _| {}, move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| paint(bounds.origin, window))
-        .w(px(w))
-        .h(px(h))
+fn icon(
+    w: f32,
+    h: f32,
+    paint: impl FnOnce(Point<Pixels>, &mut Window) + 'static,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            paint(bounds.origin, window)
+        },
+    )
+    .w(px(w))
+    .h(px(h))
 }
 
 fn at(o: Point<Pixels>, x: f32, y: f32) -> Point<Pixels> {
@@ -124,12 +136,36 @@ pub fn panel(color: Hsla, bar: Hsla, right: bool) -> impl IntoElement {
     div()
         .relative()
         .size(px(BUTTON))
-        .child(div().absolute().left(px(6.)).top(px(6.)).size(px(12.)).rounded(px(3.)).border(px(1.2)).border_color(color))
-        .child(div().absolute().left(px(bar_x)).top(px(8.5)).w(px(2.75)).h(px(7.5)).rounded(px(0.75)).bg(bar))
+        .child(
+            div()
+                .absolute()
+                .left(px(6.))
+                .top(px(6.))
+                .size(px(12.))
+                .rounded(px(3.))
+                .border(px(1.2))
+                .border_color(color),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(bar_x))
+                .top(px(8.5))
+                .w(px(2.75))
+                .h(px(7.5))
+                .rounded(px(0.75))
+                .bg(bar),
+        )
 }
 
 /// Three dots, 1.75pt across on a 4.25pt pitch.
 pub fn ellipsis(color: Hsla) -> impl IntoElement {
     let dot = || div().flex_none().size(px(1.75)).rounded_full().bg(color);
-    div().flex().items_center().gap(px(2.5)).child(dot()).child(dot()).child(dot())
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.5))
+        .child(dot())
+        .child(dot())
+        .child(dot())
 }

@@ -23,7 +23,7 @@ Motty reads `~/.config/motty/config.toml`, or an existing `~/.config/otty/config
 `config.local.toml` from the same folder applied on top.
 Themes are `.ottytheme` TOML files, loaded from `~/.config/motty/themes` and
 `~/.config/otty/themes`. Font files dropped into `~/.config/{motty,otty}/fonts` are
-registered automatically.
+registered automatically. Saving a config or theme file applies it to open windows right away.
 
 | Key | Meaning |
 |---|---|

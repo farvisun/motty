@@ -32,30 +32,50 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("parity") => parity(&args[1..]),
-        Some("bundle") => bundle(args.iter().any(|a| a == "--release")).map(|app| println!("{}", app.display())),
+        Some("bundle") => {
+            bundle(args.iter().any(|a| a == "--release")).map(|app| println!("{}", app.display()))
+        }
         Some("diff") if args.len() >= 3 => {
             let out = args.get(3).map(PathBuf::from);
             diff(Path::new(&args[1]), Path::new(&args[2]), out.as_deref())
         }
         Some("crop") if args.len() == 7 => {
-            let n: Vec<f32> = args[2..6].iter().map(|v| v.parse()).collect::<Result<_, _>>()?;
-            crop(Path::new(&args[1]), (n[0], n[1], n[2], n[3]), Path::new(&args[6]))
+            let n: Vec<f32> = args[2..6]
+                .iter()
+                .map(|v| v.parse())
+                .collect::<Result<_, _>>()?;
+            crop(
+                Path::new(&args[1]),
+                (n[0], n[1], n[2], n[3]),
+                Path::new(&args[6]),
+            )
         }
         Some("scan") if args.len() == 4 => scan(Path::new(&args[1]), &args[2], args[3].parse()?),
-        Some("probe") if args.len() == 4 => probe(Path::new(&args[1]), args[2].parse()?, args[3].parse()?),
+        Some("probe") if args.len() == 4 => {
+            probe(Path::new(&args[1]), args[2].parse()?, args[3].parse()?)
+        }
         Some("metrics") if args.len() >= 2 => {
-            let left = args.get(2).map(|v| v.parse()).transpose()?.unwrap_or(SIDEBAR_PT);
+            let left = args
+                .get(2)
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(SIDEBAR_PT);
             metrics(Path::new(&args[1]), left)
         }
         _ => {
-            eprintln!("usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]");
+            eprintln!(
+                "usage: cargo xtask parity [--release] [--fixture PATH] [--tabs] [--theme NAME] [--backdrop RRGGBB] [--set KEY=VALUE]... [--hover X,Y] | bundle [--release] | diff A B [OUT] | probe IMG X Y | metrics IMG [LEFT_PT]"
+            );
             std::process::exit(2);
         }
     }
 }
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn pause(ms: u64) {
@@ -84,7 +104,10 @@ fn swift_tool(name: &str) -> Result<PathBuf> {
         _ => true,
     };
     if stale {
-        run(Command::new("swiftc").args(["-O", "-o"]).arg(&bin).arg(&src))?;
+        run(Command::new("swiftc")
+            .args(["-O", "-o"])
+            .arg(&bin)
+            .arg(&src))?;
     }
     Ok(bin)
 }
@@ -114,7 +137,9 @@ fn capture(window_id: &str, out: &Path) -> Result<()> {
             .arg(out)
             .args([window_id.to_owned(), backdrop.to_string()]))?;
     } else {
-        run(Command::new("screencapture").args(["-x", "-o", "-l", window_id]).arg(out))?;
+        run(Command::new("screencapture")
+            .args(["-x", "-o", "-l", window_id])
+            .arg(out))?;
     }
     Ok(())
 }
@@ -124,8 +149,12 @@ fn capture(window_id: &str, out: &Path) -> Result<()> {
 struct Backdrop(Child);
 
 /// The live backdrop's stdin and stdout, for ordering it below a window.
-static BACKDROP_IO: std::sync::Mutex<Option<(std::process::ChildStdin, std::io::BufReader<std::process::ChildStdout>)>> =
-    std::sync::Mutex::new(None);
+static BACKDROP_IO: std::sync::Mutex<
+    Option<(
+        std::process::ChildStdin,
+        std::io::BufReader<std::process::ChildStdout>,
+    )>,
+> = std::sync::Mutex::new(None);
 
 /// Puts the backdrop (if any) directly below `window_id` and waits for it.
 fn order_backdrop_below(window_id: &str) -> Result<()> {
@@ -155,8 +184,13 @@ impl Backdrop {
         let mut stdout = std::io::BufReader::new(child.stdout.take().context("backdrop stdout")?);
         let mut line = String::new();
         std::io::BufRead::read_line(&mut stdout, &mut line)?;
-        let id = line.trim().strip_prefix("ready ").and_then(|id| id.parse().ok()).context("backdrop window id")?;
-        *BACKDROP_IO.lock().unwrap() = Some((child.stdin.take().context("backdrop stdin")?, stdout));
+        let id = line
+            .trim()
+            .strip_prefix("ready ")
+            .and_then(|id| id.parse().ok())
+            .context("backdrop window id")?;
+        *BACKDROP_IO.lock().unwrap() =
+            Some((child.stdin.take().context("backdrop stdin")?, stdout));
         BACKDROP_ID.store(id, std::sync::atomic::Ordering::Relaxed);
         Ok(Self(child))
     }
@@ -178,7 +212,12 @@ fn otty_window_ids() -> Result<Vec<(String, String)>> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|w| Some((w["id"].as_str()?.to_owned(), w["title"].as_str().unwrap_or("").to_owned())))
+        .filter_map(|w| {
+            Some((
+                w["id"].as_str()?.to_owned(),
+                w["title"].as_str().unwrap_or("").to_owned(),
+            ))
+        })
         .collect())
 }
 
@@ -203,9 +242,12 @@ struct OttyConfig {
 impl OttyConfig {
     fn apply(theme: Option<&str>, sets: &[(String, String)]) -> Result<Self> {
         let path = PathBuf::from(run(Command::new(OTTY_CLI).args(["config", "path"]))?.trim());
-        let original = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let original =
+            std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let guard = Self { path, original };
-        let themes = theme.into_iter().flat_map(|t| [("theme", t), ("theme-dark", t)]);
+        let themes = theme
+            .into_iter()
+            .flat_map(|t| [("theme", t), ("theme-dark", t)]);
         for (key, value) in themes.chain(sets.iter().map(|(k, v)| (k.as_str(), v.as_str()))) {
             run(Command::new(OTTY_CLI).args(["config", "set", key, value]))?;
         }
@@ -248,7 +290,10 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
     let command = format!("/bin/sh -c '{}; sleep 600'", fixture.display());
     run(Command::new(OTTY_CLI).args(["open", "--command", &command]))?;
     pause(1500);
-    let window = otty_window_ids()?.into_iter().find(|(id, t)| t == FIXTURE_TITLE && !before.contains(id)).map(|(id, _)| id);
+    let window = otty_window_ids()?
+        .into_iter()
+        .find(|(id, t)| t == FIXTURE_TITLE && !before.contains(id))
+        .map(|(id, _)| id);
     let window = window.context("fixture window not found")?;
     // Place the fixture window and make it Otty's key window (another Otty
     // window may otherwise stay key when the app is brought forward).
@@ -259,13 +304,24 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
     let target = format!("(window id {id})");
     run(Command::new("osascript").args([
         "-e",
-        &format!("tell application \"Otty\" to set bounds of {target} to {{{x}, {y}, {}, {}}}", x + w, y + h),
+        &format!(
+            "tell application \"Otty\" to set bounds of {target} to {{{x}, {y}, {}, {}}}",
+            x + w,
+            y + h
+        ),
         "-e",
         &format!("tell application \"Otty\" to set index of {target} to 1"),
     ]))?;
     if tabs {
         // A busy tab and an idle one; Otty activates each new tab.
-        run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window, "--command", "sleep 600"]))?;
+        run(Command::new(OTTY_CLI).args([
+            "tab",
+            "new",
+            "--window",
+            &window,
+            "--command",
+            "sleep 600",
+        ]))?;
         run(Command::new(OTTY_CLI).args(["tab", "new", "--window", &window]))?;
         // New tabs can bring back the previous theme; reload the current one.
         run(Command::new(OTTY_CLI).args(["config", "reload"]))?;
@@ -273,7 +329,10 @@ fn capture_otty(fixture: &Path, tabs: bool, out: &Path) -> Result<()> {
     pause(1000);
     if tabs {
         // Make it key again: new tabs can hand that to another window.
-        run(Command::new("osascript").args(["-e", &format!("tell application \"Otty\" to set index of {target} to 1")]))?;
+        run(Command::new("osascript").args([
+            "-e",
+            &format!("tell application \"Otty\" to set index of {target} to 1"),
+        ]))?;
     }
     let result = (|| {
         let pid = run(Command::new("pgrep").args(["-x", "Otty"]))?;
@@ -308,12 +367,18 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// to treat Motty as a regular app (activation, Dock, bundle id).
 fn bundle(release: bool) -> Result<PathBuf> {
     let mut build = Command::new("cargo");
-    build.args(["build", "--quiet", "-p", "motty-app"]).current_dir(root());
+    build
+        .args(["build", "--quiet", "-p", "motty-app"])
+        .current_dir(root());
     if release {
         build.arg("--release");
     }
     run(&mut build)?;
-    let profile = root().join(if release { "target/release" } else { "target/debug" });
+    let profile = root().join(if release {
+        "target/release"
+    } else {
+        "target/debug"
+    });
     let app = profile.join("Motty.app");
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos)?;
@@ -325,18 +390,28 @@ fn bundle(release: bool) -> Result<PathBuf> {
     std::fs::copy(profile.join("Motty"), &exe)?;
     let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
-    run(Command::new("codesign").args(["--force", "--sign", "-"]).arg(&app))?;
+    run(Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&app))?;
     Ok(app)
 }
 
-fn capture_motty(release: bool, fixture: &Path, tabs: bool, theme: Option<&str>, out: &Path) -> Result<()> {
+fn capture_motty(
+    release: bool,
+    fixture: &Path,
+    tabs: bool,
+    theme: Option<&str>,
+    out: &Path,
+) -> Result<()> {
     let bin = bundle(release)?.join("Contents/MacOS/Motty");
     let (x, y, w, h) = BOUNDS;
     // Otty types the fixture into the user's zsh, so run it under zsh too
     // (the trailing `:` keeps zsh from exec-ing sleep in its place).
     let script = format!("{}; sleep 600; :", fixture.display());
     let mut motty = Command::new(bin);
-    motty.args(["--bounds", &format!("{x},{y},{w},{h}")]).current_dir(root());
+    motty
+        .args(["--bounds", &format!("{x},{y},{w},{h}")])
+        .current_dir(root());
     if tabs {
         motty.args(["--extra-tabs", "2"]);
     }
@@ -344,7 +419,11 @@ fn capture_motty(release: bool, fixture: &Path, tabs: bool, theme: Option<&str>,
         motty.args(["--theme", theme]);
     }
     let mut child: Child = motty.args(["-e", "/bin/zsh", "-c", &script]).spawn()?;
-    let title = if tabs { tabs_title() } else { FIXTURE_TITLE.to_owned() };
+    let title = if tabs {
+        tabs_title()
+    } else {
+        FIXTURE_TITLE.to_owned()
+    };
     let result = (|| {
         let id = find_window("Motty", &title)?;
         pause(700);
@@ -390,8 +469,13 @@ static HOVER: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new
 /// `--hover` point.
 fn park_pointer() -> Result<()> {
     let (x, y, w, h) = BOUNDS;
-    let (px, py) = HOVER.get().copied().flatten().unwrap_or(((w + 20) as f32, (h / 2) as f32));
-    run(Command::new(swift_tool("warp")?).args([(x as f32 + px).to_string(), (y as f32 + py).to_string()]))?;
+    let (px, py) = HOVER
+        .get()
+        .copied()
+        .flatten()
+        .unwrap_or(((w + 20) as f32, (h / 2) as f32));
+    run(Command::new(swift_tool("warp")?)
+        .args([(x as f32 + px).to_string(), (y as f32 + py).to_string()]))?;
     pause(300);
     Ok(())
 }
@@ -399,7 +483,8 @@ fn park_pointer() -> Result<()> {
 fn bring_to_front(pid: u32) -> Result<()> {
     let process = format!("(first process whose unix id is {pid})");
     for _ in 0..10 {
-        let set = format!("tell application \"System Events\" to set frontmost of {process} to true");
+        let set =
+            format!("tell application \"System Events\" to set frontmost of {process} to true");
         run(Command::new("osascript").args(["-e", &set]))?;
         pause(300);
         let get = format!("tell application \"System Events\" to get frontmost of {process}");
@@ -429,19 +514,39 @@ fn parity(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let (otty, motty) = (dir.join("otty.png"), dir.join("motty.png"));
     let tabs = args.iter().any(|a| a == "--tabs");
-    let theme = args.iter().position(|a| a == "--theme").and_then(|i| args.get(i + 1)).cloned();
-    let backdrop = args.iter().position(|a| a == "--backdrop").and_then(|i| args.get(i + 1));
-    let hover = args.iter().position(|a| a == "--hover").and_then(|i| args.get(i + 1));
-    let hover = hover.map(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))).context("--hover wants x,y"));
+    let theme = args
+        .iter()
+        .position(|a| a == "--theme")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let backdrop = args
+        .iter()
+        .position(|a| a == "--backdrop")
+        .and_then(|i| args.get(i + 1));
+    let hover = args
+        .iter()
+        .position(|a| a == "--hover")
+        .and_then(|i| args.get(i + 1));
+    let hover = hover.map(|v| {
+        v.split_once(',')
+            .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+            .context("--hover wants x,y")
+    });
     let _ = HOVER.set(hover.transpose()?);
     // `--set key=value` (repeatable) changes a config key in both apps.
     let sets: Vec<(String, String)> = args
         .windows(2)
         .filter(|w| w[0] == "--set")
-        .map(|w| w[1].split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())).context("--set wants key=value"))
+        .map(|w| {
+            w[1].split_once('=')
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .context("--set wants key=value")
+        })
         .collect::<Result<_>>()?;
     let _backdrop = backdrop.map(|c| Backdrop::show(c)).transpose()?;
-    let mut restore = (theme.is_some() || !sets.is_empty()).then(|| OttyConfig::apply(theme.as_deref(), &sets)).transpose()?;
+    let mut restore = (theme.is_some() || !sets.is_empty())
+        .then(|| OttyConfig::apply(theme.as_deref(), &sets))
+        .transpose()?;
     capture_otty(&fixture, tabs, &otty).context("capturing Otty")?;
     // Without `--set`, Motty gets the theme as a flag, so the user's config
     // can be back before Motty starts.
@@ -460,7 +565,9 @@ fn parity(args: &[String]) -> Result<()> {
 }
 
 fn load(path: &Path) -> Result<RgbaImage> {
-    Ok(image::open(path).with_context(|| format!("opening {}", path.display()))?.to_rgba8())
+    Ok(image::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .to_rgba8())
 }
 
 /// Backing scale, inferred from the capture width vs. the requested bounds.
@@ -479,7 +586,11 @@ const VISIBLE: f32 = 12.0;
 fn diff(a_path: &Path, b_path: &Path, out: Option<&Path>) -> Result<()> {
     let (a, b) = (load(a_path)?, load(b_path)?);
     if a.dimensions() != b.dimensions() {
-        println!("size mismatch: {:?} vs {:?}", a.dimensions(), b.dimensions());
+        println!(
+            "size mismatch: {:?} vs {:?}",
+            a.dimensions(),
+            b.dimensions()
+        );
     }
     let (w, h) = (a.width().min(b.width()), a.height().min(b.height()));
     let split = SIDEBAR_PT * scale_of(&a);
@@ -519,7 +630,13 @@ fn diff(a_path: &Path, b_path: &Path, out: Option<&Path>) -> Result<()> {
 fn crop(path: &Path, (x, y, w, h): (f32, f32, f32, f32), out: &Path) -> Result<()> {
     let img = load(path)?;
     let s = scale_of(&img) as f32;
-    let view = image::imageops::crop_imm(&img, (x * s) as u32, (y * s) as u32, (w * s) as u32, (h * s) as u32);
+    let view = image::imageops::crop_imm(
+        &img,
+        (x * s) as u32,
+        (y * s) as u32,
+        (w * s) as u32,
+        (h * s) as u32,
+    );
     view.to_image().save(out)?;
     Ok(())
 }
@@ -528,14 +645,30 @@ fn scan(path: &Path, axis: &str, pos: f32) -> Result<()> {
     let img = load(path)?;
     let s = scale_of(&img);
     let fixed = (pos * s as f32) as u32;
-    let len = if axis == "x" { img.height() } else { img.width() };
-    let at = |i: u32| if axis == "x" { *img.get_pixel(fixed, i) } else { *img.get_pixel(i, fixed) };
+    let len = if axis == "x" {
+        img.height()
+    } else {
+        img.width()
+    };
+    let at = |i: u32| {
+        if axis == "x" {
+            *img.get_pixel(fixed, i)
+        } else {
+            *img.get_pixel(i, fixed)
+        }
+    };
     let mut prev = at(0);
     let mut out = Vec::new();
     for i in 1..len {
         let p = at(i);
         if distance(&p, &prev) > 30. {
-            out.push(format!("{:.1}:#{:02x}{:02x}{:02x}", i as f32 / s as f32, p[0], p[1], p[2]));
+            out.push(format!(
+                "{:.1}:#{:02x}{:02x}{:02x}",
+                i as f32 / s as f32,
+                p[0],
+                p[1],
+                p[2]
+            ));
         }
         prev = p;
     }
@@ -559,7 +692,8 @@ fn metrics(path: &Path, left_pt: u32) -> Result<()> {
     // Background: bottom-right corner of the terminal area is blank in fixtures.
     let bg = *img.get_pixel(img.width() - 20 * s, img.height() - 20 * s);
     let top = 0;
-    let ink_row = |y: u32| (x0..img.width() - 4 * s).any(|x| distance(img.get_pixel(x, y), &bg) > 60.);
+    let ink_row =
+        |y: u32| (x0..img.width() - 4 * s).any(|x| distance(img.get_pixel(x, y), &bg) > 60.);
     let mut runs: Vec<(u32, u32)> = Vec::new();
     let mut y = top;
     while y < img.height() {
@@ -575,7 +709,13 @@ fn metrics(path: &Path, left_pt: u32) -> Result<()> {
     let first_ink_x = (x0..img.width())
         .find(|&x| (0..img.height()).any(|y| distance(img.get_pixel(x, y), &bg) > 60.))
         .unwrap_or(0);
-    println!("background #{:02x}{:02x}{:02x}, first ink x = {:.1}pt", bg[0], bg[1], bg[2], first_ink_x as f32 / s as f32);
+    println!(
+        "background #{:02x}{:02x}{:02x}, first ink x = {:.1}pt",
+        bg[0],
+        bg[1],
+        bg[2],
+        first_ink_x as f32 / s as f32
+    );
     let shown: Vec<String> = runs
         .iter()
         .take(16)

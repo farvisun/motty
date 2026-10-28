@@ -206,7 +206,21 @@ impl Theme {
 /// Black (light mode) or white (dark mode) text at the given alpha, like
 /// AppKit's label colors.
 fn overlay_text(dark: bool, light_alpha: f32, dark_alpha: f32) -> Rgba {
-    if dark { Rgba { r: 1., g: 1., b: 1., a: dark_alpha } } else { Rgba { r: 0., g: 0., b: 0., a: light_alpha } }
+    if dark {
+        Rgba {
+            r: 1.,
+            g: 1.,
+            b: 1.,
+            a: dark_alpha,
+        }
+    } else {
+        Rgba {
+            r: 0.,
+            g: 0.,
+            b: 0.,
+            a: light_alpha,
+        }
+    }
 }
 
 /// Mixes `a` toward `b` by `t` (0 = a, 1 = b).
@@ -220,7 +234,13 @@ pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 }
 
 pub fn luminance(c: Rgba) -> f32 {
-    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let lin = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
     0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
 }
 
@@ -238,7 +258,9 @@ impl<'a> Section<'a> {
     }
 
     fn warn(&self, key: &str, msg: impl std::fmt::Display) {
-        self.warnings.borrow_mut().push(format!("[{}] {key}: {msg}", self.name));
+        self.warnings
+            .borrow_mut()
+            .push(format!("[{}] {key}: {msg}", self.name));
     }
 
     fn str(&self, key: &str) -> Option<&'a str> {
@@ -293,7 +315,11 @@ impl<'a> Section<'a> {
             Value::Array(items) => {
                 let nums: Option<Vec<f32>> = items
                     .iter()
-                    .map(|v| v.as_float().map(|f| f as f32).or_else(|| v.as_integer().map(|i| i as f32)))
+                    .map(|v| {
+                        v.as_float()
+                            .map(|f| f as f32)
+                            .or_else(|| v.as_integer().map(|i| i as f32))
+                    })
                     .collect();
                 match nums.map(|n| Edges::from_slice(&n)) {
                     Some(Ok(e)) => Some(e),
@@ -309,8 +335,17 @@ impl<'a> Section<'a> {
 
     fn strings(&self, key: &str) -> Option<Vec<String>> {
         match self.get(key)? {
-            Value::Array(items) => Some(items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()),
-            Value::String(s) => Some(s.split(',').map(|p| p.trim().trim_matches('"').to_owned()).collect()),
+            Value::Array(items) => Some(
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
+            ),
+            Value::String(s) => Some(
+                s.split(',')
+                    .map(|p| p.trim().trim_matches('"').to_owned())
+                    .collect(),
+            ),
             _ => None,
         }
     }
@@ -347,24 +382,39 @@ pub fn parse(source: &str) -> anyhow::Result<ParsedTheme> {
     let root: Table = toml::from_str(source)?;
     let warnings = std::cell::RefCell::new(Vec::new());
     let theme = resolve(&root, &warnings)?;
-    Ok(ParsedTheme { theme, warnings: warnings.into_inner() })
+    Ok(ParsedTheme {
+        theme,
+        warnings: warnings.into_inner(),
+    })
 }
 
 /// Looks up a dotted section path such as `tab.active.unfocused`.
-fn section<'a>(root: &'a Table, path: &str, warnings: &'a std::cell::RefCell<Vec<String>>) -> Section<'a> {
+fn section<'a>(
+    root: &'a Table,
+    path: &str,
+    warnings: &'a std::cell::RefCell<Vec<String>>,
+) -> Section<'a> {
     let mut table = Some(root);
     for part in path.split('.') {
         table = table.and_then(|t| t.get(part)).and_then(Value::as_table);
     }
-    Section { name: path.to_owned(), table, warnings }
+    Section {
+        name: path.to_owned(),
+        table,
+        warnings,
+    }
 }
 
 fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::Result<Theme> {
     let s = |path: &str| section(root, path, warnings);
 
     let term = s("terminal");
-    let foreground = term.color("foreground").ok_or_else(|| anyhow::anyhow!("[terminal] foreground is required"))?;
-    let background = term.color("background").ok_or_else(|| anyhow::anyhow!("[terminal] background is required"))?;
+    let foreground = term
+        .color("foreground")
+        .ok_or_else(|| anyhow::anyhow!("[terminal] foreground is required"))?;
+    let background = term
+        .color("background")
+        .ok_or_else(|| anyhow::anyhow!("[terminal] background is required"))?;
     let palette = match term.get("palette") {
         Some(Value::Array(items)) if items.len() == 16 => {
             let mut out = [Rgba::TRANSPARENT; 16];
@@ -382,7 +432,11 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let meta_s = s("meta");
     // With a transparent background, mode can only come from the foreground.
     let inferred_mode = if background.a > 0.5 {
-        if luminance(background) < 0.4 { Mode::Dark } else { Mode::Light }
+        if luminance(background) < 0.4 {
+            Mode::Dark
+        } else {
+            Mode::Light
+        }
     } else if luminance(foreground) > 0.4 {
         Mode::Dark
     } else {
@@ -413,25 +467,59 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let tok = s("token");
     let tok_fg = tok.color("foreground").unwrap_or(foreground);
     let accent = tok.color("accent").unwrap_or(palette[4]);
-    let overlay = |a: f32| if dark { Rgba { r: 1., g: 1., b: 1., a } } else { Rgba { r: 0., g: 0., b: 0., a } };
+    let overlay = |a: f32| {
+        if dark {
+            Rgba {
+                r: 1.,
+                g: 1.,
+                b: 1.,
+                a,
+            }
+        } else {
+            Rgba {
+                r: 0.,
+                g: 0.,
+                b: 0.,
+                a,
+            }
+        }
+    };
     let token = Tokens {
         foreground: tok_fg,
-        secondary: tok.color("secondary").unwrap_or_else(|| mix(tok_fg, base_bg, 0.2)),
-        tertiary: tok.color("tertiary").unwrap_or_else(|| mix(tok_fg, base_bg, 0.55)),
+        secondary: tok
+            .color("secondary")
+            .unwrap_or_else(|| mix(tok_fg, base_bg, 0.2)),
+        tertiary: tok
+            .color("tertiary")
+            .unwrap_or_else(|| mix(tok_fg, base_bg, 0.55)),
         accent,
         success: tok.color("success").unwrap_or(palette[2]),
         warning: tok.color("warning").unwrap_or(palette[3]),
         danger: tok.color("danger").unwrap_or(palette[1]),
-        hover_bg: tok.color("hover-bg").unwrap_or(overlay(if dark { 0.06 } else { 0.04 })),
+        hover_bg: tok
+            .color("hover-bg")
+            .unwrap_or(overlay(if dark { 0.06 } else { 0.04 })),
         active_bg: tok.color("active-bg").unwrap_or(accent.with_alpha(0.18)),
         radius: tok.num("radius").unwrap_or(6.),
         shadow: tok.shadows("shadow").unwrap_or_else(|| {
-            css::parse_shadows(if dark { "0 8px 24px rgba(0,0,0,0.35)" } else { "0 8px 24px rgba(0,0,0,0.12)" }).unwrap()
+            css::parse_shadows(if dark {
+                "0 8px 24px rgba(0,0,0,0.35)"
+            } else {
+                "0 8px 24px rgba(0,0,0,0.12)"
+            })
+            .unwrap()
         }),
-        font_ui: tok.strings("font-ui").unwrap_or_else(|| vec!["-apple-system".into(), "SF Pro".into(), "sans-serif".into()]),
-        font_mono: tok
-            .strings("font-mono")
-            .unwrap_or_else(|| vec!["JetBrains Mono".into(), "SF Mono".into(), "Menlo".into(), "monospace".into()]),
+        font_ui: tok
+            .strings("font-ui")
+            .unwrap_or_else(|| vec!["-apple-system".into(), "SF Pro".into(), "sans-serif".into()]),
+        font_mono: tok.strings("font-mono").unwrap_or_else(|| {
+            vec![
+                "JetBrains Mono".into(),
+                "SF Mono".into(),
+                "Menlo".into(),
+                "monospace".into(),
+            ]
+        }),
         font_size: tok.num("font-size").unwrap_or(13.),
         adjust_cell_height: tok.percent("adjust-cell-height").unwrap_or(0.),
     };
@@ -440,13 +528,18 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         foreground,
         background,
         palette,
-        selection_background: term.color("selection-background").unwrap_or_else(|| accent.with_alpha(0.35)),
+        selection_background: term
+            .color("selection-background")
+            .unwrap_or_else(|| accent.with_alpha(0.35)),
         selection_foreground: term.color("selection-foreground"),
         font_blending: term.str("font-blending").map(str::to_owned),
     };
 
     let cur = s("cursor");
-    let cursor_color = cur.color("color").or_else(|| term.color("cursor")).unwrap_or(foreground);
+    let cursor_color = cur
+        .color("color")
+        .or_else(|| term.color("cursor"))
+        .unwrap_or(foreground);
     let cursor_text = cur.color("text").or_else(|| term.color("cursor-text"));
     let cursor = CursorColors {
         color: cursor_color,
@@ -455,7 +548,10 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         block_text: s("cursor.block").color("text").or(cursor_text),
         bar: s("cursor.bar").color("color").unwrap_or(cursor_color),
         underline: s("cursor.underline").color("color").unwrap_or(cursor_color),
-        color_themed: cur.color("color").or_else(|| term.color("cursor")).is_some(),
+        color_themed: cur
+            .color("color")
+            .or_else(|| term.color("cursor"))
+            .is_some(),
         text_themed: cursor_text.is_some(),
     };
 
@@ -463,11 +559,19 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let panel = Panel {
         // Measured from Otty's minimal themes (One Light, Dracula): chrome
         // sits a step off the terminal, darker in light mode, lighter in dark.
-        background: pan
-            .color("background")
-            .unwrap_or_else(|| if dark { mix(base_bg, Rgba::rgb(0xffffff), 0.05) } else { mix(base_bg, Rgba::rgb(0x000000), 0.03) }),
-        surface: pan.color("surface").unwrap_or_else(|| mix(base_bg, tok_fg, if dark { 0.06 } else { 0.03 })),
-        border: pan.color("border").unwrap_or(overlay(if dark { 0.06 } else { 0.08 })),
+        background: pan.color("background").unwrap_or_else(|| {
+            if dark {
+                mix(base_bg, Rgba::rgb(0xffffff), 0.05)
+            } else {
+                mix(base_bg, Rgba::rgb(0x000000), 0.03)
+            }
+        }),
+        surface: pan
+            .color("surface")
+            .unwrap_or_else(|| mix(base_bg, tok_fg, if dark { 0.06 } else { 0.03 })),
+        border: pan
+            .color("border")
+            .unwrap_or(overlay(if dark { 0.06 } else { 0.08 })),
     };
 
     let win = s("window");
@@ -475,7 +579,13 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     // the material is its fill.
     let window_material = win.material("material").unwrap_or_default();
     let window = WindowStyle {
-        background: win.color("background").unwrap_or(if window_material == Material::None { background } else { Rgba::TRANSPARENT }),
+        background: win
+            .color("background")
+            .unwrap_or(if window_material == Material::None {
+                background
+            } else {
+                Rgba::TRANSPARENT
+            }),
         material: window_material,
         radius: win.num("radius").unwrap_or(12.),
         unfocused_opacity: s("window.unfocused").num("opacity").unwrap_or(1.),
@@ -485,8 +595,12 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     let titlebar = Titlebar {
         background: tb.color("background"),
         // Unthemed titles use the native secondary/tertiary label colors.
-        foreground: tb.color("foreground").unwrap_or(overlay_text(dark, 0.5, 0.55)),
-        unfocused_foreground: s("titlebar.unfocused").color("foreground").unwrap_or(overlay_text(dark, 0.26, 0.25)),
+        foreground: tb
+            .color("foreground")
+            .unwrap_or(overlay_text(dark, 0.5, 0.55)),
+        unfocused_foreground: s("titlebar.unfocused")
+            .color("foreground")
+            .unwrap_or(overlay_text(dark, 0.26, 0.25)),
         font_size: tb.num("font-size").unwrap_or(13.),
         font_weight: tb.num("font-weight").unwrap_or(500.),
         height: tb.num("height"),
@@ -494,15 +608,24 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
     };
 
     let sb = s("sidebar");
-    let default_side_border = Some(Border { width: 1., color: None });
+    let default_side_border = Some(Border {
+        width: 1.,
+        color: None,
+    });
     let side = |sec: &Section, base: Option<&SidePanel>, default_width: f32| -> SidePanel {
         // Otty insets the sidebar's cards and header 8pt unless the theme
         // says otherwise (April and Ayu Light run cards edge to edge with 0).
-        let mut padding = sec.edges("padding").or(base.map(|b| b.padding)).unwrap_or(Edges::all(8.));
+        let mut padding = sec
+            .edges("padding")
+            .or(base.map(|b| b.padding))
+            .unwrap_or(Edges::all(8.));
         if let Some(r) = sec.num("padding-right") {
             padding.right = r;
         }
-        let material = sec.material("material").or(base.map(|b| b.material)).unwrap_or_default();
+        let material = sec
+            .material("material")
+            .or(base.map(|b| b.material))
+            .unwrap_or_default();
         // In a window with a material, a plain side panel takes the terminal
         // background, not the panel color (Otty's Acrylic Dark: the sidebar
         // is #202020 under a #2C2C2C panel; the only theme that tells).
@@ -512,9 +635,18 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
             _ => Rgba::TRANSPARENT,
         };
         SidePanel {
-            background: sec.color("background").or(base.map(|b| b.background)).unwrap_or(unset_background),
-            border: sec.border("border-right").or_else(|| base.map(|b| b.border.clone())).unwrap_or(default_side_border.clone()),
-            width: sec.num("width").or(base.map(|b| b.width)).unwrap_or(default_width),
+            background: sec
+                .color("background")
+                .or(base.map(|b| b.background))
+                .unwrap_or(unset_background),
+            border: sec
+                .border("border-right")
+                .or_else(|| base.map(|b| b.border.clone()))
+                .unwrap_or(default_side_border.clone()),
+            width: sec
+                .num("width")
+                .or(base.map(|b| b.width))
+                .unwrap_or(default_width),
             material,
             padding,
         }
@@ -542,7 +674,10 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         shadow: tab_s.shadows("shadow").unwrap_or_default(),
     };
     let tab_defaults = TabStates {
-        hover: TabStyle { background: token.hover_bg, ..normal.clone() },
+        hover: TabStyle {
+            background: token.hover_bg,
+            ..normal.clone()
+        },
         active: TabStyle {
             // A translucent step over the sidebar (or its material), as Otty
             // draws it when a theme doesn't say.
@@ -560,16 +695,35 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
 
     let bar = s("tab-bar");
     let bar_tab_defaults = TabStates {
-        normal: TabStyle { radius: 8., height: Some(28.), ..tabs.normal.clone() },
-        hover: TabStyle { radius: 8., height: Some(28.), ..tabs.hover.clone() },
-        active: TabStyle { radius: 8., height: Some(28.), ..tabs.active.clone() },
-        active_unfocused: TabStyle { radius: 8., height: Some(28.), ..tabs.active_unfocused.clone() },
+        normal: TabStyle {
+            radius: 8.,
+            height: Some(28.),
+            ..tabs.normal.clone()
+        },
+        hover: TabStyle {
+            radius: 8.,
+            height: Some(28.),
+            ..tabs.hover.clone()
+        },
+        active: TabStyle {
+            radius: 8.,
+            height: Some(28.),
+            ..tabs.active.clone()
+        },
+        active_unfocused: TabStyle {
+            radius: 8.,
+            height: Some(28.),
+            ..tabs.active_unfocused.clone()
+        },
     };
     let tab_bar = TabBar {
         background: bar.color("background"),
         height: bar.num("height").unwrap_or(36.),
         padding: bar.edges("padding").unwrap_or(Edges::all(8.)),
-        border_bottom: bar.border("border-bottom").unwrap_or(Some(Border { width: 1., color: None })),
+        border_bottom: bar.border("border-bottom").unwrap_or(Some(Border {
+            width: 1.,
+            color: None,
+        })),
         material: bar.material("material"),
         separator: bar.bool("separator").unwrap_or(false),
         tabs: tab_states(&s, "tab-bar.tab", &bar_tab_defaults),
@@ -590,7 +744,9 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
 
     let div = s("divider");
     let divider = Divider {
-        color: div.color("color").unwrap_or(overlay(if dark { 0.08 } else { 0.1 })),
+        color: div
+            .color("color")
+            .unwrap_or(overlay(if dark { 0.08 } else { 0.1 })),
         width: div.num("width").unwrap_or(1.),
     };
 
@@ -623,7 +779,9 @@ impl TabStyle {
             padding: sec.edges("padding").unwrap_or(self.padding),
             height: sec.num("height").or(self.height),
             indicator: sec.color("indicator-color").unwrap_or(self.indicator),
-            indicator_bar: sec.str("indicator").map_or(self.indicator_bar, |i| i == "bar"),
+            indicator_bar: sec
+                .str("indicator")
+                .map_or(self.indicator_bar, |i| i == "bar"),
             border: sec.border("border").unwrap_or_else(|| self.border.clone()),
             shadow: sec.shadows("shadow").unwrap_or_else(|| self.shadow.clone()),
         }
@@ -632,7 +790,11 @@ impl TabStyle {
 
 /// Resolves `<prefix>`, `<prefix>.hover`, `<prefix>.active`, `<prefix>.active.unfocused`.
 /// Each state inherits from the resolved normal style, then from `defaults`.
-fn tab_states<'a>(s: &dyn Fn(&str) -> Section<'a>, prefix: &str, defaults: &TabStates) -> TabStates {
+fn tab_states<'a>(
+    s: &dyn Fn(&str) -> Section<'a>,
+    prefix: &str,
+    defaults: &TabStates,
+) -> TabStates {
     let normal = defaults.normal.overlay(&s(prefix));
     // Keys set on the base section override state defaults too, except the
     // ones each state is expected to change.
@@ -643,7 +805,9 @@ fn tab_states<'a>(s: &dyn Fn(&str) -> Section<'a>, prefix: &str, defaults: &TabS
             font_size: base.num("font-size").unwrap_or(state.font_size),
             padding: base.edges("padding").unwrap_or(state.padding),
             height: base.num("height").or(state.height),
-            foreground: if base.get("foreground").is_some() && state.foreground == defaults.normal.foreground {
+            foreground: if base.get("foreground").is_some()
+                && state.foreground == defaults.normal.foreground
+            {
                 normal.foreground
             } else {
                 state.foreground
@@ -651,11 +815,24 @@ fn tab_states<'a>(s: &dyn Fn(&str) -> Section<'a>, prefix: &str, defaults: &TabS
             ..state.clone()
         }
     };
-    let hover = inherit(&TabStyle { background: defaults.hover.background, ..normal.clone() }).overlay(&s(&format!("{prefix}.hover")));
+    let hover = inherit(&TabStyle {
+        background: defaults.hover.background,
+        ..normal.clone()
+    })
+    .overlay(&s(&format!("{prefix}.hover")));
     let active = inherit(&defaults.active).overlay(&s(&format!("{prefix}.active")));
-    let unfocused_default = TabStyle { foreground: normal.foreground, shadow: Vec::new(), ..active.clone() };
+    let unfocused_default = TabStyle {
+        foreground: normal.foreground,
+        shadow: Vec::new(),
+        ..active.clone()
+    };
     let active_unfocused = unfocused_default.overlay(&s(&format!("{prefix}.active.unfocused")));
-    TabStates { normal, hover, active, active_unfocused }
+    TabStates {
+        normal,
+        hover,
+        active,
+        active_unfocused,
+    }
 }
 
 #[cfg(test)]
@@ -699,7 +876,11 @@ palette = ["#000000","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff"
 
     #[test]
     fn material_sections_without_background_are_transparent() {
-        let t = parse(&format!("{MINIMAL}\n[window]\nmaterial = \"glass\"\n[sidebar]\nmaterial = \"vibrancy-thin\"\n")).unwrap().theme;
+        let t = parse(&format!(
+            "{MINIMAL}\n[window]\nmaterial = \"glass\"\n[sidebar]\nmaterial = \"vibrancy-thin\"\n"
+        ))
+        .unwrap()
+        .theme;
         assert_eq!(t.window.background.a, 0.);
         assert_eq!(t.sidebar.background.a, 0.);
         let plain = parse(MINIMAL).unwrap().theme;
@@ -711,16 +892,24 @@ palette = ["#000000","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff"
     fn minimal_themes_derive_chrome_like_otty() {
         // Dracula's terminal colors; Otty draws its sidebar at #33353f and the
         // active card at #43454e.
-        let t = parse(&MINIMAL.replace("#000000\"\n", "#282A36\"\n")).unwrap().theme;
+        let t = parse(&MINIMAL.replace("#000000\"\n", "#282A36\"\n"))
+            .unwrap()
+            .theme;
         let hex = |c: Rgba| [c.r, c.g, c.b].map(|v| (v * 255.).round() as u8);
         assert_eq!(hex(t.panel.background), [0x33, 0x35, 0x40]);
         assert_eq!(hex(t.sidebar.background), [0x33, 0x35, 0x40]);
-        let card = mix(t.sidebar.background, t.tabs.active.background.with_alpha(1.), t.tabs.active.background.a);
+        let card = mix(
+            t.sidebar.background,
+            t.tabs.active.background.with_alpha(1.),
+            t.tabs.active.background.a,
+        );
         assert_eq!(hex(card), [0x43, 0x45, 0x4f]);
     }
 
     #[test]
     fn missing_palette_is_error() {
-        assert!(parse("[meta]\nname='x'\n[terminal]\nforeground='#fff'\nbackground='#000'\n").is_err());
+        assert!(
+            parse("[meta]\nname='x'\n[terminal]\nforeground='#fff'\nbackground='#000'\n").is_err()
+        );
     }
 }

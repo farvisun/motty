@@ -12,7 +12,12 @@ pub struct Rgba {
 }
 
 impl Rgba {
-    pub const TRANSPARENT: Rgba = Rgba { r: 0., g: 0., b: 0., a: 0. };
+    pub const TRANSPARENT: Rgba = Rgba {
+        r: 0.,
+        g: 0.,
+        b: 0.,
+        a: 0.,
+    };
 
     pub fn rgb(hex: u32) -> Self {
         Self {
@@ -69,7 +74,12 @@ pub fn parse_color(s: &str) -> Result<Rgba, ParseError> {
         let (r, g, b, a) = match digits.len() {
             3 | 4 => {
                 let e = |d: u8| d * 17;
-                (e(digits[0]), e(digits[1]), e(digits[2]), digits.get(3).map_or(255, |&d| e(d)))
+                (
+                    e(digits[0]),
+                    e(digits[1]),
+                    e(digits[2]),
+                    digits.get(3).map_or(255, |&d| e(d)),
+                )
             }
             6 | 8 => {
                 let p = |i: usize| digits[i] * 16 + digits[i + 1];
@@ -77,7 +87,12 @@ pub fn parse_color(s: &str) -> Result<Rgba, ParseError> {
             }
             _ => return err(format!("bad hex color {s:?}")),
         };
-        return Ok(Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a: a as f32 / 255. });
+        return Ok(Rgba {
+            r: r as f32 / 255.,
+            g: g as f32 / 255.,
+            b: b as f32 / 255.,
+            a: a as f32 / 255.,
+        });
     }
     let lower = s.to_ascii_lowercase();
     let inner = lower
@@ -85,15 +100,22 @@ pub fn parse_color(s: &str) -> Result<Rgba, ParseError> {
         .or_else(|| lower.strip_prefix("rgb("))
         .and_then(|r| r.strip_suffix(')'));
     if let Some(inner) = inner {
-        let parts: Vec<&str> = inner.split([',', '/', ' ']).filter(|p| !p.is_empty()).collect();
+        let parts: Vec<&str> = inner
+            .split([',', '/', ' '])
+            .filter(|p| !p.is_empty())
+            .collect();
         if parts.len() != 3 && parts.len() != 4 {
             return err(format!("bad rgb() color {s:?}"));
         }
         let chan = |p: &str| -> Result<f32, ParseError> {
             if let Some(pct) = p.strip_suffix('%') {
-                pct.parse::<f32>().map(|v| v / 100.).map_err(|_| ParseError(format!("bad channel {p:?}")))
+                pct.parse::<f32>()
+                    .map(|v| v / 100.)
+                    .map_err(|_| ParseError(format!("bad channel {p:?}")))
             } else {
-                p.parse::<f32>().map(|v| v / 255.).map_err(|_| ParseError(format!("bad channel {p:?}")))
+                p.parse::<f32>()
+                    .map(|v| v / 255.)
+                    .map_err(|_| ParseError(format!("bad channel {p:?}")))
             }
         };
         let alpha = match parts.get(3) {
@@ -104,7 +126,12 @@ pub fn parse_color(s: &str) -> Result<Rgba, ParseError> {
             }
             .map_err(|_| ParseError(format!("bad alpha {p:?}")))?,
         };
-        return Ok(Rgba { r: chan(parts[0])?, g: chan(parts[1])?, b: chan(parts[2])?, a: alpha.clamp(0., 1.) });
+        return Ok(Rgba {
+            r: chan(parts[0])?,
+            g: chan(parts[1])?,
+            b: chan(parts[2])?,
+            a: alpha.clamp(0., 1.),
+        });
     }
     err(format!("unsupported color {s:?}"))
 }
@@ -141,13 +168,20 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
 
 /// Whitespace tokens, keeping `rgba( ... )` together.
 fn tokens(s: &str) -> Vec<&str> {
-    split_top_level(s.trim(), ' ').into_iter().filter(|t| !t.is_empty()).collect()
+    split_top_level(s.trim(), ' ')
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 pub fn parse_length(s: &str) -> Result<f32, ParseError> {
     let s = s.trim();
-    let num = s.strip_suffix("px").or_else(|| s.strip_suffix("pt")).unwrap_or(s);
-    num.parse::<f32>().map_err(|_| ParseError(format!("bad length {s:?}")))
+    let num = s
+        .strip_suffix("px")
+        .or_else(|| s.strip_suffix("pt"))
+        .unwrap_or(s);
+    num.parse::<f32>()
+        .map_err(|_| ParseError(format!("bad length {s:?}")))
 }
 
 /// CSS `box-shadow`: comma-separated list, or `none`.
@@ -180,7 +214,12 @@ pub fn parse_shadows(s: &str) -> Result<Vec<Shadow>, ParseError> {
                 offset_y: lengths[1],
                 blur: lengths.get(2).copied().unwrap_or(0.),
                 spread: lengths.get(3).copied().unwrap_or(0.),
-                color: color.unwrap_or(Rgba { r: 0., g: 0., b: 0., a: 1. }),
+                color: color.unwrap_or(Rgba {
+                    r: 0.,
+                    g: 0.,
+                    b: 0.,
+                    a: 1.,
+                }),
             })
         })
         .collect()
@@ -227,16 +266,36 @@ pub struct Edges {
 
 impl Edges {
     pub fn all(v: f32) -> Self {
-        Self { top: v, right: v, bottom: v, left: v }
+        Self {
+            top: v,
+            right: v,
+            bottom: v,
+            left: v,
+        }
     }
 
     /// CSS 1/2/3/4-value expansion.
     pub fn from_slice(v: &[f32]) -> Result<Self, ParseError> {
         Ok(match *v {
             [a] => Self::all(a),
-            [tb, lr] => Self { top: tb, right: lr, bottom: tb, left: lr },
-            [t, lr, b] => Self { top: t, right: lr, bottom: b, left: lr },
-            [t, r, b, l] => Self { top: t, right: r, bottom: b, left: l },
+            [tb, lr] => Self {
+                top: tb,
+                right: lr,
+                bottom: tb,
+                left: lr,
+            },
+            [t, lr, b] => Self {
+                top: t,
+                right: lr,
+                bottom: b,
+                left: lr,
+            },
+            [t, r, b, l] => Self {
+                top: t,
+                right: r,
+                bottom: b,
+                left: l,
+            },
             _ => return err(format!("edges need 1-4 values, got {}", v.len())),
         })
     }
@@ -248,7 +307,15 @@ mod tests {
 
     #[test]
     fn colors() {
-        assert_eq!(parse_color("#fff").unwrap(), Rgba { r: 1., g: 1., b: 1., a: 1. });
+        assert_eq!(
+            parse_color("#fff").unwrap(),
+            Rgba {
+                r: 1.,
+                g: 1.,
+                b: 1.,
+                a: 1.
+            }
+        );
         assert_eq!(parse_color("#2528325d").unwrap().a, 0x5d as f32 / 255.);
         let c = parse_color("rgba(255,255,255,0.16)").unwrap();
         assert_eq!((c.r, c.a), (1., 0.16));
@@ -270,7 +337,9 @@ mod tests {
 
     #[test]
     fn borders() {
-        let b = parse_border("1px solid rgba(255,255,255,0.18)").unwrap().unwrap();
+        let b = parse_border("1px solid rgba(255,255,255,0.18)")
+            .unwrap()
+            .unwrap();
         assert_eq!(b.width, 1.);
         assert_eq!(b.color.unwrap().a, 0.18);
         assert_eq!(parse_border("1px solid auto").unwrap().unwrap().color, None);

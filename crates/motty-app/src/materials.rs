@@ -16,7 +16,9 @@ use motty_theme::Material;
 pub enum Region {
     Window,
     /// Full-height column on the left edge, `width` points wide.
-    Sidebar { width: f32 },
+    Sidebar {
+        width: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,7 +42,11 @@ impl Backdrops {
     /// changed. Cheap to call every frame.
     /// `dark` gives the materials and the traffic lights the dark appearance.
     pub fn sync(&mut self, window: &Window, wanted: &[Backdrop], dark: bool) {
-        let wanted: Vec<Backdrop> = wanted.iter().copied().filter(|b| b.material != Material::None).collect();
+        let wanted: Vec<Backdrop> = wanted
+            .iter()
+            .copied()
+            .filter(|b| b.material != Material::None)
+            .collect();
         if wanted == self.installed && Some(dark) == self.dark {
             return;
         }
@@ -68,8 +74,10 @@ mod mac {
     use objc2::rc::Retained;
     use objc2::runtime::AnyClass;
     use objc2_app_kit::{
-        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode,
-        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowButton, NSWindowOrderingMode,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSAutoresizingMaskOptions, NSGlassEffectView, NSGlassEffectViewStyle, NSView,
+        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+        NSVisualEffectView, NSWindowButton, NSWindowOrderingMode,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -80,7 +88,10 @@ mod mac {
     /// GPUI's NSView for the window.
     fn gpui_view(window: &gpui::Window) -> Option<&NSView> {
         MainThreadMarker::new()?;
-        let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw() else { return None };
+        let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
+        else {
+            return None;
+        };
         // SAFETY: GPUI's AppKit handle points at its live NSView, which
         // outlives this borrow of the window, and we are on the main thread.
         Some(unsafe { handle.ns_view.cast::<NSView>().as_ref() })
@@ -90,14 +101,22 @@ mod mac {
     /// setting it on their container. The window keeps the system appearance,
     /// so GPUI still sees system light/dark changes.
     pub fn set_titlebar_appearance(window: &gpui::Window, dark: bool) {
-        let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) else { return };
-        let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else { return };
+        let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) else {
+            return;
+        };
+        let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
+            return;
+        };
         if let Some(container) = unsafe { close.superview() } {
             set_appearance(&container, dark);
         }
     }
 
-    pub fn install(window: &gpui::Window, backdrops: &[Backdrop], dark: bool) -> Option<Vec<Retained<NSView>>> {
+    pub fn install(
+        window: &gpui::Window,
+        backdrops: &[Backdrop],
+        dark: bool,
+    ) -> Option<Vec<Retained<NSView>>> {
         let mtm = MainThreadMarker::new()?;
         let gpui_view = gpui_view(window)?;
         let content = unsafe { gpui_view.superview() }?;
@@ -109,7 +128,11 @@ mod mac {
             view.setAutoresizingMask(mask);
             // Each view goes directly below GPUI's, so later ones stack above
             // earlier ones.
-            content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, Some(gpui_view));
+            content.addSubview_positioned_relativeTo(
+                &view,
+                NSWindowOrderingMode::Below,
+                Some(gpui_view),
+            );
             views.push(view);
         }
         Some(views)
@@ -120,11 +143,16 @@ mod mac {
         match region {
             Region::Window => (
                 bounds,
-                NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
             ),
             Region::Sidebar { width } => (
-                NSRect::new(NSPoint::new(0., 0.), NSSize::new(width as f64, bounds.size.height)),
-                NSAutoresizingMaskOptions::ViewHeightSizable | NSAutoresizingMaskOptions::ViewMaxXMargin,
+                NSRect::new(
+                    NSPoint::new(0., 0.),
+                    NSSize::new(width as f64, bounds.size.height),
+                ),
+                NSAutoresizingMaskOptions::ViewHeightSizable
+                    | NSAutoresizingMaskOptions::ViewMaxXMargin,
             ),
         }
     }
@@ -132,11 +160,22 @@ mod mac {
     /// Materials follow the theme's mode rather than the system appearance.
     fn set_appearance(view: &NSView, dark: bool) {
         // SAFETY: the appearance names are AppKit constants.
-        let name = unsafe { if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua } };
+        let name = unsafe {
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
+        };
         view.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
     }
 
-    fn make_view(material: Material, dark: bool, frame: NSRect, mtm: MainThreadMarker) -> Retained<NSView> {
+    fn make_view(
+        material: Material,
+        dark: bool,
+        frame: NSRect,
+        mtm: MainThreadMarker,
+    ) -> Retained<NSView> {
         // Liquid Glass (macOS 26+) for `glass`, when the system has it; its
         // regular style matches Otty's glass exactly over a solid backdrop.
         if material == Material::Glass && AnyClass::get(c"NSGlassEffectView").is_some() {

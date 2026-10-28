@@ -60,8 +60,16 @@ fn snap(v: f32, scale: f32) -> f32 {
 }
 
 fn rect(x0: f32, y0: f32, x1: f32, y1: f32, scale: f32, alpha: f32) -> Quad {
-    let (x0, y0, x1, y1) = (snap(x0, scale), snap(y0, scale), snap(x1, scale), snap(y1, scale));
-    Quad { bounds: Bounds::new(point(px(x0), px(y0)), size(px(x1 - x0), px(y1 - y0))), alpha }
+    let (x0, y0, x1, y1) = (
+        snap(x0, scale),
+        snap(y0, scale),
+        snap(x1, scale),
+        snap(y1, scale),
+    );
+    Quad {
+        bounds: Bounds::new(point(px(x0), px(y0)), size(px(x1 - x0), px(y1 - y0))),
+        alpha,
+    }
 }
 
 fn lines(arms: Arms, cell: Bounds<Pixels>, font_size: Pixels, scale: f32) -> Vec<Quad> {
@@ -76,9 +84,17 @@ fn lines(arms: Arms, cell: Bounds<Pixels>, font_size: Pixels, scale: f32) -> Vec
     let [up, right, down, left] = arms;
     // Horizontal arms extend across the vertical stroke so joins are solid.
     let vert_half = up.max(down).min(2) as f32;
-    let vert_half = if vert_half == 0. { 0. } else { weight(vert_half as u8) / 2. };
+    let vert_half = if vert_half == 0. {
+        0.
+    } else {
+        weight(vert_half as u8) / 2.
+    };
     let horiz_half = left.max(right);
-    let horiz_half = if horiz_half == 0 { 0. } else { weight(horiz_half) / 2. };
+    let horiz_half = if horiz_half == 0 {
+        0.
+    } else {
+        weight(horiz_half) / 2.
+    };
 
     let mut out = Vec::with_capacity(4);
     if left > 0 {
@@ -87,15 +103,36 @@ fn lines(arms: Arms, cell: Bounds<Pixels>, font_size: Pixels, scale: f32) -> Vec
     }
     if right > 0 {
         let t = weight(right);
-        out.push(rect(cx - vert_half, cy - t / 2., x + w, cy + t / 2., scale, 1.));
+        out.push(rect(
+            cx - vert_half,
+            cy - t / 2.,
+            x + w,
+            cy + t / 2.,
+            scale,
+            1.,
+        ));
     }
     if up > 0 {
         let t = weight(up);
-        out.push(rect(cx - t / 2., y, cx + t / 2., cy + horiz_half, scale, 1.));
+        out.push(rect(
+            cx - t / 2.,
+            y,
+            cx + t / 2.,
+            cy + horiz_half,
+            scale,
+            1.,
+        ));
     }
     if down > 0 {
         let t = weight(down);
-        out.push(rect(cx - t / 2., cy - horiz_half, cx + t / 2., y + h, scale, 1.));
+        out.push(rect(
+            cx - t / 2.,
+            cy - horiz_half,
+            cx + t / 2.,
+            y + h,
+            scale,
+            1.,
+        ));
     }
     out
 }
@@ -103,7 +140,16 @@ fn lines(arms: Arms, cell: Bounds<Pixels>, font_size: Pixels, scale: f32) -> Vec
 fn block(cp: u32, cell: Bounds<Pixels>, scale: f32) -> Vec<Quad> {
     let (x, y) = (f32::from(cell.origin.x), f32::from(cell.origin.y));
     let (w, h) = (f32::from(cell.size.width), f32::from(cell.size.height));
-    let r = |fx0: f32, fy0: f32, fx1: f32, fy1: f32| rect(x + w * fx0, y + h * fy0, x + w * fx1, y + h * fy1, scale, 1.);
+    let r = |fx0: f32, fy0: f32, fx1: f32, fy1: f32| {
+        rect(
+            x + w * fx0,
+            y + h * fy0,
+            x + w * fx1,
+            y + h * fy1,
+            scale,
+            1.,
+        )
+    };
     let shade = |alpha: f32| vec![rect(x, y, x + w, y + h, scale, alpha)];
     match cp {
         0x2580 => vec![r(0., 0., 1., 0.5)],

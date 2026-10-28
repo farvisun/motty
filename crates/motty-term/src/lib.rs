@@ -34,7 +34,10 @@ pub enum SessionEvent {
     /// with `format(contents)`.
     ClipboardLoad(Arc<dyn Fn(&str) -> String + Send + Sync>),
     /// Reply needed: the formatter turns an RGB color into the response sequence.
-    ColorRequest(usize, Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Send + Sync>),
+    ColorRequest(
+        usize,
+        Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Send + Sync>,
+    ),
     TextAreaSizeRequest(Arc<dyn Fn(WindowSize) -> String + Send + Sync>),
     CursorBlinkingChange,
     Exited(Option<i32>),
@@ -151,20 +154,33 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn spawn(config: SessionConfig, size: GridSize) -> anyhow::Result<(Self, async_channel::Receiver<SessionEvent>)> {
+    pub fn spawn(
+        config: SessionConfig,
+        size: GridSize,
+    ) -> anyhow::Result<(Self, async_channel::Receiver<SessionEvent>)> {
         let (tx, rx) = async_channel::unbounded();
         let wakeup_pending = Arc::new(AtomicBool::new(false));
         let pty_tx_cell = Arc::new(std::sync::OnceLock::new());
-        let proxy = EventProxy { tx, wakeup_pending: wakeup_pending.clone(), pty_tx: pty_tx_cell.clone() };
+        let proxy = EventProxy {
+            tx,
+            wakeup_pending: wakeup_pending.clone(),
+            pty_tx: pty_tx_cell.clone(),
+        };
 
         let mut env = config.env.clone();
         env.insert("TERM".into(), "xterm-256color".into());
         env.insert("COLORTERM".into(), "truecolor".into());
         env.insert("TERM_PROGRAM".into(), "Motty".into());
-        env.insert("TERM_PROGRAM_VERSION".into(), env!("CARGO_PKG_VERSION").into());
+        env.insert(
+            "TERM_PROGRAM_VERSION".into(),
+            env!("CARGO_PKG_VERSION").into(),
+        );
 
         let options = tty::Options {
-            shell: config.command.clone().map(|(program, args)| tty::Shell::new(program, args)),
+            shell: config
+                .command
+                .clone()
+                .map(|(program, args)| tty::Shell::new(program, args)),
             working_directory: config.working_directory.clone(),
             drain_on_exit: true,
             env,
@@ -174,7 +190,11 @@ impl Session {
         let master_fd = pty.file().as_raw_fd();
 
         let term_config = term::Config {
-            scrolling_history: if config.scrollback == 0 { 10_000 } else { config.scrollback },
+            scrolling_history: if config.scrollback == 0 {
+                10_000
+            } else {
+                config.scrollback
+            },
             default_cursor_style: config.cursor_style,
             ..Default::default()
         };
@@ -184,7 +204,28 @@ impl Session {
         let _ = pty_tx_cell.set(pty_tx.clone());
         event_loop.spawn();
 
-        Ok((Self { term, pty_tx, wakeup_pending, size, pid, master_fd }, rx))
+        Ok((
+            Self {
+                term,
+                pty_tx,
+                wakeup_pending,
+                size,
+                pid,
+                master_fd,
+            },
+            rx,
+        ))
+    }
+
+    /// Applies changed config to a running terminal; the cursor style only
+    /// matters until a program sets its own.
+    pub fn set_options(&self, cursor_style: CursorStyle, scrollback: usize) {
+        let options = term::Config {
+            scrolling_history: if scrollback == 0 { 10_000 } else { scrollback },
+            default_cursor_style: cursor_style,
+            ..Default::default()
+        };
+        self.term.lock().set_options(options);
     }
 
     /// Re-arms content wakeups. Call before reading the terminal for a frame,
@@ -275,7 +316,15 @@ fn process_cwd(pid: i32) -> Option<PathBuf> {
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
     // SAFETY: `info` is a properly sized, writable proc_vnodepathinfo.
-    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size) };
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
     if n != size {
         return None;
     }

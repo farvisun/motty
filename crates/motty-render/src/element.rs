@@ -10,9 +10,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, ElementId, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, PaintQuad, Pixels, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    App, Bounds, ElementId, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, PaintQuad, Pixels, ShapedLine, SharedString, StrikethroughStyle, Style,
+    TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Line, Point as GridPoint};
@@ -42,7 +42,10 @@ pub struct TerminalLayout {
 impl TerminalLayout {
     pub fn cell_bounds(&self, row: usize, col: usize) -> Bounds<Pixels> {
         Bounds::new(
-            point(self.origin.x + self.cell_width * col as f32, self.origin.y + self.line_height * row as f32),
+            point(
+                self.origin.x + self.cell_width * col as f32,
+                self.origin.y + self.line_height * row as f32,
+            ),
             size(self.cell_width, self.line_height),
         )
     }
@@ -72,7 +75,10 @@ pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
     let ts = window.text_system();
     let font_id = ts.resolve_font(&style.font);
     let size = style.font_size;
-    let advance = ts.advance(font_id, size, 'm').map(|s| s.width).unwrap_or(size * 0.6);
+    let advance = ts
+        .advance(font_id, size, 'm')
+        .map(|s| s.width)
+        .unwrap_or(size * 0.6);
     let ascent = ts.ascent(font_id, size);
     let descent = ts.descent(font_id, size).abs();
     let natural = ascent + descent;
@@ -82,7 +88,11 @@ pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
     let line_height = px((f32::from(natural) * style.line_height_scale * scale).ceil() / scale);
     let centered_baseline = (line_height - natural) / 2. + ascent;
     let baseline = px((f32::from(line_height - descent) * scale).ceil() / scale);
-    CellMetrics { cell_width, line_height, text_dy: baseline - centered_baseline }
+    CellMetrics {
+        cell_width,
+        line_height,
+        text_dy: baseline - centered_baseline,
+    }
 }
 
 type ResizeFn = Box<dyn FnOnce(GridSize, &mut Window, &mut App)>;
@@ -121,7 +131,10 @@ impl TerminalElement {
     }
 
     /// Runs during paint with the element's bounds (e.g. to register an input handler).
-    pub fn on_paint(mut self, f: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_paint(
+        mut self,
+        f: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_paint = Some(Box::new(f));
         self
     }
@@ -218,7 +231,10 @@ impl gpui::Element for TerminalElement {
         let scale = window.scale_factor();
         let leftover = inner_h - rows as f32 * f32::from(metrics.line_height);
         let top_slack = ((leftover / 2.).max(0.) * scale).floor() / scale;
-        let origin = point(bounds.origin.x + px(pad.left), bounds.origin.y + px(pad.top + top_slack));
+        let origin = point(
+            bounds.origin.x + px(pad.left),
+            bounds.origin.y + px(pad.top + top_slack),
+        );
 
         let grid = GridSize {
             cols: cols as u16,
@@ -269,7 +285,14 @@ impl gpui::Element for TerminalElement {
                 window.paint_quad(quad);
             }
             for seg in &prepaint.segments {
-                let _ = seg.line.paint(seg.origin, prepaint.line_height, TextAlign::Left, None, window, cx);
+                let _ = seg.line.paint(
+                    seg.origin,
+                    prepaint.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
             for quad in prepaint.glyph_quads.drain(..) {
                 window.paint_quad(quad);
@@ -278,11 +301,25 @@ impl gpui::Element for TerminalElement {
                 window.paint_quad(cursor);
             }
             if let Some(seg) = &prepaint.cursor_text {
-                let _ = seg.line.paint(seg.origin, prepaint.line_height, TextAlign::Left, None, window, cx);
+                let _ = seg.line.paint(
+                    seg.origin,
+                    prepaint.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
             if let Some((bg, underline, seg)) = prepaint.preedit.take() {
                 window.paint_quad(bg);
-                let _ = seg.line.paint(seg.origin, prepaint.line_height, TextAlign::Left, None, window, cx);
+                let _ = seg.line.paint(
+                    seg.origin,
+                    prepaint.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
                 window.paint_quad(underline);
             }
         });
@@ -302,7 +339,11 @@ impl TerminalElement {
         let rows_n = term.screen_lines();
         let cols_n = term.columns();
         let mut rows: Vec<Vec<SnapCell>> = Vec::with_capacity(rows_n);
-        let opaque_bg = if style.background.a > 0.5 { style.background } else { style.palette[NamedColor::Background as usize].with_alpha(1.) };
+        let opaque_bg = if style.background.a > 0.5 {
+            style.background
+        } else {
+            style.palette[NamedColor::Background as usize].with_alpha(1.)
+        };
 
         for indexed in content.display_iter {
             let row = (indexed.point.line.0 + display_offset) as usize;
@@ -315,7 +356,8 @@ impl TerminalElement {
             let cell = indexed.cell;
             let flags = cell.flags;
             let mut fg = style.resolve(dim_color(cell.fg, flags), colors);
-            if flags.contains(Flags::DIM) && !matches!(cell.fg, Color::Named(n) if (n as usize) < 8) {
+            if flags.contains(Flags::DIM) && !matches!(cell.fg, Color::Named(n) if (n as usize) < 8)
+            {
                 fg = motty_theme::theme::mix(fg, opaque_bg, 0.34);
             }
             let mut bg = style.resolve(cell.bg, colors);
@@ -323,13 +365,21 @@ impl TerminalElement {
                 let bg_opaque = if bg.a < 0.5 { opaque_bg } else { bg };
                 (fg, bg) = (bg_opaque, fg);
             }
-            if selection.is_some_and(|s| s.contains_cell(&indexed, content.cursor.point, content.cursor.shape)) {
+            if selection.is_some_and(|s| {
+                s.contains_cell(&indexed, content.cursor.point, content.cursor.shape)
+            }) {
                 bg = style.selection_background;
                 if let Some(sfg) = style.selection_foreground {
                     fg = sfg;
                 }
             }
-            rows[row].push(SnapCell { c: cell.c, zerowidth: cell.zerowidth().map(<[char]>::to_vec), fg, bg, flags });
+            rows[row].push(SnapCell {
+                c: cell.c,
+                zerowidth: cell.zerowidth().map(<[char]>::to_vec),
+                fg,
+                bg,
+                flags,
+            });
         }
 
         let cursor_point = content.cursor.point;
@@ -344,13 +394,20 @@ impl TerminalElement {
             && (0..rows_n as i32).contains(&cursor_row)
             && content.mode.contains(TermMode::SHOW_CURSOR))
         .then(|| {
-            let wide = term.grid()[GridPoint::new(Line(cursor_point.line.0), Column(cursor_point.column.0))]
-                .flags
-                .contains(Flags::WIDE_CHAR);
+            let wide = term.grid()
+                [GridPoint::new(Line(cursor_point.line.0), Column(cursor_point.column.0))]
+            .flags
+            .contains(Flags::WIDE_CHAR);
             (cursor_row as usize, cursor_point.column.0, shape, wide)
         });
-        let cursor_cell = (0..rows_n as i32).contains(&cursor_row).then_some((cursor_row as usize, cursor_point.column.0));
-        Snapshot { rows, cursor, cursor_cell }
+        let cursor_cell = (0..rows_n as i32)
+            .contains(&cursor_row)
+            .then_some((cursor_row as usize, cursor_point.column.0));
+        Snapshot {
+            rows,
+            cursor,
+            cursor_cell,
+        }
     }
 }
 
@@ -367,7 +424,9 @@ fn dim_color(color: Color, flags: Flags) -> Color {
         NamedColor::DimWhite,
     ];
     match color {
-        Color::Named(n) if flags.contains(Flags::DIM) && (n as usize) < 8 => Color::Named(DIMS[n as usize]),
+        Color::Named(n) if flags.contains(Flags::DIM) && (n as usize) < 8 => {
+            Color::Named(DIMS[n as usize])
+        }
         other => other,
     }
 }
@@ -414,8 +473,15 @@ fn text_run(style: &TerminalStyle, rs: &RunStyle, len: usize) -> TextRun {
         font,
         color: rs.fg,
         background_color: None,
-        underline: rs.underline.map(|(wavy, t)| UnderlineStyle { color: Some(rs.fg), thickness: px(t), wavy }),
-        strikethrough: rs.strike.then(|| StrikethroughStyle { color: Some(rs.fg), thickness: px(1.) }),
+        underline: rs.underline.map(|(wavy, t)| UnderlineStyle {
+            color: Some(rs.fg),
+            thickness: px(t),
+            wavy,
+        }),
+        strikethrough: rs.strike.then(|| StrikethroughStyle {
+            color: Some(rs.fg),
+            thickness: px(1.),
+        }),
     }
 }
 
@@ -431,7 +497,13 @@ struct SegmentBuilder {
 
 impl SegmentBuilder {
     fn new(start_col: usize) -> Self {
-        Self { start_col, text: String::new(), runs: Vec::new(), current: None, visible_len: 0 }
+        Self {
+            start_col,
+            text: String::new(),
+            runs: Vec::new(),
+            current: None,
+            visible_len: 0,
+        }
     }
 
     fn push(&mut self, style: &TerminalStyle, cell: &SnapCell, rs: RunStyle) {
@@ -450,13 +522,25 @@ impl SegmentBuilder {
                 self.current = Some((rs, len));
             }
         }
-        if cell.c != ' ' || cell.flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT) {
+        if cell.c != ' '
+            || cell
+                .flags
+                .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
+        {
             self.visible_len = self.text.len();
         }
     }
 
     /// Shapes the segment, trimming trailing blank cells.
-    fn finish(mut self, style: &TerminalStyle, metrics: CellMetrics, origin: gpui::Point<Pixels>, row: usize, force: bool, window: &mut Window) -> Option<TextSegment> {
+    fn finish(
+        mut self,
+        style: &TerminalStyle,
+        metrics: CellMetrics,
+        origin: gpui::Point<Pixels>,
+        row: usize,
+        force: bool,
+        window: &mut Window,
+    ) -> Option<TextSegment> {
         if let Some((cur, n)) = self.current.take() {
             self.runs.push(text_run(style, &cur, n));
         }
@@ -488,13 +572,22 @@ impl SegmentBuilder {
     }
 }
 
-fn build(snapshot: &Snapshot, style: &TerminalStyle, metrics: CellMetrics, origin: gpui::Point<Pixels>, window: &mut Window) -> Prepaint {
+fn build(
+    snapshot: &Snapshot,
+    style: &TerminalStyle,
+    metrics: CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+) -> Prepaint {
     let scale = window.scale_factor();
     let cw = metrics.cell_width;
     let lh = metrics.line_height;
     let default_bg = style.default_background();
     let cell_bounds = |row: usize, col: usize, width: usize| {
-        Bounds::new(point(origin.x + cw * col as f32, origin.y + lh * row as f32), size(cw * width as f32, lh))
+        Bounds::new(
+            point(origin.x + cw * col as f32, origin.y + lh * row as f32),
+            size(cw * width as f32, lh),
+        )
     };
 
     let mut backgrounds = Vec::new();
@@ -519,7 +612,9 @@ fn build(snapshot: &Snapshot, style: &TerminalStyle, metrics: CellMetrics, origi
 
         // Text segments.
         let mut seg: Option<SegmentBuilder> = None;
-        let flush = |seg: &mut Option<SegmentBuilder>, segments: &mut Vec<TextSegment>, window: &mut Window| {
+        let flush = |seg: &mut Option<SegmentBuilder>,
+                     segments: &mut Vec<TextSegment>,
+                     window: &mut Window| {
             if let Some(s) = seg.take()
                 && let Some(t) = s.finish(style, metrics, origin, row, true, window)
             {
@@ -537,10 +632,20 @@ fn build(snapshot: &Snapshot, style: &TerminalStyle, metrics: CellMetrics, origi
                 }
                 continue;
             }
-            if let Some(quads) = box_drawing::quads(cell.c, cell_bounds(row, col, 1), style.font_size, scale) {
+            if let Some(quads) =
+                box_drawing::quads(cell.c, cell_bounds(row, col, 1), style.font_size, scale)
+            {
                 flush(&mut seg, &mut segments, window);
                 let color = hsla(cell.fg);
-                glyph_quads.extend(quads.into_iter().map(|q| fill(q.bounds, Hsla { a: color.a * q.alpha, ..color })));
+                glyph_quads.extend(quads.into_iter().map(|q| {
+                    fill(
+                        q.bounds,
+                        Hsla {
+                            a: color.a * q.alpha,
+                            ..color
+                        },
+                    )
+                }));
                 continue;
             }
             if flags.contains(Flags::WIDE_CHAR) {
@@ -552,17 +657,28 @@ fn build(snapshot: &Snapshot, style: &TerminalStyle, metrics: CellMetrics, origi
                 }
                 continue;
             }
-            seg.get_or_insert_with(|| SegmentBuilder::new(col)).push(style, cell, run_style(cell));
+            seg.get_or_insert_with(|| SegmentBuilder::new(col))
+                .push(style, cell, run_style(cell));
         }
         flush(&mut seg, &mut segments, window);
     }
 
     let (cursor, cursor_text) = match snapshot.cursor {
-        Some((row, col, shape, wide)) => build_cursor(snapshot, style, metrics, origin, row, col, shape, wide, window),
+        Some((row, col, shape, wide)) => build_cursor(
+            snapshot, style, metrics, origin, row, col, shape, wide, window,
+        ),
         None => (None, None),
     };
 
-    Prepaint { backgrounds, segments, glyph_quads, cursor, cursor_text, preedit: None, line_height: lh }
+    Prepaint {
+        backgrounds,
+        segments,
+        glyph_quads,
+        cursor,
+        cursor_text,
+        preedit: None,
+        line_height: lh,
+    }
 }
 
 fn build_preedit(
@@ -574,7 +690,11 @@ fn build_preedit(
     window: &mut Window,
 ) -> (PaintQuad, PaintQuad, TextSegment) {
     let fg = style.palette[NamedColor::Foreground as usize];
-    let bg = if style.background.a > 0.5 { style.background } else { style.palette[NamedColor::Background as usize].with_alpha(1.) };
+    let bg = if style.background.a > 0.5 {
+        style.background
+    } else {
+        style.palette[NamedColor::Background as usize].with_alpha(1.)
+    };
     let run = TextRun {
         len: text.len(),
         font: style.font.clone(),
@@ -583,12 +703,20 @@ fn build_preedit(
         underline: None,
         strikethrough: None,
     };
-    let line = window.text_system().shape_line(text, style.font_size, &[run], None);
+    let line = window
+        .text_system()
+        .shape_line(text, style.font_size, &[run], None);
     let origin = layout.cell_bounds(row, col).origin;
     let width = line.width.max(layout.cell_width);
-    let bg_quad = fill(Bounds::new(origin, size(width, layout.line_height)), hsla(bg));
+    let bg_quad = fill(
+        Bounds::new(origin, size(width, layout.line_height)),
+        hsla(bg),
+    );
     let underline = fill(
-        Bounds::new(point(origin.x, origin.y + layout.line_height - px(1.)), size(width, px(1.))),
+        Bounds::new(
+            point(origin.x, origin.y + layout.line_height - px(1.)),
+            size(width, px(1.)),
+        ),
         hsla(fg),
     );
     (bg_quad, underline, TextSegment { origin, line })
@@ -609,7 +737,10 @@ fn build_cursor(
     let width = if wide { 2. } else { 1. };
     let x = origin.x + metrics.cell_width * col as f32;
     let y = origin.y + metrics.line_height * row as f32;
-    let full = Bounds::new(point(x, y), size(metrics.cell_width * width, metrics.line_height));
+    let full = Bounds::new(
+        point(x, y),
+        size(metrics.cell_width * width, metrics.line_height),
+    );
     let thickness = px(if window.scale_factor() >= 2. { 2. } else { 1. });
     match shape {
         CursorShape::Block => {
@@ -617,26 +748,43 @@ fn build_cursor(
             let cell = snapshot.rows.get(row).and_then(|r| r.get(col));
             let text = cell.filter(|c| c.c != ' ').and_then(|cell| {
                 let mut c = cell.clone();
-                c.fg = style.cursor_text.unwrap_or(if cell.bg.a > 0. { cell.bg } else { style.palette[NamedColor::Background as usize].with_alpha(1.) });
+                c.fg = style.cursor_text.unwrap_or(if cell.bg.a > 0. {
+                    cell.bg
+                } else {
+                    style.palette[NamedColor::Background as usize].with_alpha(1.)
+                });
                 let mut seg = SegmentBuilder::new(col);
                 seg.push(style, &c, run_style(&c));
                 seg.finish(style, metrics, origin, row, !wide, window)
             });
             (Some(quad), text)
         }
-        CursorShape::Beam => (Some(fill(Bounds::new(full.origin, size(thickness, full.size.height)), hsla(style.cursor_bar))), None),
+        CursorShape::Beam => (
+            Some(fill(
+                Bounds::new(full.origin, size(thickness, full.size.height)),
+                hsla(style.cursor_bar),
+            )),
+            None,
+        ),
         // Otty's underline is twice the bar's thickness; its hollow block
         // strokes at the bar's.
         CursorShape::Underline => (
             Some(fill(
-                Bounds::new(point(x, y + metrics.line_height - thickness * 2.), size(full.size.width, thickness * 2.)),
+                Bounds::new(
+                    point(x, y + metrics.line_height - thickness * 2.),
+                    size(full.size.width, thickness * 2.),
+                ),
                 hsla(style.cursor_underline),
             )),
             None,
         ),
-        CursorShape::HollowBlock => {
-            (Some(outline(full, hsla(style.cursor), gpui::BorderStyle::Solid).border_widths(thickness)), None)
-        }
+        CursorShape::HollowBlock => (
+            Some(
+                outline(full, hsla(style.cursor), gpui::BorderStyle::Solid)
+                    .border_widths(thickness),
+            ),
+            None,
+        ),
         CursorShape::Hidden => (None, None),
     }
 }
