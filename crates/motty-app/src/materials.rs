@@ -83,6 +83,14 @@ pub fn show_inactive(window: &Window) {
     let _ = window;
 }
 
+/// View › Pin Window: keeps the window above other apps' windows.
+pub fn set_pinned(window: &Window, pinned: bool) {
+    #[cfg(target_os = "macos")]
+    mac::set_pinned(window, pinned);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, pinned);
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use objc2::MainThreadMarker;
@@ -110,6 +118,16 @@ mod mac {
         // SAFETY: GPUI's AppKit handle points at its live NSView, which
         // outlives this borrow of the window, and we are on the main thread.
         Some(unsafe { handle.ns_view.cast::<NSView>().as_ref() })
+    }
+
+    pub fn set_pinned(window: &gpui::Window, pinned: bool) {
+        if let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) {
+            ns_window.setLevel(if pinned {
+                objc2_app_kit::NSFloatingWindowLevel
+            } else {
+                objc2_app_kit::NSNormalWindowLevel
+            });
+        }
     }
 
     pub fn show_inactive(window: &gpui::Window) {

@@ -101,6 +101,19 @@ actions!(
         ShowAll,
         ZoomWindow,
         OpenHelp,
+        RenameTab,
+        MoveTabToNewWindow,
+        MoveTabUp,
+        MoveTabDown,
+        ClearBadge,
+        ShowNextUnread,
+        ClearScrollbackAbove,
+        PasteSelection,
+        PasteEscaped,
+        PasteBracketed,
+        InsertFilePath,
+        PinWindow,
+        OpenFile,
     ]
 );
 
@@ -110,6 +123,52 @@ actions!(
 #[action(namespace = motty, no_json)]
 pub struct SendText {
     pub text: String,
+}
+
+/// Opens a tab in a folder (File › Open Recent).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct OpenFolder {
+    pub path: std::path::PathBuf,
+}
+
+/// Puts text on the clipboard (a pane's id, a session id, a URL).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct CopyText {
+    pub text: String,
+}
+
+/// Opens a URL with its default app.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct OpenUrl {
+    pub url: String,
+}
+
+/// Scrolls the focused pane to a command's prompt line.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct RevealRow {
+    pub row: u64,
+}
+
+/// Types a command at the focused pane's prompt; with `run`, asks first
+/// and then runs it.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct TypeCommand {
+    pub text: String,
+    pub run: bool,
+}
+
+impl TypeCommand {
+    pub fn new(text: &str, run: bool) -> Self {
+        Self {
+            text: text.to_owned(),
+            run,
+        }
+    }
 }
 
 const TERMINAL: Option<&str> = Some("Terminal");
@@ -142,6 +201,7 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-x", Cut, EDITOR),
         b("cmd-z", Undo, EDITOR),
         b("cmd-shift-z", Redo, EDITOR),
+        b("cmd-y", Redo, EDITOR),
         b("cmd-s", Save, EDITOR),
         b("cmd-f", Find, TERMINAL),
         b("ctrl-shift-space", ToggleViMode, TERMINAL),
@@ -159,6 +219,8 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-t", NewTab, WORKSPACE),
         b("cmd-w", CloseTab, WORKSPACE),
         b("cmd-shift-t", ReopenClosedTab, WORKSPACE),
+        b("cmd-shift-u", ShowNextUnread, WORKSPACE),
+        b("cmd-shift-f", GlobalSearch, WORKSPACE),
         b("cmd-shift-p", CommandPalette, WORKSPACE),
         b("cmd-shift-o", OpenQuickly, WORKSPACE),
         b("cmd-j", JumpTo, WORKSPACE),

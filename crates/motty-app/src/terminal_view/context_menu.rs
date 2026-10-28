@@ -1,5 +1,7 @@
 //! Right-click in a terminal: the native context menu (Otty's items, minus
 //! the agent ones still to come), or what `right-click-action` says instead.
+//! On a path it also offers Open With, Change Directory Here and a new tab
+//! there; on a command's rows, About This Line.
 //! A program that captures the mouse gets the click; ⌃-click always opens
 //! the menu.
 
@@ -23,6 +25,8 @@ enum Pick {
     Open(Target),
     Copy(String),
     Reveal(PathBuf),
+    OpenWith(String, PathBuf),
+    Cd(PathBuf),
 }
 
 impl TerminalView {
@@ -116,37 +120,83 @@ impl TerminalView {
         let focus = self.focus_handle.clone();
         let mut entries: Vec<Entry> = Vec::new();
         let mut picks: Vec<Pick> = Vec::new();
-        let mut add = |entries: &mut Vec<Entry>, item: Item, pick: Pick| {
+        fn add(entries: &mut Vec<Entry>, picks: &mut Vec<Pick>, item: Item, pick: Pick) {
             entries.push(item.into());
             picks.push(pick);
-        };
+        }
 
         if let Some(link) = self.link_at(at) {
             match link.target.clone() {
                 Target::Url(url) => {
                     add(
                         &mut entries,
+                        &mut picks,
                         Item::new("Open Link"),
                         Pick::Open(Target::Url(url.clone())),
                     );
-                    add(&mut entries, Item::new("Copy Link"), Pick::Copy(url));
+                    add(
+                        &mut entries,
+                        &mut picks,
+                        Item::new("Copy Link"),
+                        Pick::Copy(url),
+                    );
                 }
                 target @ Target::Path { .. } => {
                     let Target::Path { path, .. } = &target else {
                         unreachable!()
                     };
                     let path = path.clone();
-                    add(&mut entries, Item::new("Open"), Pick::Open(target));
                     add(
                         &mut entries,
+                        &mut picks,
+                        Item::new("Open"),
+                        Pick::Open(target),
+                    );
+                    add(
+                        &mut entries,
+                        &mut picks,
                         Item::new("Reveal in Finder"),
                         Pick::Reveal(path.clone()),
                     );
                     add(
                         &mut entries,
+                        &mut picks,
                         Item::new("Copy Path"),
                         Pick::Copy(path.to_string_lossy().into_owned()),
                     );
+                    let apps = &self.link_options.open_with;
+                    if !apps.is_empty() {
+                        let mut with = Vec::new();
+                        for (name, bundle) in apps {
+                            with.push(Item::new(name.clone()).into());
+                            picks.push(Pick::OpenWith(bundle.clone(), path.clone()));
+                        }
+                        entries.push(Entry::Submenu {
+                            label: "Open With".into(),
+                            entries: with,
+                        });
+                    }
+                    let folder = if path.is_dir() {
+                        Some(path.clone())
+                    } else {
+                        path.parent().map(PathBuf::from)
+                    };
+                    if let Some(folder) = folder {
+                        entries.push(Entry::Separator);
+                        add(
+                            &mut entries,
+                            &mut picks,
+                            Item::new("Change Directory Here")
+                                .enabled(!self.read_only && !self.session.is_busy()),
+                            Pick::Cd(folder.clone()),
+                        );
+                        add(
+                            &mut entries,
+                            &mut picks,
+                            Item::new("Open in New Tab"),
+                            Pick::Action(Box::new(OpenFolder { path: folder })),
+                        );
+                    }
                 }
             }
             entries.push(Entry::Separator);
@@ -156,6 +206,7 @@ impl TerminalView {
         let has_selection = self.has_selection();
         add(
             &mut entries,
+            &mut picks,
             Item::new("Copy")
                 .symbol("doc.on.doc")
                 .keystroke(key(&Copy))
@@ -164,6 +215,7 @@ impl TerminalView {
         );
         add(
             &mut entries,
+            &mut picks,
             Item::new("Paste")
                 .symbol("doc.on.clipboard")
                 .keystroke(key(&Paste))
@@ -173,6 +225,7 @@ impl TerminalView {
         entries.push(Entry::Separator);
         add(
             &mut entries,
+            &mut picks,
             Item::new("Select All")
                 .symbol("character.textbox")
                 .keystroke(key(&SelectAll)),
@@ -180,6 +233,7 @@ impl TerminalView {
         );
         add(
             &mut entries,
+            &mut picks,
             Item::new("Find…")
                 .symbol("magnifyingglass")
                 .keystroke(key(&Find)),
@@ -187,12 +241,33 @@ impl TerminalView {
         );
         add(
             &mut entries,
+            &mut picks,
             Item::new("Clear Screen")
                 .symbol("eraser")
                 .keystroke(key(&Clear)),
             Pick::Action(Box::new(Clear)),
         );
         entries.push(Entry::Separator);
+
+        if let Some(block) = self.block_at(at) {
+            let mut about = Vec::new();
+            let text = block.command.unwrap_or_else(|| "Command".into());
+            about.push(Item::new(truncate(&text, 60)).enabled(false).into());
+            picks.push(Pick::Copy(String::new()));
+            about.push(Item::new(block.status).enabled(false).into());
+            picks.push(Pick::Copy(String::new()));
+            about.push(Entry::Separator);
+            about.push(Item::new("Copy Command").enabled(text != "Command").into());
+            picks.push(Pick::Copy(text));
+            let output = block.output.unwrap_or_default();
+            about.push(Item::new("Copy Output").enabled(!output.is_empty()).into());
+            picks.push(Pick::Copy(output));
+            entries.push(Entry::Submenu {
+                label: "About This Line".into(),
+                entries: about,
+            });
+            entries.push(Entry::Separator);
+        }
 
         // The submenu's items count in place, after the ones above.
         let mut split = Vec::new();
@@ -218,6 +293,7 @@ impl TerminalView {
         );
         picks.push(Pick::Action(Box::new(ToggleReadOnly)));
 
+        let view = cx.entity();
         native_menu::popup(entries, at, None, window, cx, move |ix, window, cx| {
             let Some(pick) = picks.into_iter().nth(ix) else {
                 return;
@@ -228,8 +304,71 @@ impl TerminalView {
                 Pick::Open(Target::Path { path, .. }) => cx.open_with_system(&path),
                 Pick::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
                 Pick::Reveal(path) => cx.reveal_path(&path),
+                Pick::OpenWith(bundle, path) => crate::workspace::open_in(&bundle, &path),
+                Pick::Cd(folder) => {
+                    let line = format!("cd {}\r", super::shell_escape(&folder.to_string_lossy()));
+                    view.update(cx, |v, cx| v.write_input(&line, cx));
+                }
             }
         });
+    }
+}
+
+/// The command under a right-click, for About This Line.
+struct BlockInfo {
+    command: Option<String>,
+    status: String,
+    output: Option<String>,
+}
+
+impl TerminalView {
+    /// The shell-integration block whose rows hold `at`.
+    fn block_at(&self, at: Point<Pixels>) -> Option<BlockInfo> {
+        let (.., point, _) = self.hit(at)?;
+        let row = {
+            let term = self.session.term.lock();
+            u64::try_from(term.grid().lines_pushed() as i64 + i64::from(point.line.0)).ok()?
+        };
+        let shell = self.session.shell();
+        let block = shell.blocks.iter().rev().find(|b| b.prompt_row <= row)?;
+        // Only rows of a command that ran, not the prompt being typed at.
+        block.started?;
+        let status = if block.finished.is_none() {
+            "Running".to_owned()
+        } else {
+            let took = block.duration().map(took).unwrap_or_default();
+            match block.exit {
+                Some(0) => format!("Succeeded {took}"),
+                Some(code) => format!("Exited with {code} {took}"),
+                None => "Finished".to_owned(),
+            }
+            .trim()
+            .to_owned()
+        };
+        let block = block.clone();
+        drop(shell);
+        Some(BlockInfo {
+            command: self.session.block_command(&block),
+            status,
+            output: self.session.block_output(&block),
+        })
+    }
+}
+
+/// `in 1.2s`, `in 3m 4s`.
+fn took(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("in {:.1}s", d.as_secs_f32())
+    } else {
+        format!("in {}m {}s", secs / 60, secs % 60)
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_owned(),
     }
 }
 

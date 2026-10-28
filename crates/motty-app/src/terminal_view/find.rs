@@ -134,6 +134,32 @@ impl TerminalView {
         self.run_find(true, cx);
     }
 
+    /// Opens the bar on the `index`th match of `query` (Find in All Tabs).
+    pub fn show_find_at(
+        &mut self,
+        query: &str,
+        options: SearchOptions,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_find(query, options, window, cx);
+        if let Some(find) = self.find.as_mut()
+            && index < find.matches.len()
+        {
+            find.current = Some(index);
+            self.reveal_current();
+        }
+        cx.notify();
+    }
+
+    /// What the bar holds, or held when it last closed.
+    pub fn last_find_query(&self) -> String {
+        self.find
+            .as_ref()
+            .map_or_else(|| self.last_find.0.clone(), |f| f.query.clone())
+    }
+
     pub(super) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(find) = self.find.take() {
             self.last_find = (find.query, find.options);

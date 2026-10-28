@@ -11,13 +11,15 @@ use motty_theme::{Config, LinkClick, LinkShiftClick, Rgba, RightClick};
 
 use super::TerminalView;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LinkOptions {
     pub detection: bool,
     pub click: LinkClick,
     pub shift_click: LinkShiftClick,
     /// Not a link option, but set with them: `right-click-action`.
     pub right_click: RightClick,
+    /// Open With apps for paths, as (name, bundle id).
+    pub open_with: Vec<(String, String)>,
 }
 
 impl LinkOptions {
@@ -27,6 +29,7 @@ impl LinkOptions {
             click: config.link_cmd_click,
             shift_click: config.link_cmd_shift_click,
             right_click: config.right_click,
+            open_with: crate::workspace::open_with_apps(&config.open_with_apps),
         }
     }
 }

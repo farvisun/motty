@@ -28,15 +28,20 @@ use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
+mod closing;
 mod details;
 mod files;
+mod global_search;
 mod new_menu;
 mod open_quickly;
 mod palette;
 mod status;
+mod tabs;
 mod welcome;
 
+pub(crate) use details::{listening_ports, open_in, open_with_apps, web_url};
 pub(crate) use palette::keycaps;
+pub(crate) use tabs::MovedTab;
 pub use welcome::first_run;
 pub(crate) use welcome::{cli_command, install_cli};
 mod picker;
@@ -95,12 +100,18 @@ const DIVIDER_INSET: f32 = 8.;
 const DIVIDER_SPACE: f32 = 4.;
 
 /// A sidebar tab: terminals in splits, or a file editor.
-struct Tab {
+pub(crate) struct Tab {
     content: Content,
     /// A divider follows this tab in the sidebar.
     divider: bool,
     /// Last opened, looked at or reported on: Inbox orders by it.
     updated: std::time::SystemTime,
+    /// When it was opened: the tabs panel's "Created Time" order.
+    created: std::time::SystemTime,
+    /// Set with Rename Tab: replaces the title, or comes before it.
+    name: Option<tabs::TabName>,
+    /// Set with Mark Tab, shown until looked at (or Clear Badge).
+    mark: Option<Badge>,
 }
 
 enum Content {
@@ -126,6 +137,9 @@ impl Tab {
             }),
             divider: false,
             updated: std::time::SystemTime::now(),
+            created: std::time::SystemTime::now(),
+            name: None,
+            mark: None,
         }
     }
 
@@ -134,6 +148,9 @@ impl Tab {
             content: Content::Editor(editor),
             divider: false,
             updated: std::time::SystemTime::now(),
+            created: std::time::SystemTime::now(),
+            name: None,
+            mark: None,
         }
     }
 
@@ -175,6 +192,9 @@ pub struct Workspace {
     palette: Option<palette::Palette>,
     /// Open Quickly, while open.
     open_quickly: Option<open_quickly::OpenQuickly>,
+    global: Option<global_search::GlobalSearch>,
+    /// The close was confirmed (or needed no asking): the window may go.
+    closing_window: bool,
     /// The welcome guide, while open.
     welcome: Option<welcome::Welcome>,
     backdrops: Backdrops,
@@ -191,6 +211,13 @@ pub struct Workspace {
     new_menu_open: bool,
     /// The bell turned the sidebar into Inbox.
     inbox: bool,
+    /// The tabs panel's Group and Order (its filter button).
+    grouping: tabs::Grouping,
+    order: tabs::Order,
+    /// A tab's name being typed.
+    renaming: Option<tabs::Rename>,
+    /// View › Pin Window: above other apps' windows.
+    pinned: bool,
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -304,6 +331,7 @@ impl Workspace {
         command: Option<(String, Vec<String>)>,
         cwd: Option<std::path::PathBuf>,
         restore: Option<&WindowState>,
+        moved: Option<MovedTab>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -316,14 +344,29 @@ impl Workspace {
         let ui_font = crate::fonts::ui_family(&theme.token.font_ui, cx).into();
         let mono_font = crate::fonts::terminal_family(&config, &theme, cx).into();
 
-        let subscriptions = vec![cx.observe_window_appearance(window, |this, window, cx| {
-            let mode = mode_for(window.appearance());
-            if mode != this.mode {
-                this.mode = mode;
-                this.reload_theme(cx);
-            }
-        })];
+        let subscriptions = vec![
+            cx.observe_window_appearance(window, |this, window, cx| {
+                let mode = mode_for(window.appearance());
+                if mode != this.mode {
+                    this.mode = mode;
+                    this.reload_theme(cx);
+                }
+            }),
+            // The menus describe the frontmost window.
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    cx.defer(crate::menus::refresh);
+                }
+            }),
+        ];
+        // The close button asks first when something is still running.
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |this, cx| this.should_close(window, cx))
+                .unwrap_or(true)
+        });
         let process_poll = cx.spawn(async move |this, cx| {
+            let mut tick = 0u32;
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
@@ -337,6 +380,11 @@ impl Workspace {
                         cx.notify();
                     }
                     this.refresh_details(false, cx);
+                    // Now and then for what the menus show: ports, git.
+                    tick += 1;
+                    if tick.is_multiple_of(5) {
+                        cx.defer(crate::menus::refresh);
+                    }
                 });
                 if alive.is_err() {
                     break;
@@ -375,6 +423,8 @@ impl Workspace {
             window_title: String::new(),
             palette: None,
             open_quickly: None,
+            global: None,
+            closing_window: false,
             welcome: None,
             details: Default::default(),
             backdrops: Backdrops::default(),
@@ -383,6 +433,10 @@ impl Workspace {
             pointer_inside: false,
             new_menu_open: false,
             inbox: false,
+            grouping: Default::default(),
+            order: Default::default(),
+            renaming: None,
+            pinned: false,
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
             next_split: 0,
@@ -392,6 +446,9 @@ impl Workspace {
         };
         if let Some(state) = restore {
             this.restore(state, window, cx);
+        }
+        if let Some(moved) = moved {
+            this.adopt(moved, window, cx);
         }
         if this.tabs.is_empty()
             && let Err(e) = this.add_tab(command, cwd, window, cx)
@@ -427,6 +484,8 @@ impl Workspace {
             ],
             sidebar_visible: self.sidebar_visible,
             details_visible: self.details.visible,
+            grouping: self.grouping.key().to_owned(),
+            order: self.order.key().to_owned(),
             // Editor tabs aren't kept: their files are on disk.
             active: self.tabs[..self.active.min(self.tabs.len())]
                 .iter()
@@ -437,7 +496,7 @@ impl Workspace {
                 .iter()
                 .filter_map(|tab| {
                     let write = scrollback_dir.is_some().then_some(&mut write as _);
-                    Some(tab_state(tab.terms()?, tab.divider, write, cx))
+                    tab_state(tab, write, cx)
                 })
                 .collect(),
         }
@@ -448,6 +507,8 @@ impl Workspace {
     fn restore(&mut self, state: &WindowState, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = state.sidebar_visible;
         self.details.visible = state.details_visible;
+        self.grouping = tabs::Grouping::from_key(&state.grouping);
+        self.order = tabs::Order::from_key(&state.order);
         for tab in &state.tabs {
             match self.restore_tab(tab, &crate::recovery::read_scrollback, window, cx) {
                 Ok(tab) => self.tabs.push(tab),
@@ -483,6 +544,12 @@ impl Workspace {
             }),
             divider: state.divider,
             updated: std::time::SystemTime::now(),
+            created: std::time::SystemTime::now(),
+            name: state.name.clone().map(|text| tabs::TabName {
+                text,
+                prefix: state.name_prefix,
+            }),
+            mark: None,
         })
     }
 
@@ -589,8 +656,20 @@ impl Workspace {
             view.refresh_process();
             view
         });
+        self.watch_terminal(&terminal, window, cx);
+        Ok(terminal)
+    }
+
+    /// Follows a pane's events: titles, exits, finished commands and
+    /// notifications.
+    fn watch_terminal(
+        &mut self,
+        terminal: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let subscription = cx.subscribe_in(
-            &terminal,
+            terminal,
             window,
             |this, terminal, event, window, cx| match event {
                 TerminalEvent::TitleChanged => cx.notify(),
@@ -599,6 +678,7 @@ impl Workspace {
                     tracing::debug!(?exit, ?duration, "command finished");
                     crate::ipc::command_finished(terminal, *exit, *duration, cx);
                     this.command_status(terminal, *exit, window, cx);
+                    cx.defer(crate::menus::refresh);
                 }
                 TerminalEvent::Notification { title, body } => {
                     // Only for panes the user can't see right now.
@@ -613,7 +693,6 @@ impl Workspace {
         );
         self.pane_subscriptions
             .insert(terminal.entity_id(), subscription);
-        Ok(terminal)
     }
 
     fn add_tab(
@@ -859,8 +938,13 @@ impl Workspace {
             return;
         };
         tab.updated = std::time::SystemTime::now();
+        // Looking at a tab clears a mark of something that happened.
+        if tab.mark.is_some_and(|b| !b.ongoing()) {
+            tab.mark = None;
+        }
         self.active = ix;
         self.clear_seen(ix, cx);
+        cx.defer(crate::menus::refresh);
         let tab = &self.tabs[ix];
         let focus = match &tab.content {
             Content::Terminals(t) => t.focused.focus_handle(cx),
@@ -882,23 +966,21 @@ impl Workspace {
             return;
         }
         let mut scrollback = Vec::new();
-        let Some(terms) = self.tabs[ix].terms() else {
-            return;
-        };
-        let state = tab_state(
-            terms,
-            self.tabs[ix].divider,
+        let Some(state) = tab_state(
+            &self.tabs[ix],
             Some(&mut |bytes| {
                 scrollback.push(bytes);
                 Some((scrollback.len() - 1).to_string())
             }),
             cx,
-        );
+        ) else {
+            return;
+        };
         let Some(terms) = self.tabs[ix].terms() else {
             return;
         };
-        let focused = terms.focused.read(cx);
-        let (title, cwd) = (focused.display_title(), focused.cwd.clone());
+        let title = tab_title(&self.tabs[ix], cx);
+        let cwd = terms.focused.read(cx).cwd.clone();
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let closed = &mut cx.default_global::<ClosedTabs>().0;
         if closed.len() == MAX_CLOSED_TABS {
@@ -1021,16 +1103,8 @@ impl Workspace {
         }
     }
 
-    /// ⌘W closes the focused pane, and the tab with its last pane.
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        match self.tabs.get(self.active).map(|t| &t.content) {
-            Some(Content::Terminals(t)) => {
-                let view = t.focused.clone();
-                self.close_pane(&view, window, cx);
-            }
-            Some(Content::Editor(_)) => self.close_tab_at(self.active, window, cx),
-            None => {}
-        }
+        self.close_cascade(window, cx);
     }
 
     fn cycle(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1072,7 +1146,7 @@ impl Workspace {
         let autocomplete = self.config.autocomplete.clone();
         for view in self.panes().map(|(_, v)| v) {
             view.update(cx, |t, cx| {
-                t.set_link_options(links);
+                t.set_link_options(links.clone());
                 t.set_autocomplete(autocomplete.clone(), cx);
                 t.apply_config(meta, blink, cursor, scrollback, cx)
             });
@@ -1239,36 +1313,57 @@ impl Workspace {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(hsla(t.token.tertiary))
             .child(if self.inbox { "INBOX" } else { "TABS" })
-            .child(list_icon(hsla(t.token.tertiary)));
+            .child(
+                div()
+                    .id("tabs-filter")
+                    .rounded(px(4.))
+                    .hover(|s| s.bg(hsla(native_label(t, 0.08, 0.1))))
+                    .child(list_icon(hsla(t.token.tertiary)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.show_filter_menu(event.position, window, cx);
+                        }),
+                    ),
+            );
 
         let list: Vec<AnyElement> = if self.inbox {
             self.inbox_rows(cx)
         } else {
-            self.tabs
-                .iter()
-                .enumerate()
-                .map(|(ix, tab)| {
+            let mut rows = Vec::new();
+            let grouped = self.grouping != tabs::Grouping::None;
+            for group in self.sidebar_groups(cx) {
+                if let Some(heading) = group.heading {
+                    rows.push(self.group_heading(heading, group.folder, cx));
+                }
+                for ix in group.tabs {
                     let card = self.render_tab_card(ix, None, cx);
-                    if !tab.divider {
-                        return card;
+                    // Dividers mark places in the tabs' own order.
+                    if !self.tabs[ix].divider || grouped {
+                        rows.push(card);
+                        continue;
                     }
                     // Insert Divider: a hairline inset from the cards, in the
                     // middle of a gap.
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(card)
-                        .child(
-                            div()
-                                .mt(px(TAB_GAP + DIVIDER_SPACE))
-                                .mb(px(DIVIDER_SPACE))
-                                .mx(px(DIVIDER_INSET))
-                                .h(px(1.))
-                                .bg(hsla(native_label(t, 0.1, 0.12))),
-                        )
-                        .into_any_element()
-                })
-                .collect()
+                    rows.push(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(card)
+                            .child(
+                                div()
+                                    .mt(px(TAB_GAP + DIVIDER_SPACE))
+                                    .mb(px(DIVIDER_SPACE))
+                                    .mx(px(DIVIDER_INSET))
+                                    .h(px(1.))
+                                    .bg(hsla(native_label(t, 0.1, 0.12))),
+                            )
+                            .into_any_element(),
+                    );
+                }
+            }
+            rows
         };
 
         sidebar
@@ -1281,6 +1376,14 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                            if !this.inbox {
+                                this.show_filter_menu(event.position, window, cx);
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .pl(px(t.sidebar.padding.left))
@@ -1309,7 +1412,7 @@ impl Workspace {
                     view.process.clone().unwrap_or_default()
                 };
                 let mut summary = TabSummary {
-                    title: view.display_title(),
+                    title: tabs::named(tab.name.as_ref(), view.display_title()),
                     process,
                     badge: None,
                     line: None,
@@ -1330,6 +1433,12 @@ impl Workspace {
                     }
                     summary.running |= status.in_turn;
                 }
+                // Mark Tab: shown unless a pane has something more pressing.
+                if let Some(mark) = tab.mark
+                    && badge_rank(mark) < best
+                {
+                    summary.badge = Some(mark);
+                }
                 summary
             }
             // Otty marks unsaved changes with a star.
@@ -1337,7 +1446,10 @@ impl Workspace {
                 let editor = editor.read(cx);
                 let dirty = editor.is_dirty();
                 TabSummary {
-                    title: format!("{}{}", editor.title(), if dirty { "*" } else { "" }),
+                    title: tabs::named(
+                        tab.name.as_ref(),
+                        format!("{}{}", editor.title(), if dirty { "*" } else { "" }),
+                    ),
                     process: String::new(),
                     badge: None,
                     line: dirty.then(|| "Unsaved changes".to_owned()),
@@ -1378,10 +1490,12 @@ impl Workspace {
             .min_w_0()
             .pt(px(1.))
             .truncate()
-            .child(summary.title);
-        let title = match &line {
-            None => title.into_any_element(),
-            Some(line) => div()
+            .child(summary.title.clone());
+        let renaming = self.renaming.as_ref().filter(|r| r.ix == ix);
+        let title = match (&line, renaming) {
+            (_, Some(rename)) => self.rename_field(rename, cx),
+            (None, None) => title.into_any_element(),
+            (Some(line), None) => div()
                 .flex_1()
                 .min_w_0()
                 .flex()
@@ -1423,11 +1537,36 @@ impl Workspace {
             .when(!active, |d| d.hover(move |s| s.bg(hsla(hover_bg))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    if this.renaming.as_ref().is_some_and(|r| r.ix == ix) {
+                        return;
+                    }
                     this.activate(ix, window, cx);
+                    if event.click_count == 2 {
+                        this.start_rename(ix, window, cx);
+                    }
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.show_tab_menu(ix, event.position, window, cx);
+                }),
+            )
+            // Dragging a card puts the tab where it's dropped.
+            .on_drag(tabs::TabDrag { ix }, {
+                let title = summary.title.clone();
+                move |_, _, _, cx| {
+                    let title = title.clone();
+                    cx.new(|_| tabs::DragPreview { title })
+                }
+            })
+            .drag_over::<tabs::TabDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
+            .on_drop(cx.listener(move |this, drag: &tabs::TabDrag, window, cx| {
+                this.move_tab(drag.ix, ix, window, cx)
+            }))
             // `indicator = "bar"`: Otty puts it 8pt into the card,
             // centered, under the start of the title.
             .when(style.indicator_bar, |d| {
@@ -1465,6 +1604,52 @@ impl Workspace {
                 .and_then(|b| tab_border(t, b, style.radius)),
         )
         .into_any_element()
+    }
+
+    /// A heading over a group of tabs; its "+" opens a tab in the group's
+    /// folder.
+    fn group_heading(
+        &self,
+        heading: String,
+        folder: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = &self.theme;
+        let id = SharedString::from(format!("group-{heading}"));
+        div()
+            .id(id.clone())
+            .group(id.clone())
+            .pt(px(8.))
+            .pl(px(SIDEBAR_TEXT_INSET))
+            .pr(px(4.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_size(px(10.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(hsla(t.token.tertiary))
+            .child(div().truncate().child(heading.to_uppercase()))
+            .child(
+                div()
+                    .id(SharedString::from(format!("{id}-new")))
+                    .invisible()
+                    .group_hover(id, |s| s.visible())
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .hover(|s| s.bg(hsla(native_label(t, 0.08, 0.1))))
+                    .child("+")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            let cwd = folder.clone().or_else(|| this.active_folder(cx));
+                            if let Err(e) = this.add_tab(None, cwd, window, cx) {
+                                tracing::error!("failed to start shell: {e:#}");
+                            }
+                        }),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// Inbox: tabs that need you, then running ones, then the rest by when
@@ -1534,6 +1719,85 @@ impl Workspace {
 
 /// Whole days since the epoch in local time, roughly: enough to tell
 /// today from yesterday.
+impl Workspace {
+    /// What the menu bar shows about this window.
+    pub(crate) fn snapshot_for_menus(&self, cx: &App) -> crate::menus::Snapshot {
+        let mut s = crate::menus::Snapshot {
+            pinned: self.pinned,
+            ..Default::default()
+        };
+        if let Some(view) = self.focused_pane() {
+            let v = view.read(cx);
+            s.pane = Some(v.id);
+            s.cwd = v.cwd.clone();
+            let session = v.session();
+            s.last = session.shell().blocks.back().and_then(|b| {
+                Some(crate::menus::LastCommand {
+                    text: session.block_command(b)?,
+                    row: b.prompt_row,
+                    exit: b.exit,
+                    duration: b.duration(),
+                    running: b.started.is_some() && b.finished.is_none(),
+                })
+            });
+            s.agent = v
+                .status
+                .as_ref()
+                .and_then(|st| Some((st.agent.clone()?, st.session.clone())));
+        }
+        s.tabs = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let terms = tab.terms()?;
+                let procs = terms
+                    .root
+                    .leaves()
+                    .iter()
+                    .flat_map(|v| v.read(cx).session().processes())
+                    .map(|p| (p.pid, p.name))
+                    .collect();
+                Some((tab_title(tab, cx), procs))
+            })
+            .collect();
+        s
+    }
+
+    /// Shell › Git: types the command at the prompt; one that changes
+    /// something remote runs after asking.
+    fn type_command(&mut self, a: TypeCommand, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.focused_pane() else {
+            return;
+        };
+        if !a.run {
+            view.update(cx, |v, cx| v.write_input(&a.text, cx));
+            return;
+        }
+        let answer = window.prompt(
+            gpui::PromptLevel::Info,
+            &format!("Run “{}”?", a.text),
+            Some("It runs in the focused pane."),
+            &["Run", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |_, cx| {
+            if answer.await == Ok(0) {
+                view.update(cx, |v, cx| v.write_input(&format!("{}\r", a.text), cx));
+            }
+        })
+        .detach();
+    }
+}
+
+/// The frontmost window's state for the menu bar.
+pub(crate) fn menu_snapshot(cx: &App) -> Option<crate::menus::Snapshot> {
+    let window = cx
+        .active_window()
+        .or_else(|| cx.window_stack()?.into_iter().next())?;
+    let workspace = window.downcast::<Workspace>()?;
+    workspace.read(cx).ok().map(|w| w.snapshot_for_menus(cx))
+}
+
 /// An Inbox heading and its tabs, each with its line.
 type InboxGroup = (&'static str, Vec<(usize, Option<String>)>);
 
@@ -1949,6 +2213,7 @@ impl Render for Workspace {
         {
             tab.focused = view.clone();
             tab.zoomed = false;
+            cx.defer(crate::menus::refresh);
         }
         let title = self
             .tabs
@@ -2035,7 +2300,16 @@ impl Render for Workspace {
                                 .left(px(-titlebar::TITLE_PAD_LEFT))
                                 .right(px(-titlebar::TITLE_PAD_RIGHT))
                                 .rounded(px(titlebar::RADIUS))
-                                .hover(move |s| s.bg(highlight)),
+                                .hover(move |s| s.bg(highlight))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.show_title_menu(event.position, window, cx);
+                                        },
+                                    ),
+                                ),
                         )
                         .child(
                             div()
@@ -2119,6 +2393,47 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_file_editor))
             .on_action(cx.listener(Self::toggle_inbox))
+            .on_action(cx.listener(|this, _: &RenameTab, window, cx| {
+                this.start_rename(this.active, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabToNewWindow, window, cx| {
+                this.move_tab_to_new_window(this.active, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabUp, window, cx| {
+                let ix = this.active;
+                this.move_tab(ix, ix.wrapping_sub(1), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabDown, window, cx| {
+                let ix = this.active;
+                this.move_tab(ix, ix + 1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ClearBadge, _, cx| this.clear_badge(this.active, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowNextUnread, window, cx| {
+                    this.show_next_unread(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &PinWindow, window, cx| {
+                this.pinned = !this.pinned;
+                crate::materials::set_pinned(window, this.pinned);
+                cx.defer(crate::menus::refresh);
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenFile, window, cx| this.open_from_finder(window, cx)),
+            )
+            .on_action(cx.listener(|this, a: &OpenFolder, window, cx| {
+                if let Err(e) = this.add_tab(None, Some(a.path.clone()), window, cx) {
+                    tracing::error!("failed to start shell: {e:#}");
+                }
+            }))
+            .on_action(cx.listener(|this, a: &RevealRow, _, cx| {
+                if let Some(view) = this.focused_pane() {
+                    view.update(cx, |v, cx| v.reveal_row(a.row, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, a: &TypeCommand, window, cx| {
+                this.type_command(a.clone(), window, cx)
+            }))
             .on_mouse_move(cx.listener(Self::drag_divider))
             .on_mouse_up(
                 MouseButton::Left,
@@ -2168,7 +2483,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &MoveDividerDown, _, cx| {
                 this.move_divider(Direction::Down, cx)
             }))
-            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                this.close_asking(closing::Closing::Window, window, cx)
+            }))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
@@ -2197,6 +2514,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenFilesQuickly, window, cx| {
                 this.show_open_quickly(open_quickly::Filter::Files, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &GlobalSearch, window, cx| {
+                    this.open_global_search(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &OpenConfigFile, _, _| this.open_config_file()))
             .on_action(cx.listener(|this, _: &ShowWelcome, w, cx| this.show_welcome(w, cx)))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
@@ -2230,6 +2552,7 @@ impl Render for Workspace {
             .children(self.render_mode_pill(cx))
             .children(self.render_palette(window, cx))
             .children(self.render_open_quickly(window, cx))
+            .children(self.render_global_search(window, cx))
             .children(self.render_welcome(window, cx))
     }
 }
@@ -2239,18 +2562,20 @@ impl Render for Workspace {
 /// returns is saved with the pane.
 /// The tab's name in the sidebar and the window title.
 fn tab_title(tab: &Tab, cx: &App) -> String {
-    match &tab.content {
+    let title = match &tab.content {
         Content::Terminals(t) => t.focused.read(cx).display_title(),
         Content::Editor(e) => e.read(cx).title(),
-    }
+    };
+    tabs::named(tab.name.as_ref(), title)
 }
 
+/// What recovery and ⇧⌘T keep of a terminal tab (editors aren't kept).
 fn tab_state(
-    tab: &Terminals,
-    divider: bool,
+    whole: &Tab,
     mut scrollback: Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
     cx: &App,
-) -> TabState {
+) -> Option<TabState> {
+    let tab = whole.terms()?;
     fn save(
         pane: &Pane,
         scrollback: &mut Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
@@ -2284,7 +2609,7 @@ fn tab_state(
             },
         }
     }
-    TabState {
+    Some(TabState {
         root: save(&tab.root, &mut scrollback, cx),
         focused: tab
             .root
@@ -2293,6 +2618,8 @@ fn tab_state(
             .position(|v| **v == tab.focused)
             .unwrap_or(0),
         zoomed: tab.zoomed,
-        divider,
-    }
+        divider: whole.divider,
+        name: whole.name.as_ref().map(|n| n.text.clone()),
+        name_prefix: whole.name.as_ref().is_some_and(|n| n.prefix),
+    })
 }

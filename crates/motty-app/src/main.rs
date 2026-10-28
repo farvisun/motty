@@ -41,6 +41,10 @@ fn main() {
             cx.on_action(|_: &actions::Quit, cx| cx.quit());
             cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
             cx.on_action(|_: &actions::About, _| menus::show_about());
+            cx.on_action(|a: &actions::CopyText, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(a.text.clone()))
+            });
+            cx.on_action(|a: &actions::OpenUrl, cx| cx.open_url(&a.url));
             cx.on_action(|_: &actions::HideApp, cx| cx.hide());
             cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
             cx.on_action(|_: &actions::ShowAll, cx| cx.unhide_other_apps());
@@ -160,6 +164,26 @@ fn open_window(
     restore: Option<&recovery::WindowState>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
+    open_window_inner(config, command, restore, None, cx)
+}
+
+/// A window for a tab moved out of another one (Move Tab to New Window).
+pub(crate) fn open_window_with_tab(
+    config: Config,
+    tab: workspace::MovedTab,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    open_window_inner(config, None, None, Some(tab), cx)
+}
+
+fn open_window_inner(
+    config: Config,
+    command: Option<(String, Vec<String>)>,
+    restore: Option<&recovery::WindowState>,
+    moved: Option<workspace::MovedTab>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let moving = moved.is_some();
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
     let bounds = match restore {
@@ -191,11 +215,13 @@ fn open_window(
     let cwd = std::env::current_dir()
         .ok()
         .filter(|d| d.parent().is_some());
-    let extra_tabs = extra_tabs_arg();
-    let split = split_arg();
+    // The harness's extra tabs and split are for the first window only.
+    let extra_tabs = if moving { 0 } else { extra_tabs_arg() };
+    let split = if moving { None } else { split_arg() };
     let window = cx.open_window(options, |window, cx| {
         cx.new(|cx| {
-            let mut workspace = Workspace::new(config, command.clone(), cwd, restore, window, cx);
+            let mut workspace =
+                Workspace::new(config, command.clone(), cwd, restore, moved, window, cx);
             for _ in 0..extra_tabs {
                 workspace.open_tab(window, cx);
             }

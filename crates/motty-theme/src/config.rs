@@ -37,6 +37,10 @@ pub struct Config {
     /// `cursor-color` and `cursor-text`, for themes that don't set them.
     pub cursor_color: Option<Rgba>,
     pub cursor_text: Option<Rgba>,
+    /// `confirm-close-pane`, `confirm-close-tab`, `confirm-close-window`.
+    pub confirm_close_pane: ConfirmClose,
+    pub confirm_close_tab: ConfirmClose,
+    pub confirm_close_window: ConfirmClose,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
     /// `on-launch = restore_session` (default) reopens the last session;
@@ -169,6 +173,18 @@ pub enum CursorStyle {
     Bar,
     Underline,
     BlockHollow,
+}
+
+/// `confirm-close-*` values: when closing a pane, tab or window asks first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConfirmClose {
+    /// Only while something other than the shell is running.
+    #[default]
+    Process,
+    Always,
+    /// Windows only: when the window holds more than one tab.
+    MultipleTabs,
+    Never,
 }
 
 /// `right-click-action` values. ⌃-click always opens the menu.
@@ -372,6 +388,25 @@ impl Config {
                 },
                 "link-detection" => {
                     out.link_detection = value.as_bool().unwrap_or(value.as_str() != Some("off"))
+                }
+                "confirm-close-pane" | "confirm-close-tab" | "confirm-close-window" => {
+                    let rule = match (value.as_str(), value.as_bool()) {
+                        (Some("process"), _) | (_, Some(true)) => ConfirmClose::Process,
+                        (Some("always"), _) => ConfirmClose::Always,
+                        (Some("never"), _) | (_, Some(false)) => ConfirmClose::Never,
+                        (Some("multiple_tabs"), _) if key == "confirm-close-window" => {
+                            ConfirmClose::MultipleTabs
+                        }
+                        _ => {
+                            unknown.push(format!("config.toml {key}: unknown value {value}"));
+                            continue;
+                        }
+                    };
+                    match key {
+                        "confirm-close-pane" => out.confirm_close_pane = rule,
+                        "confirm-close-tab" => out.confirm_close_tab = rule,
+                        _ => out.confirm_close_window = rule,
+                    }
                 }
                 "right-click-action" => match value.as_str() {
                     Some("context-menu") => out.right_click = RightClick::ContextMenu,
@@ -872,6 +907,16 @@ mod tests {
         assert!(d.ligatures && !d.option_as_meta && d.cursor_blink == CursorBlink::DefaultOff);
         assert_eq!(d.cursor_style, CursorStyle::Block);
         assert!(d.sidebar_visible && !Config::parse("sidebar-visible = false\n").sidebar_visible);
+        assert_eq!(d.confirm_close_window, ConfirmClose::Process);
+        let cfg = Config::parse(
+            "confirm-close-pane = \"never\"\nconfirm-close-tab = \"always\"\nconfirm-close-window = \"multiple_tabs\"\n",
+        );
+        assert_eq!(cfg.confirm_close_pane, ConfirmClose::Never);
+        assert_eq!(cfg.confirm_close_tab, ConfirmClose::Always);
+        assert_eq!(cfg.confirm_close_window, ConfirmClose::MultipleTabs);
+        let cfg = Config::parse("confirm-close-tab = \"multiple_tabs\"\n");
+        assert_eq!(cfg.confirm_close_tab, ConfirmClose::Process);
+        assert_eq!(cfg.warnings.len(), 1);
         let cfg = Config::parse(
             "font-ligatures = \"off\"\nmacos-option-as-alt = \"left\"\ncursor-style-blink = \"default_on\"\nwindow-hide-dirty-indicator = true\n",
         );

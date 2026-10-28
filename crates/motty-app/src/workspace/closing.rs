@@ -1,0 +1,205 @@
+//! Asking before a close ends something that's still running
+//! (`confirm-close-pane|tab|window`).
+
+use gpui::{Context, Entity, EntityId, PromptLevel, Window};
+use motty_theme::ConfirmClose;
+
+use super::{Content, Tab, Workspace};
+use crate::terminal_view::TerminalView;
+
+/// What a close would take.
+pub(super) enum Closing {
+    Pane(Entity<TerminalView>),
+    Tab(usize),
+    Window,
+}
+
+/// Whether `rule` asks, given whether something is running and how many
+/// tabs the window holds.
+pub(super) fn asks(rule: ConfirmClose, running: bool, tabs: usize) -> bool {
+    match rule {
+        ConfirmClose::Never => false,
+        ConfirmClose::Always => true,
+        ConfirmClose::Process => running,
+        ConfirmClose::MultipleTabs => tabs > 1,
+    }
+}
+
+/// `“vim” is still running.` and the like.
+fn detail(running: &[String], what: &str) -> Option<String> {
+    let first = running.first()?;
+    Some(match running.len() {
+        1 => format!("“{first}” is still running. Closing the {what} will end it."),
+        n => format!(
+            "“{first}” and {} more are still running. Closing the {what} will end them.",
+            n - 1
+        ),
+    })
+}
+
+/// The tab's identity across reorders: its first pane or its editor.
+fn tab_key(tab: &Tab) -> EntityId {
+    match &tab.content {
+        Content::Terminals(t) => t.root.leaves()[0].entity_id(),
+        Content::Editor(e) => e.entity_id(),
+    }
+}
+
+impl Workspace {
+    /// What's running in the panes `closing` would take, by name.
+    fn running(&self, closing: &Closing, cx: &gpui::App) -> Vec<String> {
+        let panes: Vec<&Entity<TerminalView>> = match closing {
+            Closing::Pane(view) => vec![view],
+            Closing::Tab(ix) => self
+                .tabs
+                .get(*ix)
+                .and_then(Tab::terms)
+                .map(|t| t.root.leaves())
+                .unwrap_or_default(),
+            Closing::Window => self
+                .tabs
+                .iter()
+                .filter_map(Tab::terms)
+                .flat_map(|t| t.root.leaves())
+                .collect(),
+        };
+        panes
+            .into_iter()
+            .filter_map(|v| {
+                let session = v.read(cx).session();
+                session.is_busy().then(|| {
+                    session
+                        .foreground_process_name()
+                        .unwrap_or_else(|| "A command".into())
+                })
+            })
+            .collect()
+    }
+
+    /// Closes after asking, if the `confirm-close-*` rule says to. A tab
+    /// that's the window's last follows the window's rule.
+    pub(super) fn close_asking(
+        &mut self,
+        closing: Closing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // An unsaved file asks on its own.
+        if let Closing::Tab(ix) = closing
+            && self.tabs.get(ix).is_some_and(|t| t.as_editor().is_some())
+        {
+            return self.close_tab_at(ix, window, cx);
+        }
+        let last_tab = matches!(closing, Closing::Tab(_)) && self.tabs.len() == 1;
+        let (rule, what) = match closing {
+            Closing::Pane(_) => (self.config.confirm_close_pane, "pane"),
+            Closing::Tab(_) if !last_tab => (self.config.confirm_close_tab, "tab"),
+            _ => (self.config.confirm_close_window, "window"),
+        };
+        let running = self.running(&closing, cx);
+        if !asks(rule, !running.is_empty(), self.tabs.len()) {
+            return self.close_now(closing, window, cx);
+        }
+        // The tab may move while the question is up.
+        let key = match &closing {
+            Closing::Tab(ix) => self.tabs.get(*ix).map(tab_key),
+            _ => None,
+        };
+        let detail = detail(&running, what);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Close this {what}?"),
+            detail.as_deref(),
+            &["Close", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                let closing = match closing {
+                    Closing::Tab(_) => {
+                        match this.tabs.iter().position(|t| Some(tab_key(t)) == key) {
+                            Some(ix) => Closing::Tab(ix),
+                            None => return,
+                        }
+                    }
+                    other => other,
+                };
+                this.close_now(closing, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn close_now(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) {
+        match closing {
+            Closing::Pane(view) => {
+                if self.tab_of(&view).is_some() {
+                    self.close_pane(&view, window, cx);
+                }
+            }
+            Closing::Tab(ix) => self.close_tab_at(ix, window, cx),
+            Closing::Window => {
+                self.closing_window = true;
+                window.remove_window();
+            }
+        }
+    }
+
+    /// The close button: asks first if the window rule says to.
+    pub(super) fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.closing_window {
+            return true;
+        }
+        let running = !self.running(&Closing::Window, cx).is_empty();
+        if !asks(self.config.confirm_close_window, running, self.tabs.len()) {
+            return true;
+        }
+        self.close_asking(Closing::Window, window, cx);
+        false
+    }
+
+    /// ⌘W: the focused pane, the tab with its last pane, the window with
+    /// its last tab.
+    pub(super) fn close_cascade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let closing = match self.tabs.get(self.active).map(|t| &t.content) {
+            Some(Content::Terminals(t)) if t.root.leaves().len() > 1 => {
+                Closing::Pane(t.focused.clone())
+            }
+            Some(_) => Closing::Tab(self.active),
+            None => return,
+        };
+        self.close_asking(closing, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rules() {
+        assert!(!asks(ConfirmClose::Process, false, 3));
+        assert!(asks(ConfirmClose::Process, true, 1));
+        assert!(asks(ConfirmClose::Always, false, 1));
+        assert!(!asks(ConfirmClose::Never, true, 5));
+        assert!(asks(ConfirmClose::MultipleTabs, false, 2));
+        assert!(!asks(ConfirmClose::MultipleTabs, true, 1));
+    }
+
+    #[test]
+    fn details() {
+        assert_eq!(detail(&[], "tab"), None);
+        assert_eq!(
+            detail(&["vim".into()], "tab").unwrap(),
+            "“vim” is still running. Closing the tab will end it."
+        );
+        assert!(
+            detail(&["vim".into(), "npm".into(), "ssh".into()], "window")
+                .unwrap()
+                .starts_with("“vim” and 2 more")
+        );
+    }
+}

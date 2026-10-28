@@ -104,6 +104,7 @@ pub struct TerminalView {
     suggestion: Option<autocomplete::Suggestion>,
     /// The prompt line whose suggestion Esc hid.
     dismissed: Option<String>,
+    events: async_channel::Receiver<SessionEvent>,
     _events: Task<()>,
 }
 
@@ -130,16 +131,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let task = cx.spawn_in(window, async move |this, cx| {
-            while let Ok(event) = events.recv().await {
-                let alive = this.update_in(cx, |view, window, cx| {
-                    view.handle_session_event(event, window, cx)
-                });
-                if alive.is_err() {
-                    break;
-                }
-            }
-        });
+        let task = Self::event_task(events.clone(), window, cx);
         Self {
             id,
             session,
@@ -174,8 +166,33 @@ impl TerminalView {
             autocomplete: Default::default(),
             suggestion: None,
             dismissed: None,
+            events,
             _events: task,
         }
+    }
+
+    /// Handles the session's events in `window`'s context.
+    fn event_task(
+        events: async_channel::Receiver<SessionEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = events.recv().await {
+                let alive = this.update_in(cx, |view, window, cx| {
+                    view.handle_session_event(event, window, cx)
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    /// The pane moved to another window (Move Tab to New Window): its
+    /// events are handled there from now on.
+    pub fn attach_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._events = Self::event_task(self.events.clone(), window, cx);
     }
 
     fn blink_task(cx: &mut Context<Self>) -> Task<()> {
@@ -604,15 +621,76 @@ impl TerminalView {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            self.paste_text(&text, false, window);
+        }
+    }
+
+    /// Pastes `text` as the program asked for it (bracketed or not), or
+    /// bracketed in any case with `force_bracketed`.
+    pub fn paste_text(&mut self, text: &str, force_bracketed: bool, window: &mut Window) {
         if self.read_only || self.vi.is_some() {
             window.play_system_bell();
             return;
         }
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-            let bytes = input::paste_bytes(&text, self.term_mode());
-            self.session.term.lock().scroll_display(Scroll::Bottom);
-            self.session.write(bytes);
+        let mut mode = self.term_mode();
+        if force_bracketed {
+            mode.insert(TermMode::BRACKETED_PASTE);
         }
+        let bytes = input::paste_bytes(text, mode);
+        self.session.term.lock().scroll_display(Scroll::Bottom);
+        self.session.write(bytes);
+    }
+
+    /// Edit › Paste as › Paste Selection: the selected text, pasted.
+    fn paste_selection(&mut self, _: &PasteSelection, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.session.term.lock().selection_to_string();
+        match text {
+            Some(text) => self.paste_text(&text, false, window),
+            None => window.play_system_bell(),
+        }
+        cx.notify();
+    }
+
+    /// Paste Escaping Special Characters: the clipboard with each character
+    /// a shell treats specially escaped, as one word.
+    fn paste_escaped(&mut self, _: &PasteEscaped, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            self.paste_text(&shell_escape(&text), false, window);
+        }
+    }
+
+    fn paste_bracketed(&mut self, _: &PasteBracketed, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            self.paste_text(&text, true, window);
+        }
+    }
+
+    /// Insert from › File Path…: the chosen files' paths, escaped.
+    fn insert_file_path(
+        &mut self,
+        _: &InsertFilePath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Insert".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let text = paths
+                .iter()
+                .map(|p| shell_escape(&p.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = this.update_in(cx, |this, window, _| this.paste_text(&text, false, window));
+        })
+        .detach();
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
@@ -630,7 +708,6 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Clears scrollback and screen, keeping the prompt line (like ⌘K elsewhere).
     /// Sends a key's bytes as typed input (back at the bottom, like typing).
     fn send(&mut self, bytes: &'static [u8], cx: &mut Context<Self>) {
         self.session.term.lock().scroll_display(Scroll::Bottom);
@@ -643,6 +720,7 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Clears scrollback and screen, keeping the prompt line (like ⌘K elsewhere).
     fn clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
         let mut term = self.session.term.lock();
         term.grid_mut().clear_history();
@@ -650,6 +728,20 @@ impl TerminalView {
         drop(term);
         // Ask the shell to redraw its prompt at the top.
         self.session.write(b"\x0c".as_slice());
+        cx.notify();
+    }
+
+    /// Clear Scrollback Above: what scrolled off is gone; the screen stays.
+    fn clear_scrollback(
+        &mut self,
+        _: &ClearScrollbackAbove,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut term = self.session.term.lock();
+        term.grid_mut().clear_history();
+        term.selection = None;
+        drop(term);
         cx.notify();
     }
 
@@ -741,6 +833,11 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::clear_scrollback))
+            .on_action(cx.listener(Self::paste_selection))
+            .on_action(cx.listener(Self::paste_escaped))
+            .on_action(cx.listener(Self::paste_bracketed))
+            .on_action(cx.listener(Self::insert_file_path))
             .on_action(cx.listener(|this, _: &AcceptSuggestion, _, cx| {
                 this.accept_suggestion(cx);
             }))
@@ -907,4 +1004,20 @@ impl EntityInputHandler for TerminalView {
     ) -> Option<usize> {
         None
     }
+}
+
+/// `text` with every character a shell treats specially backslash-escaped.
+pub fn shell_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\n' {
+            out.push_str("'\n'");
+            continue;
+        }
+        if " \t'\"\\$`!&*()[]{};<>|?#~=%".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }

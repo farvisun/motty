@@ -28,11 +28,20 @@ impl Workspace {
         }
         let style = terminal_style(&self.config, &self.theme, cx);
         let editor = cx.new(|cx| FileEditor::new(path, style, cx));
-        let subscription = cx.subscribe(&editor, |_, _, _: &EditorEvent, cx| cx.notify());
-        self.pane_subscriptions
-            .insert(editor.entity_id(), subscription);
+        self.watch_editor(&editor, cx);
         self.tabs.push(Tab::editor(editor));
         self.activate(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Redraws the tab (its title, the unsaved star) as the editor changes.
+    pub(super) fn watch_editor(
+        &mut self,
+        editor: &gpui::Entity<FileEditor>,
+        cx: &mut Context<Self>,
+    ) {
+        let subscription = cx.subscribe(editor, |_, _, _: &EditorEvent, cx| cx.notify());
+        self.pane_subscriptions
+            .insert(editor.entity_id(), subscription);
     }
 
     /// Save, Don't Save or Cancel, as a Mac app asks.

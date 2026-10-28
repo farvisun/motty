@@ -938,7 +938,7 @@ fn dispatch(
 
 /// `open-with-app = "Name|bundle.id"` entries, else the editors found in
 /// /Applications.
-fn open_with_apps(configured: &[String]) -> Vec<(String, String)> {
+pub(crate) fn open_with_apps(configured: &[String]) -> Vec<(String, String)> {
     if !configured.is_empty() {
         return configured
             .iter()
@@ -960,7 +960,7 @@ fn open_with_apps(configured: &[String]) -> Vec<(String, String)> {
     .collect()
 }
 
-fn open_in(bundle: &str, path: &Path) {
+pub(crate) fn open_in(bundle: &str, path: &Path) {
     let result = std::process::Command::new("/usr/bin/open")
         .arg("-b")
         .arg(bundle)
@@ -1004,7 +1004,7 @@ fn left_ellipsis(path: &str, max: usize) -> String {
 }
 
 /// A remote as a browsable URL (`git@github.com:a/b.git` → https).
-fn web_url(remote: &str) -> String {
+pub(crate) fn web_url(remote: &str) -> String {
     let r = remote.trim().trim_end_matches(".git");
     if let Some(rest) = r.strip_prefix("git@")
         && let Some((host, path)) = rest.split_once(':')
@@ -1099,7 +1099,7 @@ fn parse_numstat(out: &str) -> (u32, u32) {
 }
 
 /// TCP ports the processes listen on, as (port, pid).
-fn listening_ports(pids: &[i32]) -> Vec<(u16, i32)> {
+pub(crate) fn listening_ports(pids: &[i32]) -> Vec<(u16, i32)> {
     let list = pids
         .iter()
         .map(|p| p.to_string())

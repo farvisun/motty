@@ -220,7 +220,7 @@ impl Workspace {
     }
 
     /// Open…: a folder opens a terminal there; a file, an editor.
-    fn open_from_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_from_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,

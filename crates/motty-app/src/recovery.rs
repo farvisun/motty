@@ -35,6 +35,12 @@ pub struct WindowState {
     pub sidebar_visible: bool,
     #[serde(default)]
     pub details_visible: bool,
+    /// The tabs panel's Group and Order (`project`, `date`; `updated`,
+    /// `manual`); empty for the defaults.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub grouping: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order: String,
     pub active: usize,
     pub tabs: Vec<TabState>,
 }
@@ -48,6 +54,12 @@ pub struct TabState {
     /// A divider follows the tab in the sidebar.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub divider: bool,
+    /// The name given with Rename Tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The name comes before the title instead of replacing it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_prefix: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

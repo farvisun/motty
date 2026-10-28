@@ -18,7 +18,8 @@ use gpui::{
 };
 use motty_render::hsla;
 use motty_theme::{
-    AcceptKey, Config, CursorBlink, CursorStyle, LinkClick, LinkShiftClick, Mode, Rgba, RightClick,
+    AcceptKey, Config, ConfirmClose, CursorBlink, CursorStyle, LinkClick, LinkShiftClick, Mode,
+    Rgba, RightClick,
 };
 use toml::Value;
 
@@ -824,6 +825,51 @@ impl SettingsWindow {
                 on: !c.hide_dirty_indicator,
                 invert: true,
             },
+        ));
+        let rule_label = |r: ConfirmClose| match r {
+            ConfirmClose::Process => "Running Process",
+            ConfirmClose::Always => "Always",
+            ConfirmClose::MultipleTabs => "Multiple Tabs",
+            ConfirmClose::Never => "Never",
+        };
+        let rules: &[(&str, &str)] = &[
+            ("Running Process", "process"),
+            ("Always", "always"),
+            ("Never", "never"),
+        ];
+        rows.push(row(
+            General,
+            "Close Confirmation",
+            "Close Pane",
+            Some("Ask before closing a split pane"),
+            choice(
+                "confirm-close-pane",
+                rules,
+                rule_label(c.confirm_close_pane),
+            ),
+        ));
+        rows.push(row(
+            General,
+            "Close Confirmation",
+            "Close Tab",
+            Some("Ask before closing a tab"),
+            choice("confirm-close-tab", rules, rule_label(c.confirm_close_tab)),
+        ));
+        rows.push(row(
+            General,
+            "Close Confirmation",
+            "Close Window",
+            Some("Ask before closing a window"),
+            choice(
+                "confirm-close-window",
+                &[
+                    ("Running Process", "process"),
+                    ("Always", "always"),
+                    ("Multiple Tabs", "multiple_tabs"),
+                    ("Never", "never"),
+                ],
+                rule_label(c.confirm_close_window),
+            ),
         ));
         rows.push(row(
             General,
