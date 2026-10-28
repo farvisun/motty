@@ -34,6 +34,22 @@ fn main() {
     });
 }
 
+/// `--bounds x,y,w,h` places the first window exactly (used by the parity harness).
+fn bounds_arg(cx: &App) -> Bounds<gpui::Pixels> {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if arg == "--bounds"
+            && let Some(v) = args.next()
+        {
+            let n: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            if let [x, y, w, h] = n[..] {
+                return Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+            }
+        }
+    }
+    Bounds::centered(None, size(px(1200.), px(800.)), cx)
+}
+
 /// `Motty -e program [args...]` runs a command instead of the login shell.
 fn command_arg() -> Option<(String, Vec<String>)> {
     let mut args = std::env::args().skip_while(|a| a != "-e").skip(1);
@@ -44,13 +60,13 @@ fn command_arg() -> Option<(String, Vec<String>)> {
 fn open_window(config: Config, command: Option<(String, Vec<String>)>, cx: &mut App) -> anyhow::Result<()> {
     let mode = mode_for(cx.window_appearance());
     let material = config.resolve_theme(mode).theme.window.material;
-    let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+    let bounds = bounds_arg(cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
             title: Some("Motty".into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(14.), px(14.))),
+            traffic_light_position: Some(point(px(9.), px(9.))),
         }),
         window_background: if material == Material::None {
             WindowBackgroundAppearance::Opaque

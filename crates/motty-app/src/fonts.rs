@@ -43,3 +43,19 @@ pub fn terminal_family(config: &Config, theme: &Theme, cx: &App) -> String {
         .cloned()
         .unwrap_or_else(|| "Menlo".into())
 }
+
+/// First available family in a CSS-style `font-ui` list. The CSS
+/// system-font keywords all mean the platform UI font.
+pub fn ui_family(list: &[String], cx: &App) -> String {
+    let available = cx.text_system().all_font_names();
+    for name in list {
+        match name.as_str() {
+            "-apple-system" | "BlinkMacSystemFont" | "system-ui" | "SF Pro" | "SF Pro Text" | "sans-serif" => {
+                return ".SystemUIFont".into();
+            }
+            other if available.iter().any(|a| a.eq_ignore_ascii_case(other)) => return other.to_owned(),
+            _ => {}
+        }
+    }
+    ".SystemUIFont".into()
+}

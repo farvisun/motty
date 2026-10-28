@@ -30,7 +30,11 @@ pub struct TerminalView {
     base_font_size: f32,
     focus_handle: FocusHandle,
     layout: Rc<Cell<Option<TerminalLayout>>>,
+    /// Title set by the running program (OSC 0/2).
     pub title: Option<String>,
+    /// Foreground process name and cwd, refreshed by [`Self::refresh_process`].
+    pub process: Option<String>,
+    pub cwd: Option<std::path::PathBuf>,
     option_as_meta: bool,
     /// Fractional lines carried between precise (trackpad) scroll events.
     scroll_remainder: f32,
@@ -77,6 +81,8 @@ impl TerminalView {
             focus_handle: cx.focus_handle(),
             layout: Rc::new(Cell::new(None)),
             title: None,
+            process: None,
+            cwd: None,
             option_as_meta,
             scroll_remainder: 0.,
             selecting: false,
@@ -113,6 +119,29 @@ impl TerminalView {
         if let Some(blink) = self.blink.as_mut() {
             blink.visible = true;
             blink.epoch += 1;
+        }
+    }
+
+    /// Re-reads the foreground process; returns whether anything changed.
+    pub fn refresh_process(&mut self) -> bool {
+        let process = self.session.foreground_process_name();
+        let cwd = self.session.foreground_cwd();
+        let changed = process != self.process || cwd != self.cwd;
+        self.process = process;
+        self.cwd = cwd;
+        changed
+    }
+
+    /// The program's title, else the cwd with `~` for home.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = self.title.as_deref().filter(|t| !t.is_empty()) {
+            return t.to_owned();
+        }
+        let Some(cwd) = &self.cwd else { return "~".into() };
+        match dirs::home_dir().and_then(|h| cwd.strip_prefix(h).ok().map(|p| p.to_path_buf())) {
+            Some(rel) if rel.as_os_str().is_empty() => "~".into(),
+            Some(rel) => format!("~/{}", rel.display()),
+            None => cwd.display().to_string(),
         }
     }
 

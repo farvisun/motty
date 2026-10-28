@@ -1,21 +1,52 @@
-//! Window root: titlebar band and the themed container around the terminal.
+//! Window root: the tab sidebar, the titlebar band, and the themed container
+//! around the active terminal.
+
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Entity, Focusable, FontWeight, Subscription, Window, WindowAppearance, div, point,
-    prelude::*, px,
+    AnyElement, App, BoxShadow, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, SharedString,
+    Subscription, Task, Window, WindowAppearance, div, point, prelude::*, px,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
-use motty_theme::{Config, Mode, Shadow, Theme};
+use motty_theme::{Border, Config, Mode, Rgba, Shadow, Theme};
 
+use crate::actions::*;
 use crate::terminal_view::{TerminalEvent, TerminalView};
+
+/// The native titlebar height that the sidebar layout reserves.
+const TITLEBAR_RESERVE: f32 = 28.;
+/// The title is centered in a band slightly taller than the reserve, level
+/// with the traffic lights.
+const TITLE_BAND: f32 = 32.;
+/// Space kept free at the right of the title band (toolbar buttons).
+const TITLE_RIGHT_INSET: f32 = 66.;
+/// Top of the "TABS" header row and the first tab card.
+const SIDEBAR_HEADER_TOP: f32 = 38.;
+const SIDEBAR_HEADER_HEIGHT: f32 = 22.;
+const TAB_HEIGHT: f32 = 36.;
+const TAB_GAP: f32 = 2.;
+const SIDEBAR_INSET: f32 = 7.5;
+const SIDEBAR_TEXT_INSET: f32 = 18.5;
+
+struct Tab {
+    terminal: Entity<TerminalView>,
+    _subscription: Subscription,
+}
 
 pub struct Workspace {
     config: Config,
     theme: Theme,
     mode: Mode,
-    terminal: Entity<TerminalView>,
+    tabs: Vec<Tab>,
+    active: usize,
+    focus_handle: FocusHandle,
+    ui_font: SharedString,
+    mono_font: SharedString,
+    /// Last title given to the native window (shown in Mission Control, menus).
+    window_title: String,
     _subscriptions: Vec<Subscription>,
+    _process_poll: Task<()>,
 }
 
 pub fn mode_for(appearance: WindowAppearance) -> Mode {
@@ -25,8 +56,7 @@ pub fn mode_for(appearance: WindowAppearance) -> Mode {
     }
 }
 
-/// Spawns the user's shell for a new pane.
-/// `command` (from `-e`) replaces the login shell.
+/// Spawns the user's shell for a new pane. `command` (from `-e`) replaces it.
 pub fn spawn_shell(config: &Config, command: Option<(String, Vec<String>)>) -> anyhow::Result<(Session, async_channel::Receiver<SessionEvent>)> {
     let session = SessionConfig {
         command: command.or_else(|| config.shell.clone().map(|s| (s, vec!["-l".into()]))),
@@ -57,33 +87,108 @@ impl Workspace {
             tracing::warn!("{w}");
         }
         let theme = parsed.theme;
-        let style = terminal_style(&config, &theme, cx);
-        let option_as_meta = config.option_as_meta;
-        let cursor_blink = config.cursor_blink;
-        let terminal = cx.new(|cx| TerminalView::new(session, events, style, option_as_meta, cursor_blink, window, cx));
-        let focus = terminal.focus_handle(cx);
-        window.focus(&focus, cx);
+        let ui_font = crate::fonts::ui_family(&theme.token.font_ui, cx).into();
+        let mono_font = crate::fonts::terminal_family(&config, &theme, cx).into();
 
-        let subscriptions = vec![
-            cx.subscribe_in(&terminal, window, |this, _, event, window, cx| match event {
-                TerminalEvent::TitleChanged => {
-                    if let Some(title) = this.terminal.read(cx).title.clone() {
-                        window.set_window_title(&title);
+        let subscriptions = vec![cx.observe_window_appearance(window, |this, window, cx| {
+            let mode = mode_for(window.appearance());
+            if mode != this.mode {
+                this.mode = mode;
+                this.reload_theme(cx);
+            }
+        })];
+        let process_poll = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this.update(cx, |this, cx| {
+                    let mut changed = false;
+                    for tab in &this.tabs {
+                        changed |= tab.terminal.update(cx, |t, _| t.refresh_process());
                     }
-                    cx.notify();
+                    if changed {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
                 }
-                TerminalEvent::Exited => window.remove_window(),
-            }),
-            cx.observe_window_appearance(window, |this, window, cx| {
-                let mode = mode_for(window.appearance());
-                if mode != this.mode {
-                    this.mode = mode;
-                    this.reload_theme(cx);
-                }
-            }),
-        ];
+            }
+        });
 
-        Self { config, theme, mode, terminal, _subscriptions: subscriptions }
+        let mut this = Self {
+            config,
+            theme,
+            mode,
+            tabs: Vec::new(),
+            active: 0,
+            focus_handle: cx.focus_handle(),
+            ui_font,
+            mono_font,
+            window_title: String::new(),
+            _subscriptions: subscriptions,
+            _process_poll: process_poll,
+        };
+        this.add_tab(session, events, window, cx);
+        this
+    }
+
+    fn add_tab(&mut self, session: Session, events: async_channel::Receiver<SessionEvent>, window: &mut Window, cx: &mut Context<Self>) {
+        let style = terminal_style(&self.config, &self.theme, cx);
+        let (meta, blink) = (self.config.option_as_meta, self.config.cursor_blink);
+        let terminal = cx.new(|cx| {
+            let mut view = TerminalView::new(session, events, style, meta, blink, window, cx);
+            view.refresh_process();
+            view
+        });
+        let subscription = cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| match event {
+            TerminalEvent::TitleChanged => cx.notify(),
+            TerminalEvent::Exited => {
+                if let Some(ix) = this.tabs.iter().position(|t| &t.terminal == terminal) {
+                    this.close_tab_at(ix, window, cx);
+                }
+            }
+        });
+        self.tabs.push(Tab { terminal, _subscription: subscription });
+        self.activate(self.tabs.len() - 1, window, cx);
+    }
+
+    fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(ix) else { return };
+        self.active = ix;
+        let focus = tab.terminal.focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(ix);
+        if self.tabs.is_empty() {
+            window.remove_window();
+            return;
+        }
+        let next = if self.active > ix || self.active >= self.tabs.len() { self.active.saturating_sub(1) } else { self.active };
+        self.activate(next.min(self.tabs.len() - 1), window, cx);
+    }
+
+    fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        match spawn_shell(&self.config, None) {
+            Ok((session, events)) => self.add_tab(session, events, window, cx),
+            Err(e) => tracing::error!("failed to start shell: {e:#}"),
+        }
+    }
+
+    fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab_at(self.active, window, cx);
+    }
+
+    fn cycle(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self.tabs.len() as isize;
+        if n > 0 {
+            self.activate((self.active as isize + delta).rem_euclid(n) as usize, window, cx);
+        }
     }
 
     pub fn reload_theme(&mut self, cx: &mut Context<Self>) {
@@ -92,10 +197,130 @@ impl Workspace {
             tracing::warn!("{w}");
         }
         self.theme = parsed.theme;
+        self.ui_font = crate::fonts::ui_family(&self.theme.token.font_ui, cx).into();
+        self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
         let style = terminal_style(&self.config, &self.theme, cx);
-        self.terminal.update(cx, |t, cx| t.set_style(style, cx));
+        for tab in &self.tabs {
+            tab.terminal.update(cx, |t, cx| t.set_style(style.clone(), cx));
+        }
         cx.notify();
     }
+
+    /// `sidebar-width` excludes the border, which sits outside it.
+    fn sidebar_width(&self) -> f32 {
+        let border = self.theme.sidebar.border.as_ref().map_or(0., |b| b.width);
+        self.config.sidebar_width.unwrap_or(self.theme.sidebar.width) + border
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = &self.theme;
+        let side = &t.sidebar;
+        let sidebar = with_border_right(
+            div()
+                .id("sidebar")
+                .w(px(self.sidebar_width()))
+                .h_full()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .bg(hsla(side.background))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
+            t,
+            &side.border,
+        );
+
+        let header = div()
+            .mt(px(SIDEBAR_HEADER_TOP))
+            .h(px(SIDEBAR_HEADER_HEIGHT))
+            .px(px(SIDEBAR_TEXT_INSET))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_size(px(10.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(hsla(t.token.tertiary))
+            .child("TABS")
+            .child(list_icon(hsla(t.token.tertiary)));
+
+        let tabs: Vec<AnyElement> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(ix, tab)| {
+                let view = tab.terminal.read(cx);
+                let title = view.display_title();
+                let process = view.process.clone().unwrap_or_default();
+                let active = ix == self.active;
+                let style = if active { &t.tabs.active } else { &t.tabs.normal };
+                let hover_bg = t.tabs.hover.background;
+                let card = div()
+                    .id(("tab", ix))
+                    .h(px(style.height.unwrap_or(TAB_HEIGHT)))
+                    .px(px(style.padding.left))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .rounded(px(style.radius))
+                    .bg(hsla(style.background))
+                    .shadow(shadows(&style.shadow))
+                    .text_color(hsla(style.foreground))
+                    .text_size(px(style.font_size))
+                    .font_weight(FontWeight(style.font_weight))
+                    .when(!active, |d| d.hover(move |s| s.bg(hsla(hover_bg))))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.activate(ix, window, cx);
+                        }),
+                    )
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(title))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(self.mono_font.clone())
+                            .text_size(px(10.))
+                            .text_color(hsla(native_tertiary_label(t)))
+                            .child(process),
+                    );
+                // Inactive cards get a transparent border so text stays aligned
+                // with the bordered active card.
+                match &style.border {
+                    Some(b) => card.border(px(b.width)).border_color(hsla(t.border_color(b))),
+                    None => card.border(px(1.)).border_color(gpui::transparent_black()),
+                }
+                .into_any_element()
+            })
+            .collect();
+
+        sidebar
+            .child(header)
+            .child(div().px(px(SIDEBAR_INSET)).flex().flex_col().gap(px(TAB_GAP)).children(tabs))
+            .into_any_element()
+    }
+}
+
+/// AppKit's tertiary label color for the theme's mode.
+fn native_tertiary_label(t: &Theme) -> Rgba {
+    match t.meta.mode {
+        Mode::Light => Rgba { r: 0., g: 0., b: 0., a: 0.26 },
+        Mode::Dark => Rgba { r: 1., g: 1., b: 1., a: 0.25 },
+    }
+}
+
+/// Three-line "list" glyph used beside section headers.
+fn list_icon(color: gpui::Hsla) -> AnyElement {
+    let bar = |w: f32| div().h(px(1.5)).w(px(w)).rounded(px(0.75)).bg(color);
+    div()
+        .flex()
+        .flex_col()
+        .items_end()
+        .gap(px(2.))
+        .child(bar(7.))
+        .child(bar(5.5))
+        .child(bar(4.))
+        .into_any_element()
 }
 
 fn shadows(list: &[Shadow]) -> Vec<BoxShadow> {
@@ -110,48 +335,117 @@ fn shadows(list: &[Shadow]) -> Vec<BoxShadow> {
         .collect()
 }
 
+fn with_border<E: Styled>(el: E, t: &Theme, border: &Option<Border>) -> E {
+    match border {
+        Some(b) => el.border(px(b.width)).border_color(hsla(t.border_color(b))),
+        None => el,
+    }
+}
+
+fn with_border_right<E: Styled>(el: E, t: &Theme, border: &Option<Border>) -> E {
+    match border {
+        Some(b) => el.border_r(px(b.width)).border_color(hsla(t.border_color(b))),
+        None => el,
+    }
+}
+
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = self.render_sidebar(cx);
         let t = &self.theme;
         let c = &t.container;
-        let title = self.terminal.read(cx).title.clone().unwrap_or_else(|| "Motty".into());
+        let active = self.tabs.get(self.active).map(|tab| tab.terminal.clone());
+        let title = active.as_ref().map(|a| a.read(cx).display_title()).unwrap_or_default();
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title.clone();
+        }
 
-        let titlebar: AnyElement = div()
-            .h(px(t.titlebar.height))
-            .flex_none()
+        let title_band = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right(px(TITLE_RIGHT_INSET))
+            .h(px(TITLE_BAND))
             .flex()
             .items_center()
             .justify_center()
-            .when_some(t.titlebar.background, |d, bg| d.bg(hsla(bg)))
             .text_color(hsla(t.titlebar.foreground))
             .text_size(px(t.titlebar.font_size))
-            .font_weight(FontWeight(t.titlebar.font_weight))
-            .child(title)
-            .into_any_element();
+            .child(title);
 
-        let mut container = div()
+        let container = with_border(
+            div()
+                .flex_1()
+                .min_h_0()
+                .mt(px(c.margin.top))
+                .mr(px(c.margin.right))
+                .mb(px(c.margin.bottom))
+                .ml(px(c.margin.left))
+                .rounded(px(c.radius))
+                .overflow_hidden()
+                .bg(hsla(c.background))
+                .shadow(shadows(&c.shadow))
+                .children(active),
+            t,
+            &c.border,
+        );
+
+        let main = div()
+            .relative()
             .flex_1()
-            .min_h_0()
-            .mt(px(c.margin.top))
-            .mr(px(c.margin.right))
-            .mb(px(c.margin.bottom))
-            .ml(px(c.margin.left))
-            .rounded(px(c.radius))
-            .overflow_hidden()
-            .bg(hsla(c.background))
-            .shadow(shadows(&c.shadow))
-            .child(self.terminal.clone());
-        if let Some(border) = &c.border {
-            container = container.border(px(border.width)).border_color(hsla(t.border_color(border)));
-        }
-
-        div()
-            .size_full()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
-            .bg(hsla(t.window.background))
-            .font_family(t.token.font_ui.iter().find(|f| !f.starts_with('-')).cloned().unwrap_or_else(|| ".SystemUIFont".into()))
-            .child(titlebar)
+            .bg(hsla(t.terminal.background))
+            .child(
+                div()
+                    .id("titlebar")
+                    .h(px(t.titlebar.height.unwrap_or(TITLEBAR_RESERVE)))
+                    .flex_none()
+                    .on_mouse_down(MouseButton::Left, |event, window, _| {
+                        if event.click_count == 2 {
+                            window.titlebar_double_click();
+                        } else {
+                            window.start_window_move();
+                        }
+                    }),
+            )
             .child(container)
+            .child(title_band);
+
+        div()
+            .key_context("Workspace")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
+            .on_action(cx.listener(|this, _: &PreviousTab, w, cx| this.cycle(-1, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab1, w, cx| this.activate(0, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab2, w, cx| this.activate(1, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab3, w, cx| this.activate(2, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab4, w, cx| this.activate(3, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab5, w, cx| this.activate(4, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab6, w, cx| this.activate(5, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab7, w, cx| this.activate(6, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab8, w, cx| this.activate(7, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateLastTab, w, cx| {
+                let last = this.tabs.len().saturating_sub(1);
+                this.activate(last, w, cx)
+            }))
+            .size_full()
+            .flex()
+            .flex_row()
+            .bg(hsla(t.window.background))
+            .font_family(self.ui_font.clone())
+            .child(sidebar)
+            .child(main)
     }
 }
