@@ -539,7 +539,8 @@ impl Config {
             if let Ok(src) = std::fs::read_to_string(&path) {
                 let local =
                     std::fs::read_to_string(dir.join("config.local.toml")).unwrap_or_default();
-                let mut cfg = Self::parse(&format!("{src}\n{local}"));
+                let read = |p: &Path| std::fs::read_to_string(p).ok();
+                let mut cfg = Self::from_entries(layered(&src, &local, &dir, &read));
                 cfg.path = Some(path);
                 return cfg;
             }
@@ -549,6 +550,10 @@ impl Config {
 
     /// Defaults follow Otty's: ligatures on, Option is not Alt, no blinking.
     pub fn parse(src: &str) -> Self {
+        Self::from_entries(parse_entries(src))
+    }
+
+    fn from_entries((entries, mut warnings): (Vec<(String, toml::Value)>, Vec<String>)) -> Self {
         let mut out = Config {
             ligatures: true,
             sidebar_visible: true,
@@ -559,7 +564,6 @@ impl Config {
             clipboard_write: Access::Allow,
             ..Default::default()
         };
-        let (entries, mut warnings) = parse_entries(src);
         let mut warn = |k: &str, m: String| warnings.push(format!("config.toml {k}: {m}"));
         let str_of = |v: &toml::Value| v.as_str().map(str::to_owned);
         let num_of = |v: &toml::Value| {
@@ -578,6 +582,19 @@ impl Config {
         // Unknown enum values (`color_of` holds `warn` for the whole loop).
         let mut unknown = Vec::new();
         for (key, value) in &entries {
+            // A bare word where a number goes (`font-size = big`).
+            if value.is_str()
+                && matches!(
+                    key.as_str(),
+                    "font-size"
+                        | "sidebar-width"
+                        | "unfocused-split-opacity"
+                        | "details-panel-width"
+                )
+            {
+                unknown.push(format!("config.toml {key}: expected a number, got {value}"));
+                continue;
+            }
             let key = key.as_str();
             match key {
                 "theme" => out.theme = str_of(value),
@@ -998,10 +1015,137 @@ fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
             }
         }
         match toml::from_str::<toml::Table>(&stmt) {
-            Ok(table) => entries.extend(table),
-            Err(e) => warnings.push(format!("config.toml line {}: {}", n + 1, e.message())),
+            Ok(table) => entries.extend(table.into_iter().map(|(k, v)| (k, expand(v)))),
+            // Otty's reader is lenient: `theme = Nord`, `ligatures = on`.
+            Err(e) => match lenient(&stmt) {
+                Some(entry) => entries.push(entry),
+                None => warnings.push(format!("config.toml line {}: {}", n + 1, e.message())),
+            },
         }
     }
+    (entries, warnings)
+}
+
+/// `key = bare value` that isn't TOML: `on` / `off` as booleans, anything
+/// else as the string up to a ` #` comment.
+fn lenient(stmt: &str) -> Option<(String, toml::Value)> {
+    let (key, value) = stmt.split_once('=')?;
+    let key = key.trim();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let value = value.trim_start().split(" #").next()?.trim();
+    if value.is_empty() || value.contains('\n') {
+        return None;
+    }
+    let value = match value {
+        "on" => toml::Value::Boolean(true),
+        "off" => toml::Value::Boolean(false),
+        _ => expand(toml::Value::String(value.to_owned())),
+    };
+    Some((key.to_owned(), value))
+}
+
+/// `~` and `$VAR` (or `${VAR}`) expanded in a string value, and in the
+/// strings of an array.
+fn expand(value: toml::Value) -> toml::Value {
+    match value {
+        toml::Value::String(s) => toml::Value::String(expand_str(&s)),
+        toml::Value::Array(items) => toml::Value::Array(items.into_iter().map(expand).collect()),
+        other => other,
+    }
+}
+
+fn expand_str(s: &str) -> String {
+    let mut s = s.to_owned();
+    if s == "~" || s.starts_with("~/") {
+        let home = dirs::home_dir().unwrap_or_default();
+        s = format!("{}{}", home.display(), &s[1..]);
+    }
+    if !s.contains('$') {
+        return s;
+    }
+    let mut out = String::new();
+    let mut rest = s.as_str();
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let (name, used) = match after.strip_prefix('{') {
+            Some(inner) => match inner.find('}') {
+                Some(end) => (&inner[..end], end + 2),
+                None => ("", 0),
+            },
+            None => {
+                let end = after
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(after.len());
+                (&after[..end], end)
+            }
+        };
+        match std::env::var(name).ok().filter(|_| !name.is_empty()) {
+            Some(v) => out.push_str(&v),
+            // Not a variable that's set: left as written.
+            None => out.push_str(&rest[i..i + 1 + used]),
+        }
+        rest = &after[used..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The entries of `main` with its `include = path` files read first (in
+/// order, so later ones win and `main` wins over all), then `local`
+/// (config.local.toml): a key it sets, or resets with a `# key = …
+/// (reset to default)` line, comes only from it, lists included.
+fn layered(
+    main: &str,
+    local: &str,
+    dir: &Path,
+    read: &dyn Fn(&Path) -> Option<String>,
+) -> (Vec<(String, toml::Value)>, Vec<String>) {
+    let (main_entries, mut warnings) = parse_entries(main);
+    let mut entries = Vec::new();
+    let mut body = Vec::new();
+    for (key, value) in main_entries {
+        if key != "include" {
+            body.push((key, value));
+            continue;
+        }
+        let Some(path) = value.as_str() else {
+            warnings.push("config.toml include: expected a path".into());
+            continue;
+        };
+        let path = dir.join(path);
+        match read(&path) {
+            Some(src) => {
+                let (included, more) = parse_entries(&src);
+                // One level: an included file's own includes are ignored.
+                entries.extend(included.into_iter().filter(|(k, _)| k != "include"));
+                warnings.extend(more);
+            }
+            None => warnings.push(format!(
+                "config.toml include: can't read {}",
+                path.display()
+            )),
+        }
+    }
+    entries.extend(body);
+    let (local_entries, more) = parse_entries(local);
+    warnings.extend(more);
+    let mut local_keys: std::collections::HashSet<String> =
+        local_entries.iter().map(|(k, _)| k.clone()).collect();
+    local_keys.extend(local.lines().filter_map(|l| {
+        let rest = l.trim().strip_prefix('#')?.trim();
+        rest.ends_with("(reset to default)")
+            .then(|| rest.split_once('=').map(|(k, _)| k.trim().to_owned()))
+            .flatten()
+    }));
+    entries.retain(|(k, _)| !local_keys.contains(k));
+    entries.extend(local_entries.into_iter().filter(|(k, _)| k != "include"));
     (entries, warnings)
 }
 
@@ -1184,6 +1328,13 @@ pub fn files_fingerprint() -> u64 {
     for dir in [motty_dir(), otty_dir()] {
         stamp(&dir.join("config.toml"));
         stamp(&dir.join("config.local.toml"));
+        // Saving an included file reloads too.
+        let src = std::fs::read_to_string(dir.join("config.toml")).unwrap_or_default();
+        for (key, value) in parse_entries(&src).0 {
+            if let (true, Some(path)) = (key == "include", value.as_str()) {
+                stamp(&dir.join(path));
+            }
+        }
     }
     for dir in theme_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1407,6 +1558,57 @@ mod tests {
             Config::parse("auto-hide-tabs-panel = \"always\"\n").auto_hide_tabs_panel,
             AutoHide::Always
         );
+    }
+
+    #[test]
+    fn lenient_values_and_expansion() {
+        let cfg = Config::parse(
+            "theme = Nord # dark\nligatures = off\nsidebar-visible = on\ncursor-color = #ff0000\n",
+        );
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.theme.as_deref(), Some("Nord"));
+        assert!(!cfg.ligatures && cfg.sidebar_visible);
+        assert_eq!(cfg.cursor_color.map(|c| c.r), Some(1.));
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            expand_str("~/projects"),
+            format!("{}/projects", home.display())
+        );
+        assert_eq!(expand_str("$MOTTY_SURELY_UNSET/x"), "$MOTTY_SURELY_UNSET/x");
+        // SAFETY: tests in this module don't read this variable elsewhere.
+        unsafe { std::env::set_var("MOTTY_TEST_EXPAND", "fish") };
+        assert_eq!(
+            expand_str("/opt/${MOTTY_TEST_EXPAND}/bin/$MOTTY_TEST_EXPAND"),
+            "/opt/fish/bin/fish"
+        );
+    }
+
+    #[test]
+    fn includes_and_local_layering() {
+        let read = |p: &Path| match p.file_name()?.to_str()? {
+            "a.toml" => Some("theme = \"A\"\nfont-size = 11\nopen-with-app = \"X|x\"\n".into()),
+            "b.toml" => Some("theme = \"B\"\n".into()),
+            _ => None,
+        };
+        let main = "include = \"a.toml\"\ninclude = \"b.toml\"\nopen-with-app = \"Y|y\"\n";
+        let cfg = Config::from_entries(layered(main, "", Path::new("/c"), &read));
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.theme.as_deref(), Some("B"));
+        assert_eq!(cfg.font_size, Some(11.));
+        assert_eq!(cfg.open_with_apps.len(), 2);
+        // A local list replaces, and a reset line takes the key back to its
+        // default.
+        let local = "open-with-app = \"Z|z\"\n# font-size = 14 (reset to default)\n";
+        let cfg = Config::from_entries(layered(main, local, Path::new("/c"), &read));
+        assert_eq!(cfg.open_with_apps.len(), 1);
+        assert_eq!(cfg.font_size, None);
+        let missing = Config::from_entries(layered(
+            "include = \"nope.toml\"\n",
+            "",
+            Path::new("/c"),
+            &read,
+        ));
+        assert_eq!(missing.warnings.len(), 1);
     }
 
     #[test]
