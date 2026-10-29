@@ -44,7 +44,7 @@ pub enum Role {
     User,
     Assistant,
     Tool,
-    /// The agent's thinking (Claude) or reasoning summary (Codex).
+    /// The agent's thinking (Claude, Kimi) or reasoning summary (Codex).
     Reasoning,
 }
 
@@ -276,6 +276,13 @@ fn agent_of(path: &Path, roots: &Roots) -> Option<&'static str> {
         if jsonl && under(&roots.home.join(dir), 2) {
             return Some(agent);
         }
+    }
+    // `sessions/<workspace>/session_<id>/agents/main/wire.jsonl`.
+    if name == "wire.jsonl"
+        && path.parent()?.file_name()? == "main"
+        && under(&kimi_home(roots).join("sessions"), 5)
+    {
+        return Some("kimi");
     }
     let chat = path.parent()?;
     if jsonl
@@ -1056,6 +1063,9 @@ fn kimi_messages(v: &Value) -> Vec<Message> {
                 Some("content.part") if e["part"]["type"] == "text" => e["part"]["text"]
                     .as_str()
                     .and_then(|t| message(Role::Assistant, t, time)),
+                Some("content.part") if e["part"]["type"] == "think" => e["part"]["think"]
+                    .as_str()
+                    .and_then(|t| message(Role::Reasoning, t, time)),
                 Some("tool.call") => {
                     tool_call(e["name"].as_str().unwrap_or_default(), &e["args"], time)
                 }
@@ -1837,6 +1847,7 @@ Done.
             texts,
             [
                 "Fix the flaky test",
+                "Look at the test first.",
                 "Running it.",
                 "⏺ Shell  cargo test flaky",
                 "⎿ test flaky ... ok",
@@ -1846,10 +1857,18 @@ Done.
         );
         let roles: Vec<Role> = messages.iter().map(|m| m.role).collect();
         use Role::*;
-        assert_eq!(roles, [User, Assistant, Tool, Tool, Assistant, User]);
+        assert_eq!(
+            roles,
+            [User, Reasoning, Assistant, Tool, Tool, Assistant, User]
+        );
+        // The History view knows the log by its path.
+        assert_eq!(
+            at(&session.path, &roots).map(|s| s.id),
+            Some(KIMI_ID.to_owned())
+        );
         assert_eq!(messages[0].time.as_deref(), Some("2026-10-28T09:00:00Z"));
         // Seconds, as older logs have them.
-        assert_eq!(messages[5].time.as_deref(), Some("2026-10-28T09:01:00Z"));
+        assert_eq!(messages[6].time.as_deref(), Some("2026-10-28T09:01:00Z"));
 
         let texts: Vec<String> = transcript(renamed).into_iter().map(|m| m.text).collect();
         assert_eq!(
