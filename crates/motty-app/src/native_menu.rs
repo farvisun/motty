@@ -16,6 +16,26 @@ pub enum Entry {
         entries: Vec<Entry>,
     },
     Separator,
+    /// A section title (`WORKING DIRECTORY`); not an item.
+    Header(SharedString),
+    /// A greyed-out line with an SF Symbol drawn in it (a folder's path);
+    /// not an item.
+    Info {
+        label: SharedString,
+        symbol: &'static str,
+    },
+    /// Rename Tab's Name/Prefix switch, reset button and text field, as
+    /// the first row of Otty's title menu; not an item.
+    Name(NameField),
+}
+
+/// The tab's name as the field shows it, and as it's left when the menu
+/// closes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NameField {
+    pub text: String,
+    /// "Prefix" rather than "Name".
+    pub prefix: bool,
 }
 
 pub struct Item {
@@ -102,32 +122,65 @@ pub fn popup_then(
     cx: &mut App,
     on_close: impl FnOnce(Option<usize>, &mut Window, &mut App) + 'static,
 ) {
+    popup_named(
+        entries,
+        position,
+        selected,
+        None,
+        window,
+        cx,
+        |picked, _, window, cx| on_close(picked, window, cx),
+    );
+}
+
+/// [`popup_then`] for a menu with an [`Entry::Name`] field: `on_close`
+/// also gets the field's value when it was changed (or reset to empty).
+/// `dark` draws it dark or light rather than as the system is.
+pub fn popup_named(
+    entries: Vec<Entry>,
+    position: Point<Pixels>,
+    selected: Option<usize>,
+    dark: Option<bool>,
+    window: &mut Window,
+    cx: &mut App,
+    on_close: impl FnOnce(Option<usize>, Option<NameField>, &mut Window, &mut App) + 'static,
+) {
     #[cfg(target_os = "macos")]
-    mac::popup(entries, position, selected, window, cx, on_close);
+    mac::popup(entries, position, selected, dark, window, cx, on_close);
     #[cfg(not(target_os = "macos"))]
-    on_close(None, window, cx);
+    on_close(None, None, window, cx);
     #[cfg(not(target_os = "macos"))]
-    let _ = (entries, position, selected);
+    let _ = (entries, position, selected, dark);
 }
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use gpui::{App, Keystroke, Pixels, Point, Window};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
     use objc2_app_kit::{
-        NSControlStateValueOn, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSAttributedStringAttachmentConveniences, NSAutoresizingMaskOptions, NSButton, NSColor,
+        NSControlStateValueOn, NSEventModifierFlags, NSFont, NSFontAttributeName,
+        NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem, NSSegmentSwitchTracking,
+        NSSegmentedControl, NSTextAttachment, NSTextField, NSTextFieldBezelStyle, NSView,
     };
-    use objc2_foundation::{NSPoint, NSString};
+    use objc2_foundation::{
+        NSArray, NSAttributedString, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize,
+        NSString,
+    };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    use super::Entry;
+    use super::{Entry, NameField};
 
     struct Ivars {
         picked: Cell<isize>,
+        /// The name field's controls, read when the menu closes.
+        name: RefCell<Option<(Retained<NSSegmentedControl>, Retained<NSTextField>)>>,
+        reset: Cell<bool>,
     }
 
     define_class!(
@@ -143,13 +196,52 @@ mod mac {
             fn pick(&self, sender: &NSMenuItem) {
                 self.ivars().picked.set(sender.tag());
             }
+
+            /// Return in the name field: done.
+            #[unsafe(method(nameEntered:))]
+            fn name_entered(&self, sender: &NSView) {
+                close_menu(sender);
+            }
+
+            /// The reset button: back to the automatic title.
+            #[unsafe(method(resetName:))]
+            fn reset_name(&self, sender: &NSView) {
+                self.ivars().reset.set(true);
+                close_menu(sender);
+            }
+
+            #[unsafe(method(nameMode:))]
+            fn name_mode(&self, sender: &NSSegmentedControl) {
+                if let Some((_, field)) = self.ivars().name.borrow().as_ref() {
+                    field.setPlaceholderString(Some(&NSString::from_str(placeholder(
+                        sender.selectedSegment() == 1,
+                    ))));
+                }
+            }
         }
     );
+
+    fn close_menu(view: &NSView) {
+        // SAFETY: the item belongs to the menu being tracked, which outlives
+        // this action.
+        if let Some(menu) = view
+            .enclosingMenuItem()
+            .and_then(|item| unsafe { item.menu() })
+        {
+            menu.cancelTracking();
+        }
+    }
+
+    fn placeholder(prefix: bool) -> &'static str {
+        if prefix { "Prefix" } else { "Tab name" }
+    }
 
     impl Target {
         fn new(mtm: MainThreadMarker) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(Ivars {
                 picked: Cell::new(-1),
+                name: RefCell::new(None),
+                reset: Cell::new(false),
             });
             unsafe { msg_send![super(this), init] }
         }
@@ -159,9 +251,10 @@ mod mac {
         entries: Vec<Entry>,
         position: Point<Pixels>,
         selected: Option<usize>,
+        dark: Option<bool>,
         window: &mut Window,
         cx: &mut App,
-        on_close: impl FnOnce(Option<usize>, &mut Window, &mut App) + 'static,
+        on_close: impl FnOnce(Option<usize>, Option<NameField>, &mut Window, &mut App) + 'static,
     ) {
         let Ok(handle) = HasWindowHandle::window_handle(window) else {
             return;
@@ -172,10 +265,10 @@ mod mac {
         let view = handle.ns_view.as_ptr() as usize;
         let window_handle = Window::window_handle(window);
         cx.spawn(async move |cx| {
-            let picked = run(view, &entries, position, selected);
+            let (picked, name) = run(view, &entries, position, selected, dark);
             cx.update(|cx| {
                 let _ = window_handle.update(cx, |_, window, cx| {
-                    on_close(picked, window, cx);
+                    on_close(picked, name, window, cx);
                     // The tracking loop swallowed the mouse-up; draw again so
                     // the window picks up where it was.
                     window.refresh();
@@ -190,8 +283,11 @@ mod mac {
         entries: &[Entry],
         position: Point<Pixels>,
         selected: Option<usize>,
-    ) -> Option<usize> {
-        let mtm = MainThreadMarker::new()?;
+        dark: Option<bool>,
+    ) -> (Option<usize>, Option<NameField>) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return (None, None);
+        };
         // SAFETY: the pointer is GPUI's NSView for a window that's still open:
         // this runs on the main thread right after the click that asked for
         // the menu, before the window could be closed.
@@ -207,6 +303,17 @@ mod mac {
             selected,
             &mut positioning,
         );
+        if let Some(dark) = dark {
+            // SAFETY: the appearance names are AppKit constants.
+            let name = unsafe {
+                if dark {
+                    NSAppearanceNameDarkAqua
+                } else {
+                    NSAppearanceNameAqua
+                }
+            };
+            menu.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
+        }
         // GPUI's view is flipped relative to AppKit's: y grows downward.
         let height = view.bounds().size.height;
         let at = NSPoint::new(
@@ -215,7 +322,91 @@ mod mac {
         );
         menu.popUpMenuPositioningItem_atLocation_inView(positioning.as_deref(), at, Some(view));
         let picked = target.ivars().picked.get();
-        (picked >= 0).then_some(picked as usize)
+        let name = target
+            .ivars()
+            .name
+            .borrow()
+            .as_ref()
+            .and_then(|(mode, field)| {
+                let before = entries.iter().find_map(|e| match e {
+                    Entry::Name(n) => Some(n.clone()),
+                    _ => None,
+                })?;
+                let after = if target.ivars().reset.get() {
+                    NameField::default()
+                } else {
+                    NameField {
+                        text: field.stringValue().to_string(),
+                        prefix: mode.selectedSegment() == 1,
+                    }
+                };
+                (after != before).then_some(after)
+            });
+        ((picked >= 0).then_some(picked as usize), name)
+    }
+
+    /// Otty's title menu's first row: Name | Prefix, a reset button, and
+    /// the text field.
+    fn name_view(spec: &NameField, target: &Target, mtm: MainThreadMarker) -> Retained<NSView> {
+        const W: f64 = 280.;
+        const H: f64 = 74.;
+        let rect =
+            |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., W, H));
+        // The menu widens the row to fit its longest item; the field and
+        // the reset button follow.
+        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        let labels = NSArray::from_retained_slice(&[
+            NSString::from_str("Name"),
+            NSString::from_str("Prefix"),
+        ]);
+        let mode = unsafe {
+            NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+                &labels,
+                NSSegmentSwitchTracking::SelectOne,
+                Some(target as &AnyObject),
+                Some(sel!(nameMode:)),
+                mtm,
+            )
+        };
+        mode.setFrame(rect(16., H - 8. - 24., 140., 24.));
+        mode.setWidth_forSegment(68., 0);
+        mode.setWidth_forSegment(68., 1);
+        mode.setSelectedSegment(if spec.prefix { 1 } else { 0 });
+        view.addSubview(&mode);
+
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str("arrow.uturn.backward"),
+            Some(&NSString::from_str("Reset")),
+        ) {
+            let reset = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &image,
+                    Some(target as &AnyObject),
+                    Some(sel!(resetName:)),
+                    mtm,
+                )
+            };
+            reset.setBordered(false);
+            reset.setFrame(rect(W - 16. - 22., H - 8. - 23., 22., 22.));
+            reset.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+            view.addSubview(&reset);
+        }
+
+        let field = NSTextField::textFieldWithString(&NSString::from_str(&spec.text), mtm);
+        field.setPlaceholderString(Some(&NSString::from_str(placeholder(spec.prefix))));
+        field.setBezeled(true);
+        field.setBezelStyle(NSTextFieldBezelStyle::RoundedBezel);
+        field.setFont(Some(&NSFont::systemFontOfSize(13.)));
+        field.setFrame(rect(15., 8., W - 30., 28.));
+        field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        unsafe {
+            field.setTarget(Some(target as &AnyObject));
+            field.setAction(Some(sel!(nameEntered:)));
+        }
+        view.addSubview(&field);
+        *target.ivars().name.borrow_mut() = Some((mode, field));
+        view
     }
 
     fn build(
@@ -231,6 +422,23 @@ mod mac {
         for entry in entries {
             match entry {
                 Entry::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+                Entry::Header(title) => {
+                    menu.addItem(&NSMenuItem::sectionHeaderWithTitle(
+                        &NSString::from_str(title),
+                        mtm,
+                    ));
+                }
+                Entry::Info { label, symbol } => {
+                    let item = NSMenuItem::new(mtm);
+                    item.setEnabled(false);
+                    item.setAttributedTitle(Some(&info_title(label, symbol)));
+                    menu.addItem(&item);
+                }
+                Entry::Name(spec) => {
+                    let item = NSMenuItem::new(mtm);
+                    item.setView(Some(&name_view(spec, target, mtm)));
+                    menu.addItem(&item);
+                }
                 Entry::Submenu { label, entries } => {
                     let item = NSMenuItem::new(mtm);
                     item.setTitle(&NSString::from_str(label));
@@ -276,6 +484,40 @@ mod mac {
             }
         }
         menu
+    }
+
+    /// `label` after `symbol`, in the menu's font and the secondary label
+    /// colour. Menus here don't draw items' images, so the symbol goes into
+    /// the title.
+    fn info_title(label: &str, symbol: &str) -> Retained<NSAttributedString> {
+        let text = NSMutableAttributedString::new();
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(symbol),
+            None,
+        ) {
+            let attachment = NSTextAttachment::new();
+            attachment.setImage(Some(&image));
+            text.appendAttributedString(&NSAttributedString::attributedStringWithAttachment(
+                &attachment,
+            ));
+            text.appendAttributedString(&NSAttributedString::from_nsstring(&NSString::from_str(
+                "  ",
+            )));
+        }
+        text.appendAttributedString(&NSAttributedString::from_nsstring(&NSString::from_str(
+            label,
+        )));
+        let range = NSRange::new(0, text.length());
+        // SAFETY: the values have the types these keys take.
+        unsafe {
+            text.addAttribute_value_range(NSFontAttributeName, &NSFont::menuFontOfSize(0.), range);
+            text.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &NSColor::secondaryLabelColor(),
+                range,
+            );
+        }
+        Retained::into_super(text)
     }
 
     fn modifier_mask(ks: &Keystroke) -> NSEventModifierFlags {

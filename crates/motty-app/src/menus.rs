@@ -109,6 +109,19 @@ pub fn refresh(cx: &mut App) {
     cx.default_global::<State>().pending = Some(task);
 }
 
+/// The focused pane's repository as the menu bar last found it: its
+/// branch (marked when a worktree) and its web page.
+pub fn git(cx: &App) -> Option<(String, Option<String>)> {
+    let state = cx.try_global::<State>()?;
+    let git = state.shown.as_ref()?.1.git.as_ref()?;
+    let branch = if git.worktree {
+        format!("{} (worktree)", git.branch)
+    } else {
+        git.branch.clone()
+    };
+    Some((branch, git.web.clone()))
+}
+
 fn look_up(s: &Snapshot) -> Live {
     let git = s.cwd.as_deref().and_then(git_info);
     let pids: Vec<i32> = s

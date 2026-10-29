@@ -12,7 +12,7 @@ use gpui::{
 use super::picker::edit_query;
 use super::{Content, Tab, Workspace, days_ago, tab_title};
 use crate::agents::Badge;
-use crate::native_menu::{self, Entry, Item};
+use crate::native_menu::{self, Entry, Item, NameField};
 
 /// A name given with Rename Tab.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +142,79 @@ enum Pick {
     Order(Order),
     RemoveDividers,
     Action(Box<dyn gpui::Action>),
+    OpenIn(String, PathBuf),
+    Privilege(Privilege),
+    DefaultPrivileges,
+    /// A row that only shows something.
+    Nothing,
+}
+
+/// The title menu's Notifications & Privileges switches.
+#[derive(Clone, Copy, Debug)]
+enum Privilege {
+    ExitStatus,
+    Processing,
+    Complete,
+    Awaiting,
+    NotifyComplete,
+    NotifyAwaiting,
+    Caffeinate,
+}
+
+impl Privilege {
+    const ALL: [Privilege; 7] = [
+        Privilege::ExitStatus,
+        Privilege::Processing,
+        Privilege::Complete,
+        Privilege::Awaiting,
+        Privilege::NotifyComplete,
+        Privilege::NotifyAwaiting,
+        Privilege::Caffeinate,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Privilege::ExitStatus => "Badge Exit Status",
+            Privilege::Processing => "Badge While Processing",
+            Privilege::Complete => "Badge When Task Completes",
+            Privilege::Awaiting => "Badge When Awaiting Input",
+            Privilege::NotifyComplete => "Notify When Task Completes",
+            Privilege::NotifyAwaiting => "Notify When Awaiting Input",
+            Privilege::Caffeinate => "Prevent Sleep While Processing",
+        }
+    }
+
+    fn field(self, b: &mut motty_theme::Badges) -> &mut bool {
+        match self {
+            Privilege::ExitStatus => &mut b.exit_status,
+            Privilege::Processing => &mut b.agent_processing,
+            Privilege::Complete => &mut b.agent_complete,
+            Privilege::Awaiting => &mut b.agent_awaiting,
+            Privilege::NotifyComplete => &mut b.notify_complete,
+            Privilege::NotifyAwaiting => &mut b.notify_awaiting,
+            Privilege::Caffeinate => &mut b.caffeinate,
+        }
+    }
+
+    fn get(self, b: &motty_theme::Badges) -> bool {
+        let mut b = *b;
+        *self.field(&mut b)
+    }
+}
+
+/// `~/code/motty/`: a folder as the title menu shows it.
+fn folder_label(path: &Path) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    let shown = match path.strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    };
+    if shown.ends_with('/') {
+        shown
+    } else {
+        format!("{shown}/")
+    }
 }
 
 /// Menu rows and what each one does, counted as `native_menu` counts.
@@ -244,50 +317,184 @@ impl Workspace {
         );
     }
 
-    /// A click on the window's title: what Otty's title menu offers.
-    pub(super) fn show_title_menu(
-        &mut self,
-        at: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// A click on the window's title: Otty's title menu, with the tab's
+    /// name field on top, under the title.
+    pub(super) fn show_title_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ix = self.active;
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
-        let badge = self.tab_summary(tab, cx).badge.is_some();
-        let terminal = tab.terms().is_some();
+        let focus = window
+            .focused(cx)
+            .unwrap_or_else(|| self.focus_handle.clone());
+        let key = |action: &dyn gpui::Action| {
+            window
+                .highest_precedence_binding_for_action_in(action, &focus)
+                .and_then(|b| b.keystrokes().first().map(|k| k.inner().clone()))
+        };
+        let act = |label: &str, action: Box<dyn gpui::Action>| {
+            let keystroke = key(&*action);
+            (
+                Item::new(label.to_owned()).keystroke(keystroke),
+                Pick::Action(action),
+            )
+        };
+        let view = tab.terms().map(|t| t.focused.clone());
+        let cwd = view.as_ref().and_then(|v| v.read(cx).cwd.clone());
+
         let mut m = Menu::new();
-        m.item(Item::new("Rename Tab…"), Pick::Rename);
-        m.item(Item::new("About This Tab…"), Pick::About);
-        m.item(Item::new("Clear Badge").enabled(badge), Pick::ClearBadge);
+        m.entries.push(Entry::Name(NameField {
+            text: tab
+                .name
+                .as_ref()
+                .map(|n| n.text.clone())
+                .unwrap_or_default(),
+            prefix: tab.name.as_ref().is_some_and(|n| n.prefix),
+        }));
         m.separator();
-        m.item(
-            Item::new("Copy Path").enabled(terminal),
-            Pick::Action(Box::new(crate::actions::CopyPath)),
-        );
-        m.item(
-            Item::new("Reveal in Finder").enabled(terminal),
-            Pick::Action(Box::new(crate::actions::RevealInFinder)),
-        );
+        if let Some(cwd) = &cwd {
+            m.entries.push(Entry::Header("WORKING DIRECTORY".into()));
+            m.entries.push(Entry::Info {
+                label: folder_label(cwd).into(),
+                symbol: "folder.fill",
+            });
+            let (item, pick) = act("Copy Path", Box::new(crate::actions::CopyPath));
+            m.item(item, pick);
+            let (item, pick) = act("Reveal in Finder", Box::new(crate::actions::RevealInFinder));
+            m.item(item, pick);
+            let apps = super::open_with_apps(&self.config.open_with_apps);
+            m.sub(
+                "Open in",
+                apps.into_iter()
+                    .map(|(name, bundle)| (Item::new(name), Pick::OpenIn(bundle, cwd.clone())))
+                    .collect(),
+            );
+            m.separator();
+            let mut git = Vec::new();
+            match crate::menus::git(cx) {
+                Some((branch, web)) => {
+                    let typed = |label: &str, line: &str, run: bool| {
+                        (
+                            Item::new(label.to_owned()),
+                            Pick::Action(Box::new(crate::actions::TypeCommand::new(line, run))),
+                        )
+                    };
+                    git.push((Item::new(branch).enabled(false), Pick::Nothing));
+                    git.push(typed("Commit…", "git commit -m ", false));
+                    git.push(typed("Create Branch…", "git switch -c ", false));
+                    git.push(typed("Fetch…", "git fetch", true));
+                    git.push(typed("Pull…", "git pull", true));
+                    git.push(typed("Push…", "git push", true));
+                    if let Some(url) = web {
+                        git.push((
+                            Item::new("Open Remote URL"),
+                            Pick::Action(Box::new(crate::actions::OpenUrl { url })),
+                        ));
+                    }
+                }
+                None => git.push((
+                    Item::new("Not a Git Repository").enabled(false),
+                    Pick::Nothing,
+                )),
+            }
+            m.sub("Git", git);
+            m.separator();
+        }
+        if tab.terms().is_some() {
+            let current = tab.privileges.unwrap_or(self.config.badges);
+            let mut privileges: Vec<(Item, Pick)> = Privilege::ALL
+                .into_iter()
+                .map(|p| {
+                    (
+                        Item::new(p.label()).checked(p.get(&current)),
+                        Pick::Privilege(p),
+                    )
+                })
+                .collect();
+            privileges.push((
+                Item::new("Use Settings Defaults").enabled(tab.privileges.is_some()),
+                Pick::DefaultPrivileges,
+            ));
+            m.sub("Notifications & Privileges", privileges);
+            m.separator();
+            use crate::actions::*;
+            m.sub(
+                "Split View",
+                vec![
+                    act("Split Right", Box::new(SplitRight)),
+                    act("Split Left", Box::new(SplitLeft)),
+                    act("Split Down", Box::new(SplitDown)),
+                    act("Split Up", Box::new(SplitUp)),
+                    act("Equalize Splits", Box::new(EqualizeSplits)),
+                    act("Zoom Split", Box::new(ZoomSplit)),
+                ],
+            );
+        }
+        let mut about = Vec::new();
+        if let Some(v) = &view {
+            let v = v.read(cx);
+            about.push((
+                Item::new(format!("Pane {}", v.id)).enabled(false),
+                Pick::Nothing,
+            ));
+            about.push((
+                Item::new(v.process.clone().unwrap_or_else(|| "shell".into())).enabled(false),
+                Pick::Nothing,
+            ));
+            about.push((
+                Item::new("Copy Pane ID"),
+                Pick::Action(Box::new(crate::actions::CopyText {
+                    text: v.id.to_string(),
+                })),
+            ));
+        }
+        about.push((Item::new("About This Tab…"), Pick::About));
+        m.sub("About this Pane", about);
         m.separator();
-        m.item(
-            Item::new("Details Panel").checked(self.details.visible),
-            Pick::Action(Box::new(crate::actions::ToggleDetailsPanel)),
-        );
+        {
+            use crate::actions::*;
+            for (item, pick) in [
+                act("Find", Box::new(Find)),
+                act("Find in All Tabs", Box::new(GlobalSearch)),
+                act("Jump to", Box::new(JumpTo)),
+                act("Command Palette", Box::new(CommandPalette)),
+            ] {
+                m.item(item, pick);
+            }
+        }
+
+        // Under the title, its left edge just outside the title's.
+        let title = self.title_bounds.get();
+        let at = gpui::point(title.left() - px(7.), title.bottom() + px(6.));
         let picks = m.picks;
         let this = cx.entity().downgrade();
-        native_menu::popup(
+        self.title_menu_open = true;
+        cx.notify();
+        let dark = self.theme.meta.mode == motty_theme::Mode::Dark;
+        native_menu::popup_named(
             m.entries,
             at,
             None,
+            Some(dark),
             window,
             cx,
-            move |picked, window, cx| {
-                let Some(pick) = picks.into_iter().nth(picked) else {
-                    return;
-                };
-                let _ = this.update(cx, |this, cx| this.run_tab_pick(ix, pick, window, cx));
+            move |picked, name, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.title_menu_open = false;
+                    if let Some(name) = name
+                        && let Some(tab) = this.tabs.get_mut(ix)
+                    {
+                        let text = name.text.trim();
+                        tab.name = (!text.is_empty()).then(|| TabName {
+                            text: text.to_owned(),
+                            prefix: name.prefix,
+                        });
+                    }
+                    if let Some(pick) = picked.and_then(|p| picks.into_iter().nth(p)) {
+                        this.run_tab_pick(ix, pick, window, cx);
+                    }
+                    cx.notify();
+                });
             },
         );
     }
@@ -385,6 +592,17 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            Pick::OpenIn(bundle, path) => super::open_in(&bundle, &path),
+            Pick::Privilege(p) => {
+                let mut b = self.tabs[ix].privileges.unwrap_or(self.config.badges);
+                let on = p.field(&mut b);
+                *on = !*on;
+                self.tabs[ix].privileges = Some(b);
+            }
+            Pick::DefaultPrivileges => {
+                self.tabs[ix].privileges = None;
+            }
+            Pick::Nothing => {}
         }
     }
 

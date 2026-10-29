@@ -63,6 +63,10 @@ const COLLAPSED_TITLE_RIGHT_INSET: f32 = 16.;
 const PILL_INTRUSION: f32 = 130. + 43.5 - TITLE_RIGHT_INSET;
 /// Top of the "TABS" header row and the first tab card.
 const SIDEBAR_HEADER_TOP: f32 = 37.5;
+/// What dragging the sidebar's edge allows, and how wide the grip is.
+const SIDEBAR_MIN: f32 = 160.;
+const SIDEBAR_MAX: f32 = 480.;
+const SIDEBAR_GRAB: f32 = 6.;
 const SIDEBAR_HEADER_HEIGHT: f32 = 22.5;
 const TAB_HEIGHT: f32 = 36.;
 const TAB_GAP: f32 = 2.;
@@ -114,6 +118,9 @@ pub(crate) struct Tab {
     name: Option<tabs::TabName>,
     /// Set with Mark Tab, shown until looked at (or Clear Badge).
     mark: Option<Badge>,
+    /// The title menu's Notifications & Privileges, when changed for this
+    /// tab; config.toml's otherwise.
+    privileges: Option<motty_theme::Badges>,
 }
 
 enum Content {
@@ -142,6 +149,7 @@ impl Tab {
             created: std::time::SystemTime::now(),
             name: None,
             mark: None,
+            privileges: None,
         }
     }
 
@@ -153,6 +161,7 @@ impl Tab {
             created: std::time::SystemTime::now(),
             name: None,
             mark: None,
+            privileges: None,
         }
     }
 
@@ -227,6 +236,11 @@ pub struct Workspace {
     next_split: usize,
     /// The split whose divider is being dragged.
     dragging: Option<usize>,
+    /// Dragging the sidebar's edge: its width meanwhile.
+    sidebar_drag: Option<f32>,
+    /// Where the window title was last drawn, for the title menu.
+    title_bounds: Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    title_menu_open: bool,
     _process_poll: Task<()>,
     _config_poll: Task<()>,
 }
@@ -445,6 +459,9 @@ impl Workspace {
             pane_subscriptions: HashMap::new(),
             next_split: 0,
             dragging: None,
+            sidebar_drag: None,
+            title_bounds: Rc::default(),
+            title_menu_open: false,
             _process_poll: process_poll,
             _config_poll: config_poll,
         };
@@ -554,6 +571,7 @@ impl Workspace {
                 prefix: state.name_prefix,
             }),
             mark: None,
+            privileges: None,
         })
     }
 
@@ -1366,10 +1384,50 @@ impl Workspace {
     /// `sidebar-width` excludes the border, which sits outside it.
     fn sidebar_width(&self) -> f32 {
         let border = self.theme.sidebar.border.as_ref().map_or(0., |b| b.width);
-        self.config
-            .sidebar_width
+        self.sidebar_inner_width() + border
+    }
+
+    /// `sidebar-width`, or where its edge is being dragged.
+    fn sidebar_inner_width(&self) -> f32 {
+        self.sidebar_drag
+            .or(self.config.sidebar_width)
             .unwrap_or(self.theme.sidebar.width)
-            + border
+    }
+
+    /// Follows the pointer while the sidebar's edge is dragged.
+    fn drag_sidebar(&mut self, event: &gpui::MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        if self.sidebar_drag.is_none() {
+            return false;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.finish_sidebar_drag(cx);
+            return true;
+        }
+        let border = self.theme.sidebar.border.as_ref().map_or(0., |b| b.width);
+        let width = (f32::from(event.position.x) - border).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        self.sidebar_drag = Some(width.round());
+        cx.notify();
+        true
+    }
+
+    /// Saves the dragged width as `sidebar-width`, as Otty does.
+    fn finish_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(width) = self.sidebar_drag else {
+            return;
+        };
+        let value = toml::Value::Integer(width as i64);
+        match motty_theme::config::save(&[("sidebar-width", Some(value))]) {
+            Ok(_) => {
+                self.config.sidebar_width = Some(width);
+                self.sidebar_drag = None;
+                cx.defer(reload_all);
+            }
+            Err(e) => {
+                tracing::warn!("couldn't save sidebar-width: {e}");
+                self.sidebar_drag = None;
+            }
+        }
+        cx.notify();
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1378,6 +1436,7 @@ impl Workspace {
         let sidebar = with_border_right(
             div()
                 .id("sidebar")
+                .relative()
                 .w(px(self.sidebar_width()))
                 .h_full()
                 .flex_none()
@@ -1481,6 +1540,25 @@ impl Workspace {
                             .flex_col()
                             .gap(px(TAB_GAP))
                             .children(list),
+                    ),
+            )
+            .child(
+                // Drag the edge to resize; it straddles the border.
+                div()
+                    .id("sidebar-edge")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-SIDEBAR_GRAB / 2.))
+                    .w(px(SIDEBAR_GRAB))
+                    .occlude()
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.sidebar_drag = Some(this.sidebar_inner_width());
+                        }),
                     ),
             )
             .into_any_element()
@@ -2089,7 +2167,7 @@ impl Workspace {
     fn titlebar_group_left(&self) -> f32 {
         let t = &self.theme;
         if self.sidebar_visible {
-            let width = self.config.sidebar_width.unwrap_or(t.sidebar.width);
+            let width = self.sidebar_inner_width();
             width - t.sidebar.padding.right - SIDEBAR_ICON_INSET + 6. - titlebar::GROUP
         } else {
             titlebar::COLLAPSED_LEFT
@@ -2530,11 +2608,12 @@ impl Render for Workspace {
                     .h(px(titlebar::BUTTON))
                     .flex()
                     .items_center()
-                    .when(self.pointer_inside, |d| {
+                    .when(self.pointer_inside || self.title_menu_open, |d| {
                         // The title and its "more" ellipsis are one button;
                         // its highlight and the ellipsis hang around the
                         // title without moving it.
                         let highlight = hsla(native_label(t, 0.08, 0.1));
+                        let bounds = self.title_bounds.clone();
                         d.child(
                             div()
                                 .id("title")
@@ -2545,14 +2624,17 @@ impl Render for Workspace {
                                 .right(px(-titlebar::TITLE_PAD_RIGHT))
                                 .rounded(px(titlebar::RADIUS))
                                 .hover(move |s| s.bg(highlight))
+                                .when(self.title_menu_open, |d| d.bg(highlight))
+                                .child(
+                                    gpui::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                                        .size_full(),
+                                )
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(
-                                        |this, event: &gpui::MouseDownEvent, window, cx| {
-                                            cx.stop_propagation();
-                                            this.show_title_menu(event.position, window, cx);
-                                        },
-                                    ),
+                                    cx.listener(|this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.show_title_menu(window, cx);
+                                    }),
                                 ),
                         )
                         .child(
@@ -2685,10 +2767,17 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, a: &TypeCommand, window, cx| {
                 this.type_command(a.clone(), window, cx)
             }))
-            .on_mouse_move(cx.listener(Self::drag_divider))
+            .on_mouse_move(cx.listener(|this, event, window, cx| {
+                if !this.drag_sidebar(event, cx) {
+                    this.drag_divider(event, window, cx);
+                }
+            }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.dragging = None),
+                cx.listener(|this, _, _, cx| {
+                    this.dragging = None;
+                    this.finish_sidebar_drag(cx);
+                }),
             )
             .on_action(
                 cx.listener(|this, _: &SplitRight, w, cx| {

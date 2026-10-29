@@ -28,7 +28,7 @@ impl Workspace {
             view.update(cx, |v, _| v.status = None);
             return self.touched(view, cx);
         }
-        let b = self.config.badges;
+        let b = self.badges_for(view);
         let looking = self.looking_at(view, window);
         let (prev, process, title) = {
             let v = view.read(cx);
@@ -115,7 +115,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.config.badges.exit_status
+        if !self.badges_for(view).exit_status
             || view
                 .read(cx)
                 .status
@@ -167,6 +167,13 @@ impl Workspace {
     }
 
     /// The tab holding `view` changed: it moves up in Inbox.
+    /// Notifications & Privileges for the tab `view` is in.
+    pub(super) fn badges_for(&self, view: &Entity<TerminalView>) -> motty_theme::Badges {
+        self.tab_of(view)
+            .and_then(|ix| self.tabs[ix].privileges)
+            .unwrap_or(self.config.badges)
+    }
+
     fn touched(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
         if let Some(ix) = self.tab_of(view) {
             self.tabs[ix].updated = SystemTime::now();
@@ -177,12 +184,15 @@ impl Workspace {
     /// Whether an agent in this window is working on something, for
     /// Prevent Sleep While Processing.
     pub fn agent_working(&self, cx: &gpui::App) -> bool {
-        self.config.badges.caffeinate
-            && self.panes().any(|(_, v)| {
-                v.read(cx).status.as_ref().is_some_and(|s| {
+        self.panes().any(|(ix, v)| {
+            self.tabs[ix]
+                .privileges
+                .unwrap_or(self.config.badges)
+                .caffeinate
+                && v.read(cx).status.as_ref().is_some_and(|s| {
                     s.agent.is_some() && s.in_turn && s.badge != Some(Badge::Awaiting)
                 })
-            })
+        })
     }
 
     /// The pane an agent's report is about: by pane id, else the pane whose
