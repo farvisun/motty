@@ -50,11 +50,17 @@ registered automatically. Saving a config or theme file applies it to open windo
 | `cursor-style` | `block` (default), `bar`, `underline`, `block_hollow`; programs may switch it |
 | `cursor-style-blink` | `default_off` (default) and `default_on` let programs turn blinking on or off; `always_off` and `always_on` don't |
 | `cursor-color`, `cursor-text` | Cursor colors for themes that don't set their own |
+| `cursor-animation` | `off` (default) or `smooth`: the caret glides along its row and pops on click and focus |
 | `window-hide-dirty-indicator` | Hide the close button's dot while a command runs |
 | `sidebar-visible` | Open windows with the tabs sidebar (default `true`; toggle with ⌘⇧L) |
 | `unfocused-split-opacity` | Opacity of split panes without focus (default `0.6`) |
 | `on-launch` | `restore_session` (default) reopens last session's windows; `new_window` starts fresh |
 | `scrollback-lines`, `shell` | Behaviour |
+| `terminal-scroll-smooth` | Scroll by the pixel, snapping to a row when the gesture ends (default `true`) |
+| `output-scroll-animation` | How output that scrolls the screen moves: `auto` (follows smooth scroll), `off`, `smooth` |
+| `terminal-scroll-past-end`, `terminal-scroll-past-first-line` | Scroll past the last or first line, Otty's modes (default `disabled`) |
+| `terminal-scrollbar-hide-on-auto-scroll` | Show the scrollbar only while scrolled away from the live output |
+| `dedup-repaint-scrollback` | Drop the stale copies apps that repaint more than the window (Claude Code) leave in scrollback (default `true`) |
 
 ### Key bindings
 
