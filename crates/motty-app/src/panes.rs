@@ -222,6 +222,8 @@ pub struct PaneStyle<'a> {
     pub on_drag_start: Rc<DragStart>,
     /// `focus-follows-mouse`: called with the pane under a moving pointer.
     pub on_hover: Option<Rc<PaneHover>>,
+    /// Drawn over each pane (its drag capsule, drop zones), by entity.
+    pub overlays: std::cell::RefCell<std::collections::HashMap<EntityId, AnyElement>>,
 }
 
 pub type PaneHover = dyn Fn(&PaneItem, &MouseMoveEvent, &mut Window, &mut App);
@@ -272,6 +274,19 @@ impl<T: Clone + PartialEq> Pane<T> {
             Pane::Split(s) => {
                 s.first.split(target, new.clone(), direction, id)
                     || s.second.split(target, new, direction, id)
+            }
+        }
+    }
+
+    /// Exchanges the places of `a` and `b`.
+    pub fn swap(&mut self, a: &T, b: &T) {
+        match self {
+            Pane::Leaf(view) if view == a => *view = b.clone(),
+            Pane::Leaf(view) if view == b => *view = a.clone(),
+            Pane::Leaf(_) => {}
+            Pane::Split(s) => {
+                s.first.swap(a, b);
+                s.second.swap(a, b);
             }
         }
     }
@@ -437,7 +452,9 @@ impl Pane {
                     let view = view.clone();
                     d.on_mouse_move(move |event, window, cx| hover(&view, event, window, cx))
                 })
+                .relative()
                 .child(view.element())
+                .children(style.overlays.borrow_mut().remove(&view.entity_id()))
                 .into_any_element(),
             Pane::Split(s) => {
                 let horizontal = s.axis == Axis::Horizontal;

@@ -227,11 +227,22 @@ impl Workspace {
             )
             .on_drag(tabs::TabDrag { ix }, {
                 let title = summary.title.clone();
+                let weak = cx.entity().downgrade();
                 move |_, _, _, cx| {
+                    if let Some(this) = weak.upgrade() {
+                        this.update(cx, |this, _| this.tab_drag_started(ix));
+                    }
                     let title = title.clone();
                     cx.new(|_| tabs::DragPreview { title })
                 }
             })
+            .drag_over::<super::pane_drag::PaneDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
+            .on_drop(
+                cx.listener(move |this, drag: &super::pane_drag::PaneDrag, window, cx| {
+                    cx.stop_propagation();
+                    this.drop_on_tab(drag.item.clone(), ix, window, cx)
+                }),
+            )
             .drag_over::<tabs::TabDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
             .on_drop(cx.listener(move |this, drag: &tabs::TabDrag, window, cx| {
                 this.move_tab(drag.ix, ix, window, cx)

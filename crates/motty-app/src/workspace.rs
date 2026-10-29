@@ -35,6 +35,7 @@ mod files;
 mod global_search;
 mod hover_card;
 mod menu_actions;
+mod pane_drag;
 mod views;
 pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
@@ -301,6 +302,7 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
+    pane_drag: pane_drag::PaneDragState,
     /// Terminals a folder pane stands in for (View ▸ Switch to View).
     switched: HashMap<EntityId, PaneItem>,
     /// Ids for new splits.
@@ -616,6 +618,7 @@ impl Workspace {
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
             switched: HashMap::new(),
+            pane_drag: Default::default(),
             next_split: 0,
             dragging: None,
             sidebar_drag: None,
@@ -1552,7 +1555,10 @@ impl Workspace {
         let focused = tab.focused.clone();
         let split = matches!(tab.root, Pane::Split(_));
         let weak = cx.entity().downgrade();
+        let leaves: Vec<PaneItem> = tab.root.leaves().into_iter().cloned().collect();
+        let overlays = self.pane_overlays(&leaves, cx);
         let style = PaneStyle {
+            overlays: overlays.into(),
             divider: hsla(self.theme.divider.color),
             divider_width: self.theme.divider.width,
             dimmed: &move |view| split && *view != focused,
@@ -1720,7 +1726,11 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .bg(hsla(side.background))
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+                // A pane dropped in the list's empty space becomes a tab.
+                .on_drop(cx.listener(|this, drag: &pane_drag::PaneDrag, window, cx| {
+                    this.drop_as_tab(drag.item.clone(), window, cx)
+                })),
             t,
             &side.border,
         );
@@ -2088,11 +2098,23 @@ impl Workspace {
             // Dragging a card puts the tab where it's dropped.
             .on_drag(tabs::TabDrag { ix }, {
                 let title = summary.title.clone();
+                let weak = cx.entity().downgrade();
                 move |_, _, _, cx| {
+                    if let Some(this) = weak.upgrade() {
+                        this.update(cx, |this, _| this.tab_drag_started(ix));
+                    }
                     let title = title.clone();
                     cx.new(|_| tabs::DragPreview { title })
                 }
             })
+            // A pane dropped on a tab joins it.
+            .drag_over::<pane_drag::PaneDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
+            .on_drop(
+                cx.listener(move |this, drag: &pane_drag::PaneDrag, window, cx| {
+                    cx.stop_propagation();
+                    this.drop_on_tab(drag.item.clone(), ix, window, cx)
+                }),
+            )
             .tooltip({
                 let this = cx.entity().downgrade();
                 move |_, cx| {
@@ -3167,6 +3189,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::note_window_bounds(window);
         self.refresh_looks(cx);
+        let tear_off = self.watch_tear_off(cx);
         self.auto_hide_sidebar();
         let sidebar = self.sidebar_shown().then(|| self.render_sidebar(cx));
         let mut tab_bar = self.tab_bar_shown().then(|| self.render_tab_bar(cx));
@@ -3652,6 +3675,7 @@ impl Render for Workspace {
             .children(details_button)
             .children(self.render_pills(window, cx))
             .children(overlays)
+            .child(tear_off)
     }
 }
 
