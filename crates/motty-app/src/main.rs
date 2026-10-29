@@ -1,5 +1,6 @@
 mod actions;
 mod agents;
+mod applescript;
 mod dock;
 mod dock_click;
 mod editor;
@@ -58,6 +59,7 @@ fn main() {
         )
         .init();
 
+    applescript::register();
     let app = application().with_assets(settings::Assets);
     // Files opened from Finder (recipes), handled once the app runs.
     let (opened_tx, opened) = async_channel::unbounded::<Vec<String>>();
@@ -83,6 +85,7 @@ fn main() {
         fonts::load(cx);
         ipc::start(cx);
         dock_click::install(cx);
+        applescript::install(cx);
         cx.spawn(async move |cx| {
             while let Ok(urls) = opened.recv().await {
                 cx.update(|cx| open_urls(urls, cx));

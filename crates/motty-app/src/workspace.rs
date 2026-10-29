@@ -42,6 +42,7 @@ mod new_menu;
 mod open_quickly;
 mod palette;
 mod recipes;
+mod scripting;
 mod search_view;
 mod status;
 mod tab_bar;
@@ -55,6 +56,7 @@ pub(crate) use details::{
     apps_for, listening_ports, open_in, open_with_apps, other_listening_ports, web_url,
 };
 pub(crate) use palette::keycaps;
+pub(crate) use scripting::ScriptTab;
 pub(crate) use tabs::MovedTab;
 pub use welcome::first_run;
 pub(crate) use welcome::{cli_command, install_cli};

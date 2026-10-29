@@ -200,7 +200,8 @@ pub struct Badges {
     /// `ipc-allow-send-keys`: `motty send` and agents may type into panes.
     pub ipc_send_keys: bool,
     /// `ipc-allow-sensitive-sessions`: …even into SSH sessions and
-    /// password prompts.
+    /// password prompts. AppleScript's `do script`, `contents` and
+    /// `history` reach SSH and sudo sessions only with it.
     pub ipc_sensitive: bool,
 }
 

@@ -3120,6 +3120,7 @@ dependencies = [
  "objc2-web-kit",
  "pulldown-cmark",
  "raw-window-handle",
+ "roxmltree 0.21.2",
  "serde",
  "serde_json",
  "sha2",
