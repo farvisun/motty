@@ -156,27 +156,27 @@ style-src 'unsafe-inline'; script-src 'nonce-{nonce}'\">\
 
 const BASE_CSS: &str = "\
 html,body{margin:0;background:var(--bg);color:var(--fg)}\
-body{font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;\
+body{font:13.5px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;\
 -webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}";
 
 const MARKDOWN_CSS: &str = "\
-main{box-sizing:border-box;max-width:1000px;margin:0 auto;padding:56px 40px 96px;word-wrap:break-word}\
+main{box-sizing:border-box;max-width:840px;margin:0 auto;padding:80px 40px 96px;word-wrap:break-word}\
 main>:first-child{margin-top:0}\
-p,ul,ol,dl,table,pre,blockquote,details,.footnote-definition{margin:0 0 16px}\
-h1,h2,h3,h4,h5,h6{margin:28px 0 16px;font-weight:700;line-height:1.25}\
-h1{font-size:28px;padding-bottom:.3em;border-bottom:1px solid var(--border)}\
-h2{font-size:22px;padding-bottom:.3em;border-bottom:1px solid var(--border)}\
-h3{font-size:18px}h4{font-size:16px}h5{font-size:14px}h6{font-size:13.5px;color:var(--muted)}\
+p,ul,ol,dl,table,pre,blockquote,details,.footnote-definition{margin:0 0 14px}\
+h1,h2,h3,h4,h5,h6{margin:28px 0 14px;font-weight:700;line-height:1.25}\
+h1{font-size:24px}\
+h2{font-size:19px}\
+h3{font-size:16px}h4{font-size:14px}h5{font-size:13.5px}h6{font-size:13px;color:var(--muted)}\
 a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}\
 strong{font-weight:700}del{color:var(--muted)}\
 hr{height:1px;margin:24px 0;border:0;background:var(--border)}\
 img{max-width:100%;box-sizing:content-box}\
-ul,ol{padding-left:2em}li+li{margin-top:4px}li>p{margin:8px 0}\
+ul,ol{padding-left:2em}li+li{margin-top:2px}li>p{margin:8px 0}\
 li:has(>input[type=checkbox]){list-style:none}\
 li>input[type=checkbox]{margin:0 .4em 0 -1.4em;vertical-align:middle}\
 code,kbd,pre,samp{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,monospace}\
 code{font-size:85%;padding:.2em .4em;border-radius:6px;background:var(--code-bg)}\
-pre{font-size:13.5px;line-height:1.5;padding:16px;border-radius:8px;background:var(--code-bg);\
+pre{font-size:12.5px;line-height:1.5;padding:16px;border-radius:8px;background:var(--code-bg);\
 overflow:auto;tab-size:4}\
 pre code{font-size:100%;padding:0;border-radius:0;background:none;white-space:pre}\
 kbd{font-size:12px;padding:2px 5px;border:1px solid var(--border);border-bottom-width:2px;\
@@ -190,10 +190,10 @@ blockquote[class^=markdown-alert]{color:var(--fg);border-left-color:var(--accent
 table{display:block;width:max-content;max-width:100%;overflow:auto;border-collapse:collapse;border-spacing:0}\
 th,td{padding:6px 13px;border:1px solid var(--border)}th{font-weight:600}\
 tr:nth-child(2n) td{background:var(--code-bg)}\
-.footnote-definition{font-size:14px;color:var(--muted)}\
+.footnote-definition{font-size:12.5px;color:var(--muted)}\
 .footnote-definition p{display:inline}.footnote-definition-label{margin-right:.4em}\
 sup.footnote-reference{font-size:75%}\
-pre.mermaid{font-size:13.5px}\
+pre.mermaid{font-size:13px}\
 pre.mermaid[data-processed]{background:none;padding:0;text-align:center;overflow:visible}\
 pre.mermaid svg{max-width:100%;height:auto}";
 

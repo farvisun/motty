@@ -2,7 +2,7 @@
 //! switch, Send to Chat and Share on the left; whether it's saved and
 //! Close on the right.
 
-use gpui::{AnyElement, Context, Hsla, MouseButton, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, Hsla, MouseButton, Window, div, prelude::*, px};
 use motty_render::hsla;
 use motty_theme::Rgba;
 
@@ -222,16 +222,47 @@ impl FileEditor {
             .into_any_element()
     }
 
+    /// Over the text when the file changed on disk under unsaved edits.
+    pub(super) fn render_disk_banner(&self, cx: &mut Context<Self>) -> AnyElement {
+        let fg = self.foreground();
+        let ink = move |a: f32| {
+            let mut c = fg;
+            c.a = a;
+            hsla(c)
+        };
+        div()
+            .flex_none()
+            .h(px(30.))
+            .mx(px(10.))
+            .mb(px(4.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(7.))
+            .bg(ink(0.06))
+            .text_size(px(12.))
+            .text_color(ink(0.75))
+            .child(
+                div()
+                    .flex_1()
+                    .child(format!("“{}” changed on disk.", self.title())),
+            )
+            .child(
+                button_row("disk-reload", "Reload".into(), ink(0.9), ink(0.08))
+                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+            )
+            .child(
+                button_row("disk-keep", "Keep My Changes".into(), ink(0.9), ink(0.08))
+                    .on_click(cx.listener(|this, _, _, cx| this.keep_changes(cx))),
+            )
+            .into_any_element()
+    }
+
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
         self.read_only = read_only || !self.can_edit;
         self.anchor = None;
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
-}
-
-/// What the toolbar says a file is, for the window title's subtitle.
-#[allow(dead_code)]
-pub(super) fn describe(read_only: bool) -> SharedString {
-    if read_only { "Read Only" } else { "Editing" }.into()
 }

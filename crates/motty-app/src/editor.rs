@@ -6,7 +6,9 @@
 //! any length cost only what's on screen.
 
 mod buffer;
+mod disk;
 pub mod highlight;
+mod preview_mode;
 mod prose;
 mod rows;
 mod toolbar;
@@ -118,6 +120,16 @@ pub struct FileEditor {
     error: Option<String>,
     /// Syntax colors, for a file in a known language.
     highlighter: Option<highlight::Highlighter>,
+    /// The rendered page of a Markdown, SVG or HTML file.
+    preview: Option<preview_mode::Preview>,
+    /// ⌘⌥W's soft wrap for this pane, over Settings › Editor's.
+    wrap: Option<bool>,
+    /// The file's modification time as last read or written.
+    mtime: Option<std::time::SystemTime>,
+    /// Something else changed the file while it had unsaved edits.
+    disk_changed: bool,
+    /// Polls the file (see `disk`); only an open pane's editor has one.
+    watching: Option<gpui::Task<()>>,
     style: Rc<TerminalStyle>,
     layout: Rc<RefCell<Layout>>,
     /// A text field rather than a file (see `prose`).
@@ -138,6 +150,14 @@ pub struct FileEditor {
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
+
+impl Drop for FileEditor {
+    fn drop(&mut self) {
+        if self.watching.is_some() {
+            self.clear_stash();
+        }
+    }
+}
 
 impl Focusable for FileEditor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -167,6 +187,11 @@ impl FileEditor {
             can_edit: true,
             error: None,
             highlighter: None,
+            preview: None,
+            wrap: None,
+            mtime: None,
+            disk_changed: false,
+            watching: None,
             style: Rc::new(style),
             layout: Rc::default(),
             prose: None,
@@ -200,6 +225,7 @@ impl FileEditor {
                 self.error = Some(e);
             }
         }
+        self.mtime = disk::modified(&path);
         let language = highlight::detect(Some(&path), self.buffer.line(0));
         self.highlighter = language.map(|l| highlight::Highlighter::new(Some(l)));
         self.path = Some(path);
@@ -700,6 +726,8 @@ impl FileEditor {
         match std::fs::write(path, &text) {
             Ok(()) => {
                 self.saved = text;
+                self.mtime = disk::modified(path);
+                self.disk_changed = false;
                 self.error = None;
                 cx.emit(EditorEvent::Changed);
                 cx.notify();
@@ -835,7 +863,7 @@ impl FileEditor {
             content - height + lh / 2.
         }
         .max(px(0.));
-        let max_x = if self.prefs.line_wrap {
+        let max_x = if self.wraps() {
             px(0.)
         } else {
             (layout.widest - layout.bounds.size.width + lh * 2.).max(self.scroll.x)
@@ -844,6 +872,11 @@ impl FileEditor {
         self.scroll.y = (self.scroll.y - delta.y).clamp(px(0.), max_y);
         self.scroll.x = (self.scroll.x - delta.x).clamp(px(0.), max_x.max(px(0.)));
         cx.notify();
+    }
+
+    /// Whether long lines wrap: ⌘⌥W's choice, else Settings › Editor's.
+    fn wraps(&self) -> bool {
+        self.wrap.unwrap_or(self.prefs.line_wrap)
     }
 
     /// Colors everything again, after the whole text was replaced.
@@ -912,6 +945,11 @@ impl FileEditor {
     fn foreground(&self) -> Rgba {
         self.style.palette[NamedColor::Foreground as usize]
     }
+}
+
+/// Whether `path` has a rendered Preview (Markdown, SVG, HTML).
+pub fn previews(path: &Path) -> bool {
+    preview_mode::Kind::of(path).is_some()
 }
 
 /// A toolbar button with a label only.
@@ -986,6 +1024,12 @@ impl Render for FileEditor {
         };
         let accent = hsla(Rgba::rgb(0x047afe));
         let toolbar = self.render_toolbar(window, cx);
+        let previewing = self.previewing();
+        let preview = if previewing {
+            self.preview_view(cx)
+        } else {
+            None
+        };
 
         let focused = self.focus.is_focused(window);
         let reveal = std::mem::take(&mut self.reveal);
@@ -1012,7 +1056,10 @@ impl Render for FileEditor {
             selection_bg: hsla(style.selection_background),
             caret: accent,
             faint: ink(0.25),
-            prefs: self.prefs,
+            prefs: EditorPrefs {
+                line_wrap: self.wraps(),
+                ..self.prefs
+            },
             revision: self.revision,
             rows: self.rows.clone(),
             colors: Rc::new(self.line_colors()),
@@ -1050,24 +1097,47 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::save_action))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::TogglePreview, _, cx| {
+                    this.toggle_read_only(cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ToggleReadOnly, _, cx| {
+                    this.toggle_read_only(cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ToggleSoftWrap, _, cx| {
+                    this.wrap = Some(!this.wraps());
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.listener(Self::reload_action))
             .on_key_down(cx.listener(Self::on_key_down))
             .child(toolbar)
-            .child(
-                div()
-                    .id("file-editor-text")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .cursor_text()
-                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                    .on_mouse_move(cx.listener(Self::on_mouse_move))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.selecting = false),
-                    )
-                    .on_scroll(cx.listener(Self::on_scroll))
-                    .child(text),
-            )
+            .when(self.disk_changed, |d| d.child(self.render_disk_banner(cx)))
+            .when_some(preview, |d, view| {
+                d.child(div().flex_1().min_h_0().child(view))
+            })
+            .when(!previewing, |d| {
+                d.child(
+                    div()
+                        .id("file-editor-text")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .cursor_text()
+                        .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                        .on_mouse_move(cx.listener(Self::on_mouse_move))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, _| this.selecting = false),
+                        )
+                        .on_scroll(cx.listener(Self::on_scroll))
+                        .child(text),
+                )
+            })
             .into_any_element()
     }
 }
