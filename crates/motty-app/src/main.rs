@@ -8,10 +8,14 @@ mod editor;
 mod file_kind;
 mod file_search;
 #[allow(dead_code)]
+mod file_toolbar;
+#[allow(dead_code)]
 mod folder_view;
 mod folders;
 mod fonts;
 mod history;
+#[allow(dead_code)]
+mod image_view;
 mod ipc;
 mod materials;
 mod menus;
