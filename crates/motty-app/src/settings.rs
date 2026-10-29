@@ -67,7 +67,11 @@ impl AssetSource for Assets {
             "loader-circle",
             "check",
             "hand",
-            "triangle-alert"
+            "triangle-alert",
+            "text-select",
+            "panels-top-left",
+            "blocks",
+            "book-open"
         )
         .map(Cow::Borrowed))
     }
@@ -82,22 +86,30 @@ pub enum Section {
     General,
     Shell,
     Controls,
-    Editor,
-    Agents,
+    Selection,
     Appearance,
+    View,
     KeyBindings,
+    Agents,
+    Integrations,
+    Recipes,
+    Editor,
     Advanced,
 }
 
 impl Section {
-    const ALL: [Section; 8] = [
+    const ALL: [Section; 12] = [
         Section::General,
         Section::Shell,
         Section::Controls,
-        Section::Editor,
-        Section::Agents,
+        Section::Selection,
         Section::Appearance,
+        Section::View,
         Section::KeyBindings,
+        Section::Agents,
+        Section::Integrations,
+        Section::Recipes,
+        Section::Editor,
         Section::Advanced,
     ];
 
@@ -106,10 +118,14 @@ impl Section {
             Section::General => "General",
             Section::Shell => "Shell",
             Section::Controls => "Controls",
-            Section::Editor => "Editor",
-            Section::Agents => "Agents",
+            Section::Selection => "Selection",
             Section::Appearance => "Appearance",
+            Section::View => "View",
             Section::KeyBindings => "Key Bindings",
+            Section::Agents => "Agents",
+            Section::Integrations => "Integrations",
+            Section::Recipes => "Recipes",
+            Section::Editor => "Editor",
             Section::Advanced => "Advanced",
         }
     }
@@ -119,10 +135,14 @@ impl Section {
             Section::General => "icons/circle-alert.svg",
             Section::Shell => "icons/terminal.svg",
             Section::Controls => "icons/mouse-pointer-2.svg",
-            Section::Editor => "icons/file-text.svg",
-            Section::Agents => "icons/plug.svg",
+            Section::Selection => "icons/text-select.svg",
             Section::Appearance => "icons/palette.svg",
+            Section::View => "icons/panels-top-left.svg",
             Section::KeyBindings => "icons/keyboard.svg",
+            Section::Agents => "icons/plug.svg",
+            Section::Integrations => "icons/blocks.svg",
+            Section::Recipes => "icons/book-open.svg",
+            Section::Editor => "icons/file-text.svg",
             Section::Advanced => "icons/wrench.svg",
         }
     }
@@ -838,23 +858,23 @@ impl SettingsWindow {
         rows.push(row(
             General,
             "General",
+            "Quit When Last Window Closes",
+            Some("Otherwise Motty stays in the Dock; click it for a new window"),
+            Control::Toggle {
+                key: "quit-after-last-window-closed",
+                on: c.quit_after_last_window,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            View,
+            "Tabs Panel",
             "Show Tabs Panel",
             Some("New windows open with the tabs sidebar"),
             Control::Toggle {
                 key: "sidebar-visible",
                 on: c.sidebar_visible,
                 invert: false,
-            },
-        ));
-        rows.push(row(
-            General,
-            "General",
-            "Running Process Indicator",
-            Some("A dot in the close button while a command runs"),
-            Control::Toggle {
-                key: "window-hide-dirty-indicator",
-                on: !c.hide_dirty_indicator,
-                invert: true,
             },
         ));
         let rule_label = |r: ConfirmClose| match r {
@@ -904,6 +924,17 @@ impl SettingsWindow {
         ));
         rows.push(row(
             General,
+            "Close Confirmation",
+            "Hide Close Button Dot",
+            Some("Never show the dot in the close button while a command runs"),
+            Control::Toggle {
+                key: "window-hide-dirty-indicator",
+                on: c.hide_dirty_indicator,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            General,
             "Help",
             "Welcome Guide",
             Some("Theme, launch, agents and shortcuts, step by step"),
@@ -936,17 +967,6 @@ impl SettingsWindow {
                 invert: false,
             },
         ));
-        rows.push(row(
-            Shell,
-            "Shell",
-            "Badge When a Command Finishes",
-            Some("A dot on a tab you weren't watching when its command succeeds, a triangle when it fails"),
-            Control::Toggle {
-                key: "privilege-badge-exit-status",
-                on: c.badges.exit_status,
-                invert: false,
-            },
-        ));
         let scrollback = c.scrollback.unwrap_or(10_000);
         let presets = [1_000usize, 5_000, 10_000, 50_000, 100_000];
         let mut options: Vec<(SharedString, Option<Value>)> = presets
@@ -974,6 +994,59 @@ impl SettingsWindow {
                 key: "scrollback",
                 options,
                 current: current.unwrap_or(2),
+            },
+        ));
+        let dir_choice =
+            |key: &'static str, inherit: &str, own: &Option<motty_theme::WorkingDir>| {
+                let mut options: Vec<(SharedString, Option<Value>)> = vec![
+                    (inherit.to_owned().into(), None),
+                    ("Home Folder".into(), s("home")),
+                ];
+                let current = match own {
+                    None | Some(motty_theme::WorkingDir::Inherit) => 0,
+                    Some(motty_theme::WorkingDir::Home) => 1,
+                    Some(motty_theme::WorkingDir::Path(path)) => {
+                        options.push((tilde(path).into(), s(&path.display().to_string())));
+                        2
+                    }
+                };
+                Control::Choice {
+                    key,
+                    options,
+                    current,
+                }
+            };
+        rows.push(row(
+            Shell,
+            "Working Directory",
+            "New Tab",
+            None,
+            dir_choice(
+                "tab-working-directory",
+                "Same as Current Tab",
+                &c.tab_working_directory,
+            ),
+        ));
+        rows.push(row(
+            Shell,
+            "Working Directory",
+            "New Split",
+            None,
+            dir_choice(
+                "split-working-directory",
+                "Same as Current Pane",
+                &c.split_working_directory,
+            ),
+        ));
+        rows.push(row(
+            Shell,
+            "Tab Badge",
+            "Badge When a Command Finishes",
+            Some("A dot on a tab you weren't watching when its command succeeds, a triangle when it fails"),
+            Control::Toggle {
+                key: "privilege-badge-exit-status",
+                on: c.badges.exit_status,
+                invert: false,
             },
         ));
         let installed = crate::workspace::cli_command() == "motty";
@@ -1161,13 +1234,18 @@ impl SettingsWindow {
                 b.secure_input_indication,
             ),
         ] {
-            rows.push(row(Controls, group, label, Some(note), toggle(key, on)));
+            let section = if group == "Selection" {
+                Selection
+            } else {
+                Controls
+            };
+            rows.push(row(section, group, label, Some(note), toggle(key, on)));
         }
 
-        // Editor
+        // Controls › Autocomplete
         let a = &c.autocomplete;
         rows.push(row(
-            Editor,
+            Controls,
             "Autocomplete",
             "Inline Suggestions",
             Some("Show the rest of a command you ran before, dimmed after the cursor"),
@@ -1178,7 +1256,7 @@ impl SettingsWindow {
             },
         ));
         rows.push(row(
-            Editor,
+            Controls,
             "Autocomplete",
             "Accept With",
             None,
@@ -1201,7 +1279,7 @@ impl SettingsWindow {
             ),
         ));
         rows.push(row(
-            Editor,
+            Controls,
             "Autocomplete",
             "Learn From Commands",
             Some("Remember the commands you run, on this Mac only"),
@@ -1212,7 +1290,7 @@ impl SettingsWindow {
             },
         ));
         rows.push(row(
-            Editor,
+            Controls,
             "Autocomplete",
             "Skip Secrets",
             Some("Never remember commands that look like they carry a password or token"),
@@ -1223,11 +1301,24 @@ impl SettingsWindow {
             },
         ));
         rows.push(row(
-            Editor,
+            Controls,
             "Autocomplete",
             "Command History",
             Some("Forget every remembered command"),
             Control::Button("Clear…", Command::ClearHistory),
+        ));
+
+        // Editor
+        rows.push(row(
+            Editor,
+            "Editor",
+            "Show Line Numbers",
+            Some("The line-number gutter in file editor tabs"),
+            Control::Toggle {
+                key: "editor-show-line-numbers",
+                on: c.editor_line_numbers,
+                invert: false,
+            },
         ));
 
         // Agents
@@ -1303,14 +1394,14 @@ impl SettingsWindow {
         }
         let cli = crate::workspace::cli_command();
         rows.push(row(
-            Agents,
+            Integrations,
             "MCP Server",
             "Claude Code",
             Some("Lets the agent list panes, run commands in splits and read output"),
             Control::Copy(format!("claude mcp add motty -- {cli} mcp")),
         ));
         rows.push(row(
-            Agents,
+            Integrations,
             "MCP Server",
             "Codex",
             None,
@@ -1430,7 +1521,7 @@ impl SettingsWindow {
         let opacity = c.unfocused_split_opacity.unwrap_or(0.6);
         let steps = [1.0f32, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4];
         rows.push(row(
-            Appearance,
+            View,
             "Splits",
             "Unfocused Split Opacity",
             Some("How strongly panes other than the focused one are dimmed"),
@@ -1449,6 +1540,26 @@ impl SettingsWindow {
                     })
                     .collect(),
             },
+        ));
+
+        rows.push(row(
+            Appearance,
+            "Tabs",
+            "New Tab Position",
+            None,
+            choice(
+                "new-tab-position",
+                &[
+                    ("Automatic", "auto"),
+                    ("At the End", "end"),
+                    ("After Current Tab", "after-current"),
+                ],
+                match c.new_tab_position {
+                    motty_theme::NewTabPosition::Auto => "Automatic",
+                    motty_theme::NewTabPosition::End => "At the End",
+                    motty_theme::NewTabPosition::AfterCurrent => "After Current Tab",
+                },
+            ),
         ));
 
         for (label, note, key, on) in [
@@ -1477,6 +1588,15 @@ impl SettingsWindow {
                 },
             ));
         }
+
+        // Recipes
+        rows.push(row(
+            Recipes,
+            "Recipes",
+            "No Saved Recipes",
+            Some("Saved commands, layouts and snippets are listed here"),
+            Control::Info("None".into()),
+        ));
 
         // Key bindings
         rows.push(row(
@@ -1850,7 +1970,7 @@ impl Render for SettingsWindow {
             .child(search)
             .children(nav);
 
-        // Groups in the order their rows come.
+        // Groups in the order they first come, each with all its rows.
         let mut groups: Vec<(String, Vec<Row>)> = Vec::new();
         for r in shown {
             let name = if searching {
@@ -1858,9 +1978,9 @@ impl Render for SettingsWindow {
             } else {
                 r.group.to_owned()
             };
-            match groups.last_mut() {
-                Some((g, rows)) if *g == name => rows.push(r),
-                _ => groups.push((name, vec![r])),
+            match groups.iter_mut().find(|(g, _)| *g == name) {
+                Some((_, rows)) => rows.push(r),
+                None => groups.push((name, vec![r])),
             }
         }
         let empty = groups.is_empty();

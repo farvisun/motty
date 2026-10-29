@@ -37,79 +37,91 @@ fn main() {
         )
         .init();
 
-    application()
-        .with_assets(settings::Assets)
-        .run(|cx: &mut App| {
-            fonts::load(cx);
-            ipc::start(cx);
-            cx.on_action(|_: &actions::Quit, cx| cx.quit());
-            cx.on_action(|_: &actions::QuitKeepWindows, cx| {
-                recovery::keep_windows();
-                cx.quit()
-            });
-            cx.on_action(|_: &actions::MinimizeAll, _| minimize_all());
-            cx.on_action(|_: &actions::ClearRecentFiles, cx| {
-                folders::clear_recent_files();
-                menus::refresh(cx);
-            });
-            cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
-            cx.on_action(|_: &actions::About, _| menus::show_about());
-            cx.on_action(|a: &actions::CopyText, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(a.text.clone()))
-            });
-            cx.on_action(|a: &actions::OpenUrl, cx| cx.open_url(&a.url));
-            cx.on_action(|_: &actions::ToggleSecureKeyboardEntry, cx| secure_input::toggle(cx));
-            workspace::cursor_hiding(&load_config(), cx);
-            cx.on_action(|_: &actions::HideApp, cx| cx.hide());
-            cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
-            cx.on_action(|_: &actions::ShowAll, cx| cx.unhide_other_apps());
-            cx.on_action(|_: &actions::OpenHelp, cx| {
-                cx.open_url("https://github.com/farvisun/motty#readme")
-            });
-            cx.on_action(|_: &actions::NewWindow, cx| {
-                if let Err(e) = open_window(load_config(), None, None, cx) {
-                    tracing::error!("failed to open a window: {e:#}");
-                }
-            });
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-
-            recovery::start(cx);
-            let config = load_config();
-            for w in actions::bind_keys(cx, &config.keybinds) {
-                tracing::warn!("{w}");
-            }
-            menus::set(cx);
-            let restored = recovery::to_restore(config.restore_session);
-            let windows = restored.map(|s| s.windows).unwrap_or_default();
-            let mut opened = false;
-            for state in &windows {
-                match open_window(config.clone(), None, Some(state), cx) {
-                    Ok(()) => opened = true,
-                    Err(e) => tracing::error!("couldn't restore a window: {e:#}"),
-                }
-            }
-            if !opened && let Err(e) = open_window(config, command_arg(), None, cx) {
-                eprintln!("motty: {e:#}");
-                cx.quit();
-            }
-            if workspace::first_run()
-                && let Some(window) = cx.windows().first().and_then(|w| w.downcast::<Workspace>())
-            {
-                let _ = window.update(cx, |workspace, window, cx| {
-                    workspace.show_welcome(window, cx)
-                });
-            }
-            // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
-            // keyboard from whatever the user is typing into.
-            if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
-                cx.activate(true);
+    let app = application().with_assets(settings::Assets);
+    // A Dock click with no window open opens one.
+    app.on_reopen(|cx| {
+        if cx
+            .windows()
+            .iter()
+            .all(|w| w.downcast::<Workspace>().is_none())
+            && let Err(e) = open_window(load_config(), None, None, cx)
+        {
+            tracing::error!("failed to open a window: {e:#}");
+        }
+    });
+    app.run(|cx: &mut App| {
+        fonts::load(cx);
+        ipc::start(cx);
+        cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        cx.on_action(|_: &actions::QuitKeepWindows, cx| {
+            recovery::keep_windows();
+            cx.quit()
+        });
+        cx.on_action(|_: &actions::MinimizeAll, _| minimize_all());
+        cx.on_action(|_: &actions::ClearRecentFiles, cx| {
+            folders::clear_recent_files();
+            menus::refresh(cx);
+        });
+        cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
+        cx.on_action(|_: &actions::About, _| menus::show_about());
+        cx.on_action(|a: &actions::CopyText, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(a.text.clone()))
+        });
+        cx.on_action(|a: &actions::OpenUrl, cx| cx.open_url(&a.url));
+        cx.on_action(|_: &actions::ToggleSecureKeyboardEntry, cx| secure_input::toggle(cx));
+        workspace::cursor_hiding(&load_config(), cx);
+        cx.on_action(|_: &actions::HideApp, cx| cx.hide());
+        cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &actions::ShowAll, cx| cx.unhide_other_apps());
+        cx.on_action(|_: &actions::OpenHelp, cx| {
+            cx.open_url("https://github.com/farvisun/motty#readme")
+        });
+        cx.on_action(|_: &actions::NewWindow, cx| {
+            if let Err(e) = open_window(load_config(), None, None, cx) {
+                tracing::error!("failed to open a window: {e:#}");
             }
         });
+        // Otty stays in the Dock after its last window closes unless
+        // `quit-after-last-window-closed`; a Dock click opens a window.
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() && load_config().quit_after_last_window {
+                cx.quit();
+            }
+        })
+        .detach();
+
+        recovery::start(cx);
+        let config = load_config();
+        for w in actions::bind_keys(cx, &config.keybinds) {
+            tracing::warn!("{w}");
+        }
+        menus::set(cx);
+        let restored = recovery::to_restore(config.restore_session);
+        let windows = restored.map(|s| s.windows).unwrap_or_default();
+        let mut opened = false;
+        for state in &windows {
+            match open_window(config.clone(), None, Some(state), cx) {
+                Ok(()) => opened = true,
+                Err(e) => tracing::error!("couldn't restore a window: {e:#}"),
+            }
+        }
+        if !opened && let Err(e) = open_window(config, command_arg(), None, cx) {
+            eprintln!("motty: {e:#}");
+            cx.quit();
+        }
+        if workspace::first_run()
+            && let Some(window) = cx.windows().first().and_then(|w| w.downcast::<Workspace>())
+        {
+            let _ = window.update(cx, |workspace, window, cx| {
+                workspace.show_welcome(window, cx)
+            });
+        }
+        // Test runs set MOTTY_NO_ACTIVATE so the window doesn't take the
+        // keyboard from whatever the user is typing into.
+        if std::env::var_os("MOTTY_NO_ACTIVATE").is_none() {
+            cx.activate(true);
+        }
+    });
 }
 
 /// The config files with command-line overrides applied: `--theme NAME`
@@ -249,12 +261,16 @@ fn open_window_inner(
         window_min_size: Some(size(px(360.), px(200.))),
         ..Default::default()
     };
-    // Launched from a shell, start there; from Finder the cwd is `/`.
-    let cwd = cwd.or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .filter(|d| d.parent().is_some())
-    });
+    // `window-working-directory`: a folder, or home; launched from a
+    // shell, home means where it was launched (from Finder the cwd is `/`).
+    let cwd = cwd.or_else(
+        || match config.working_dir(motty_theme::NewTerminal::Window) {
+            motty_theme::WorkingDir::Path(path) => Some(path),
+            _ => std::env::current_dir()
+                .ok()
+                .filter(|d| d.parent().is_some()),
+        },
+    );
     // The harness's extra tabs and split are for the first window only.
     let extra_tabs = if moving { 0 } else { extra_tabs_arg() };
     let split = if moving { None } else { split_arg() };

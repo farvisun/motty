@@ -95,6 +95,8 @@ pub struct FileEditor {
     name: Option<String>,
     /// Buttons on the toolbar's right, each sending its action.
     buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
+    /// `editor-show-line-numbers`.
+    line_numbers: bool,
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
@@ -130,6 +132,7 @@ impl FileEditor {
             prose: None,
             name: None,
             buttons: Vec::new(),
+            line_numbers: true,
         };
         if let Some(path) = path {
             editor.load(path);
@@ -196,6 +199,12 @@ impl FileEditor {
             .as_ref()
             .and_then(|p| p.parent())
             .map(Path::to_path_buf)
+    }
+
+    /// `editor-show-line-numbers`.
+    pub fn set_line_numbers(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.line_numbers = on;
+        cx.notify();
     }
 
     pub fn set_style(&mut self, style: TerminalStyle, cx: &mut Context<Self>) {
@@ -832,7 +841,7 @@ impl Render for FileEditor {
             focused,
             style: style.clone(),
             fg: hsla(fg),
-            numbers: self.name.is_none(),
+            numbers: self.name.is_none() && self.line_numbers,
             gutter_bg: ink(if dark { 0.04 } else { 0.025 }),
             number: ink(0.38),
             current_line: if dark {

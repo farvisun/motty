@@ -30,7 +30,12 @@ impl Workspace {
             return;
         }
         let style = terminal_style(&self.config, &self.theme, cx);
-        let editor = cx.new(|cx| FileEditor::new(path, style, cx));
+        let line_numbers = self.config.editor_line_numbers;
+        let editor = cx.new(|cx| {
+            let mut editor = FileEditor::new(path, style, cx);
+            editor.set_line_numbers(line_numbers, cx);
+            editor
+        });
         self.watch_editor(&editor, cx);
         self.tabs.push(Tab::editor(editor));
         self.activate(self.tabs.len() - 1, window, cx);

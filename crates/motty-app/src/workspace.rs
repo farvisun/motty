@@ -748,9 +748,26 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let terminal = self.new_terminal(command, cwd, [0., 0., 1., 1.], window, cx)?;
-        self.tabs.push(Tab::new(terminal));
-        self.activate(self.tabs.len() - 1, window, cx);
+        // `new-tab-position`: after the active tab, or at the end.
+        let ix = match self.config.new_tab_position {
+            motty_theme::NewTabPosition::AfterCurrent if !self.tabs.is_empty() => {
+                (self.active + 1).min(self.tabs.len())
+            }
+            _ => self.tabs.len(),
+        };
+        self.tabs.insert(ix, Tab::new(terminal));
+        self.activate(ix, window, cx);
         Ok(())
+    }
+
+    /// Where a new tab or split starts, as the `*-working-directory` keys
+    /// say: where the active pane is, home, or a folder.
+    fn start_dir(&self, kind: motty_theme::NewTerminal, cx: &App) -> Option<std::path::PathBuf> {
+        match self.config.working_dir(kind) {
+            motty_theme::WorkingDir::Inherit => self.active_folder(cx),
+            motty_theme::WorkingDir::Home => dirs::home_dir(),
+            motty_theme::WorkingDir::Path(path) => Some(path),
+        }
     }
 
     pub fn has_tabs(&self) -> bool {
@@ -782,8 +799,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
+        let cwd = cwd.or_else(|| self.start_dir(motty_theme::NewTerminal::Split, cx));
         let tab = self.active_terms().context("no terminal tab")?;
-        let cwd = cwd.or_else(|| tab.focused.read(cx).cwd.clone());
         let rect = direction.half(tab.root.rect_of(&tab.focused).unwrap_or([0., 0., 1., 1.]));
         let terminal = self.new_terminal(command, cwd, rect, window, cx)?;
         let id = self.next_split;
@@ -810,7 +827,11 @@ impl Workspace {
     ) -> anyhow::Result<Entity<TerminalView>> {
         let cwd = cwd.or_else(|| self.active_folder(cx));
         self.add_tab(command, cwd, window, cx)?;
-        let tab = self.tabs.last().and_then(Tab::terms).context("no tab")?;
+        let tab = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::terms)
+            .context("no tab")?;
         Ok(tab.focused.clone())
     }
 
@@ -1115,8 +1136,7 @@ impl Workspace {
 
     /// Opens a shell tab and activates it.
     pub fn open_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // New tabs start where the active tab is, like Otty.
-        let cwd = self.active_folder(cx);
+        let cwd = self.start_dir(motty_theme::NewTerminal::Tab, cx);
         if let Err(e) = self.add_tab(None, cwd, window, cx) {
             tracing::error!("failed to start shell: {e:#}");
         }
@@ -1265,7 +1285,10 @@ impl Workspace {
                         view.update(cx, |t, cx| t.set_style(style.clone(), cx));
                     }
                 }
-                Content::Editor(e) => e.update(cx, |e, cx| e.set_style(style.clone(), cx)),
+                Content::Editor(e) => e.update(cx, |e, cx| {
+                    e.set_style(style.clone(), cx);
+                    e.set_line_numbers(self.config.editor_line_numbers, cx);
+                }),
             }
         }
         cx.notify();

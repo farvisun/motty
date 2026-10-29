@@ -66,6 +66,18 @@ pub struct Config {
     /// `progress-bar-commands`: command prefixes that show a spinner while
     /// they run; `None` for the built-in list.
     pub progress_bar_commands: Option<Vec<String>>,
+    /// `quit-after-last-window-closed`: quit rather than stay in the Dock.
+    pub quit_after_last_window: bool,
+    /// `working-directory`, and `window-`, `tab-` and `split-working-directory`
+    /// for each kind of new terminal.
+    pub working_directory: Option<WorkingDir>,
+    pub window_working_directory: Option<WorkingDir>,
+    pub tab_working_directory: Option<WorkingDir>,
+    pub split_working_directory: Option<WorkingDir>,
+    /// `new-tab-position`.
+    pub new_tab_position: NewTabPosition,
+    /// `editor-show-line-numbers`: the file editor's line-number gutter.
+    pub editor_line_numbers: bool,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -298,6 +310,76 @@ pub enum CursorStyle {
     BlockHollow,
 }
 
+/// Where a new terminal starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkingDir {
+    /// Where the active pane is.
+    Inherit,
+    Home,
+    Path(PathBuf),
+}
+
+impl WorkingDir {
+    fn parse(value: &str) -> Self {
+        match value {
+            "inherit" => Self::Inherit,
+            // `profile` is Windows'; elsewhere it's home.
+            "home" | "profile" | "" => Self::Home,
+            path => Self::Path(match path.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+                None if path == "~" => dirs::home_dir().unwrap_or_default(),
+                None => PathBuf::from(path),
+            }),
+        }
+    }
+
+    /// The value as config.toml spells it.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Inherit => "inherit".into(),
+            Self::Home => "home".into(),
+            Self::Path(p) => p.display().to_string(),
+        }
+    }
+}
+
+/// What kind of new terminal a working directory is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewTerminal {
+    Window,
+    Tab,
+    Split,
+}
+
+/// `new-tab-position` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NewTabPosition {
+    /// At the end.
+    #[default]
+    Auto,
+    End,
+    AfterCurrent,
+}
+
+impl Config {
+    /// Where a new window, tab or split starts: its own key, else
+    /// `working-directory`, else home for a window and the active pane's
+    /// folder otherwise.
+    pub fn working_dir(&self, kind: NewTerminal) -> WorkingDir {
+        let own = match kind {
+            NewTerminal::Window => &self.window_working_directory,
+            NewTerminal::Tab => &self.tab_working_directory,
+            NewTerminal::Split => &self.split_working_directory,
+        };
+        own.clone()
+            .or_else(|| self.working_directory.clone())
+            .unwrap_or(match kind {
+                NewTerminal::Window => WorkingDir::Home,
+                _ => WorkingDir::Inherit,
+            })
+    }
+}
+
 /// `confirm-close-*` values: when closing a pane, tab or window asks first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ConfirmClose {
@@ -399,6 +481,7 @@ impl Config {
             shell_integration: true,
             link_detection: true,
             restore_session: true,
+            editor_line_numbers: true,
             ..Default::default()
         };
         let (entries, mut warnings) = parse_entries(src);
@@ -560,6 +643,30 @@ impl Config {
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }
+                "editor-show-line-numbers" => {
+                    out.editor_line_numbers = value.as_bool().unwrap_or(true)
+                }
+                "quit-after-last-window-closed" => {
+                    out.quit_after_last_window = value.as_bool().unwrap_or(false)
+                }
+                "working-directory" => {
+                    out.working_directory = value.as_str().map(WorkingDir::parse)
+                }
+                "window-working-directory" => {
+                    out.window_working_directory = value.as_str().map(WorkingDir::parse)
+                }
+                "tab-working-directory" => {
+                    out.tab_working_directory = value.as_str().map(WorkingDir::parse)
+                }
+                "split-working-directory" => {
+                    out.split_working_directory = value.as_str().map(WorkingDir::parse)
+                }
+                "new-tab-position" => match value.as_str() {
+                    Some("auto") => out.new_tab_position = NewTabPosition::Auto,
+                    Some("end") => out.new_tab_position = NewTabPosition::End,
+                    Some("after-current") => out.new_tab_position = NewTabPosition::AfterCurrent,
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
                 "on-launch" => match value.as_str() {
                     Some("restore_session") => out.restore_session = true,
                     Some("new_window") => out.restore_session = false,
@@ -1262,5 +1369,20 @@ mod tests {
             "\n"
         );
         assert_eq!(reset_keybinds_in(&out), "font-size = 12\n");
+    }
+
+    #[test]
+    fn working_directories() {
+        let c = Config::parse("tab-working-directory = \"home\"\nworking-directory = \"/tmp\"\n");
+        assert_eq!(c.working_dir(NewTerminal::Tab), WorkingDir::Home);
+        assert_eq!(
+            c.working_dir(NewTerminal::Split),
+            WorkingDir::Path("/tmp".into())
+        );
+        let c = Config::parse("new-tab-position = \"after-current\"\n");
+        assert_eq!(c.working_dir(NewTerminal::Window), WorkingDir::Home);
+        assert_eq!(c.working_dir(NewTerminal::Tab), WorkingDir::Inherit);
+        assert_eq!(c.new_tab_position, NewTabPosition::AfterCurrent);
+        assert!(!c.quit_after_last_window);
     }
 }
