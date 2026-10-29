@@ -22,7 +22,9 @@ mod graphemes;
 /// Pointer shapes programs ask for with OSC 22.
 pub use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 pub mod input;
+mod kitty_keys;
 pub mod links;
+mod modify_other_keys;
 mod pty_loop;
 pub mod search;
 pub mod shell;

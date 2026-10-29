@@ -1,13 +1,17 @@
-//! Key event → bytes for the PTY, following xterm's encoding.
+//! Key event → bytes for the PTY: xterm's classic encoding, and on a
+//! program's request the kitty keyboard protocol ([`crate::kitty_keys`]) or
+//! xterm's modifyOtherKeys ([`crate::modify_other_keys`]).
 
 use alacritty_terminal::term::TermMode;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
     pub shift: bool,
     pub alt: bool,
     pub ctrl: bool,
     pub cmd: bool,
+    /// Caps Lock is on (only the kitty protocol reports it).
+    pub caps_lock: bool,
 }
 
 impl Mods {
@@ -21,20 +25,122 @@ impl Mods {
     }
 }
 
+/// Press, autorepeat or release; only the kitty protocol tells them apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyKind {
+    #[default]
+    Press,
+    Repeat,
+    Release,
+}
+
+/// Names [`KeyInput::key`] takes for a modifier key going down or up (the
+/// kitty protocol reports those when a program asks for every key).
+pub const MODIFIER_KEYS: [&str; 9] = [
+    "left_shift",
+    "left_control",
+    "left_alt",
+    "left_super",
+    "right_shift",
+    "right_control",
+    "right_alt",
+    "right_super",
+    "caps_lock",
+];
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct KeyInput<'a> {
-    /// Key name as GPUI reports it (`"a"`, `"enter"`, `"up"`, `"f5"`, ...).
+    /// Key name as GPUI reports it (`"a"`, `"enter"`, `"up"`, `"f5"`, ...),
+    /// or one of [`MODIFIER_KEYS`].
     pub key: &'a str,
     /// Text the key would insert with the current layout, if any.
     pub key_char: Option<&'a str>,
     pub mods: Mods,
+    pub kind: KeyKind,
+    /// The key is on the numeric keypad (digits, operators, Enter).
+    pub keypad: bool,
+    /// What the key types with no modifiers and with Shift in the current
+    /// layout, and on a US (PC-101) keyboard, when the platform says.
+    /// GPUI's `key` is already shifted for keys like ⇧1 (`!`).
+    pub unshifted: Option<char>,
+    pub shifted: Option<char>,
+    pub base_layout: Option<char>,
+}
+
+impl KeyInput<'_> {
+    /// A text key's character with no modifiers: what the kitty protocol
+    /// numbers it by.
+    pub(crate) fn char_key(&self) -> Option<char> {
+        let key = if self.key == "space" { " " } else { self.key };
+        let mut chars = key.chars();
+        let c = chars.next()?;
+        if chars.next().is_some() {
+            return None;
+        }
+        Some(
+            self.unshifted
+                .unwrap_or_else(|| single(c.to_lowercase()).unwrap_or(c)),
+        )
+    }
+
+    /// The character the key gives with Shift.
+    pub(crate) fn shifted_char(&self) -> Option<char> {
+        let code = self.char_key()?;
+        Some(
+            self.shifted
+                .unwrap_or_else(|| single(code.to_uppercase()).unwrap_or(code)),
+        )
+    }
+
+    /// The text the key types, without control characters.
+    pub(crate) fn text(&self) -> Option<&str> {
+        self.key_char
+            .filter(|t| !t.is_empty() && !t.chars().any(|c| c.is_control()))
+    }
+
+    /// Option is held but types a character (Option isn't Meta): the
+    /// character is the key's text and Alt isn't reported.
+    pub(crate) fn alt_consumed(&self, option_as_meta: bool) -> bool {
+        self.mods.alt && !option_as_meta && self.text().is_some()
+    }
+}
+
+/// The only character of a case mapping, if it maps to one.
+fn single(mut chars: impl Iterator<Item = char>) -> Option<char> {
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
 }
 
 /// Returns the bytes to send, or `None` if the key isn't for the terminal
-/// (command shortcuts, bare modifiers).
+/// (command shortcuts, bare modifiers, releases nobody asked for).
 pub fn encode(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
+    if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) {
+        return crate::kitty_keys::encode(input, mode, option_as_meta);
+    }
+    if input.kind == KeyKind::Release || MODIFIER_KEYS.contains(&input.key) {
+        return None;
+    }
+    if mode.intersects(TermMode::MODIFY_OTHER_KEYS)
+        && !input.mods.cmd
+        && let Some(bytes) = crate::modify_other_keys::encode(input, mode, option_as_meta)
+    {
+        return Some(bytes);
+    }
+    legacy(input, mode, option_as_meta)
+}
+
+/// xterm's classic encoding.
+pub(crate) fn legacy(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
     let m = input.mods;
     if m.cmd {
         return None;
+    }
+    if input.keypad
+        && let Some(bytes) = keypad(input, mode)
+    {
+        return Some(bytes);
     }
     let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let csi_mod = |final_byte: char| format!("\x1b[1;{}{final_byte}", m.param()).into_bytes();
@@ -137,6 +243,29 @@ pub fn encode(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<
     Some(bytes)
 }
 
+/// A keypad key in application keypad mode (DECKPAM): SS3 and a letter.
+/// Otherwise the keypad types like the main keys.
+fn keypad(input: &KeyInput, mode: TermMode) -> Option<Vec<u8>> {
+    if !mode.contains(TermMode::APP_KEYPAD) || input.mods.any() {
+        return None;
+    }
+    let c = match input.key {
+        "enter" => 'M',
+        k => match k.chars().next()? {
+            d @ '0'..='9' => (b'p' + (d as u8 - b'0')) as char,
+            '.' => 'n',
+            '+' => 'k',
+            '-' => 'm',
+            '*' => 'j',
+            '/' => 'o',
+            '=' => 'X',
+            ',' => 'l',
+            _ => return None,
+        },
+    };
+    Some(format!("\x1bO{c}").into_bytes())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -233,6 +362,7 @@ mod tests {
                 key,
                 key_char,
                 mods,
+                ..Default::default()
             },
             mode,
             true,
@@ -244,6 +374,7 @@ mod tests {
         alt: false,
         ctrl: false,
         cmd: false,
+        caps_lock: false,
     };
 
     #[test]
@@ -335,6 +466,51 @@ mod tests {
             paste_bytes("x\x1by", TermMode::BRACKETED_PASTE),
             b"\x1b[200~xy\x1b[201~"
         );
+    }
+
+    #[test]
+    fn keypad_application_mode() {
+        let kp = |key, key_char, mode| {
+            encode(
+                &KeyInput {
+                    key,
+                    key_char,
+                    keypad: true,
+                    ..Default::default()
+                },
+                mode,
+                true,
+            )
+            .unwrap()
+        };
+        assert_eq!(kp("1", Some("1"), TermMode::NONE), b"1");
+        assert_eq!(kp("enter", Some("\n"), TermMode::NONE), b"\r");
+        assert_eq!(kp("1", Some("1"), TermMode::APP_KEYPAD), b"\x1bOq");
+        assert_eq!(kp("0", Some("0"), TermMode::APP_KEYPAD), b"\x1bOp");
+        assert_eq!(kp("enter", Some("\n"), TermMode::APP_KEYPAD), b"\x1bOM");
+        assert_eq!(kp("+", Some("+"), TermMode::APP_KEYPAD), b"\x1bOk");
+        assert_eq!(kp("=", Some("="), TermMode::APP_KEYPAD), b"\x1bOX");
+        // The main keys never do.
+        assert_eq!(
+            enc("1", Some("1"), NONE, TermMode::APP_KEYPAD).unwrap(),
+            b"1"
+        );
+    }
+
+    #[test]
+    fn releases_and_modifier_keys_send_nothing_classically() {
+        let release = KeyInput {
+            key: "a",
+            key_char: Some("a"),
+            kind: KeyKind::Release,
+            ..Default::default()
+        };
+        assert!(encode(&release, TermMode::NONE, true).is_none());
+        let shift = KeyInput {
+            key: "left_shift",
+            ..Default::default()
+        };
+        assert!(encode(&shift, TermMode::MODIFY_OTHER_KEYS_2, true).is_none());
     }
 
     #[test]
