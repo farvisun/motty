@@ -150,6 +150,7 @@ fn sgr(cell: &Cell) -> String {
         (Flags::DIM, "2"),
         (Flags::ITALIC, "3"),
         (Flags::UNDERLINE, "4"),
+        (Flags::BLINK, "5"),
         (Flags::INVERSE, "7"),
         (Flags::HIDDEN, "8"),
         (Flags::STRIKEOUT, "9"),

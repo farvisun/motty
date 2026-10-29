@@ -1,6 +1,6 @@
 //! Exports the `Term` type which is a high-level API for the Grid.
 
-use std::ops::{Index, IndexMut, Range};
+use std::ops::{Index, IndexMut, Range, RangeInclusive};
 use std::sync::Arc;
 use std::{cmp, mem, ptr, slice, str};
 
@@ -84,6 +84,9 @@ bitflags! {
         /// XTMODKEYS modifyOtherKeys level 2 (`CSI > 4 ; 2 m`).
         const MODIFY_OTHER_KEYS_2     = 1 << 25;
         const MODIFY_OTHER_KEYS       = Self::MODIFY_OTHER_KEYS_1.bits() | Self::MODIFY_OTHER_KEYS_2.bits();
+        /// ECMA-48 BDSM (mode 8) set: the program lays out bidirectional
+        /// text itself, so the renderer must not reorder lines.
+        const BIDI_EXPLICIT           = 1 << 28;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -358,6 +361,9 @@ pub struct Config {
 
     /// OSC52 support mode.
     pub osc52: Osc52,
+
+    /// East-Asian-Ambiguous characters in these ranges take two cells.
+    pub wide_ambiguous: Vec<RangeInclusive<char>>,
 }
 
 impl Default for Config {
@@ -369,6 +375,7 @@ impl Default for Config {
             vi_mode_cursor_style: Default::default(),
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
+            wide_ambiguous: Vec::new(),
         }
     }
 }
@@ -500,6 +507,13 @@ impl<T> Term<T> {
     #[inline]
     fn mark_fully_damaged(&mut self) {
         self.damage.full = true;
+    }
+
+    /// Whether `c`, one cell wide by default, takes two: it's
+    /// East-Asian-Ambiguous and in a range the embedder widened.
+    fn widens(&self, c: char) -> bool {
+        let ranges = &self.config.wide_ambiguous;
+        !ranges.is_empty() && c.width_cjk() == Some(2) && ranges.iter().any(|r| r.contains(&c))
     }
 
     /// Set new options for the [`Term`].
@@ -1082,6 +1096,7 @@ impl<T: EventListener> Handler for Term<T> {
     fn input(&mut self, c: char) {
         // Number of cells the char will occupy.
         let width = match c.width() {
+            Some(1) if self.widens(c) => 2,
             Some(width) => width,
             None => return,
         };
@@ -1969,9 +1984,8 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
             Attr::CancelStrike => cursor.template.flags.remove(Flags::STRIKEOUT),
-            _ => {
-                debug!("Term got unhandled attr: {attr:?}");
-            },
+            Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
+            Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
         }
     }
 
@@ -2147,6 +2161,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::KEYBOARD_LOCKED);
                 return;
             },
+            ansi::Mode::Unknown(8) => return self.mode.insert(TermMode::BIDI_EXPLICIT),
             ansi::Mode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_mode");
                 return;
@@ -2168,6 +2183,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.remove(TermMode::KEYBOARD_LOCKED);
                 return;
             },
+            ansi::Mode::Unknown(8) => return self.mode.remove(TermMode::BIDI_EXPLICIT),
             ansi::Mode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_mode");
                 return;
@@ -2195,6 +2211,7 @@ impl<T: EventListener> Handler for Term<T> {
                 },
             },
             ansi::Mode::Unknown(2) => self.mode.contains(TermMode::KEYBOARD_LOCKED).into(),
+            ansi::Mode::Unknown(8) => self.mode.contains(TermMode::BIDI_EXPLICIT).into(),
             ansi::Mode::Unknown(_) => ModeState::NotSupported,
         };
 

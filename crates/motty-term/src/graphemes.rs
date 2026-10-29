@@ -412,13 +412,17 @@ mod tests {
     use crate::GridSize;
 
     fn render(text: &str) -> Term<VoidListener> {
+        render_with(Config::default(), text)
+    }
+
+    fn render_with(config: Config, text: &str) -> Term<VoidListener> {
         let size = GridSize {
             cols: 20,
             rows: 2,
             cell_width: 8.,
             cell_height: 16.,
         };
-        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut term = Term::new(config, &size, VoidListener);
         let mut cluster = Cluster::default();
         let mut parser: Processor = Processor::new();
         parser.advance(
@@ -483,5 +487,55 @@ mod tests {
         // Anything between (here a cursor move) ends the cluster.
         let term = render("👩\u{1b}[C\u{200d}💻");
         assert!(cursor_column(&term) > 3);
+    }
+
+    #[test]
+    fn bdsm_toggles_explicit_bidi() {
+        use alacritty_terminal::term::TermMode;
+        let term = render("\x1b[8h");
+        assert!(term.mode().contains(TermMode::BIDI_EXPLICIT));
+        let term = render("\x1b[8h\x1b[8l");
+        assert!(!term.mode().contains(TermMode::BIDI_EXPLICIT));
+        // A full reset goes back to implicit reordering.
+        let term = render("\x1b[8h\x1bc");
+        assert!(!term.mode().contains(TermMode::BIDI_EXPLICIT));
+    }
+
+    #[test]
+    fn sgr_blink_is_kept() {
+        let term = render("\x1b[5ma\x1b[25mb\x1b[6mc\x1b[0md");
+        let blink = |col| {
+            term.grid()[Point::new(Line(0), Column(col))]
+                .flags
+                .contains(Flags::BLINK)
+        };
+        assert_eq!(
+            (blink(0), blink(1), blink(2), blink(3)),
+            (true, false, true, false)
+        );
+    }
+
+    #[test]
+    fn widened_ambiguous_characters_take_two_cells() {
+        // ① is ambiguous; ━ (box drawing) is too, but outside the range.
+        assert_eq!(cursor_column(&render("①x")), 2);
+        let config = Config {
+            wide_ambiguous: vec!['\u{2460}'..='\u{24ff}'],
+            ..Config::default()
+        };
+        let term = render_with(config, "①x━");
+        assert!(
+            term.grid()[Point::new(Line(0), Column(0))]
+                .flags
+                .contains(Flags::WIDE_CHAR)
+        );
+        assert_eq!(cursor_column(&term), 4);
+        // Neutral (not ambiguous) characters in a range stay narrow: ∁.
+        let math = Config {
+            wide_ambiguous: vec!['\u{2200}'..='\u{22ff}'],
+            ..Config::default()
+        };
+        assert_eq!(cursor_column(&render_with(math.clone(), "∀")), 2);
+        assert_eq!(cursor_column(&render_with(math, "\u{2201}")), 1);
     }
 }

@@ -388,6 +388,7 @@ fn spawn_shell(
         cursor_style: cursor_style(config),
         preload,
         vt: vt_options(config),
+        wide_ambiguous: config.text.wide_ranges(),
     };
     Session::spawn(session, size)
 }

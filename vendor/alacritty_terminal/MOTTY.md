@@ -19,3 +19,10 @@ Copied from the crates.io release (Apache-2.0, see LICENSE-APACHE); the
   older ones down (and `lines_pushed` with them, so their names hold). The
   repaint de-duplication (`motty-term/src/repaint.rs`) uses it to drop the
   stale copies full-screen repaints leave in scrollback.
+- `TermMode::BIDI_EXPLICIT`: ECMA-48 BDSM (`CSI 8 h` / `CSI 8 l`, reported
+  by DECRQM). Set means the program lays out bidirectional text itself, so
+  Motty's renderer leaves its lines in logical order.
+- `Flags::BLINK`: SGR 5 / 6 set it and SGR 25 clears it (upstream drops
+  blink), so the renderer can blink those cells.
+- `Config::wide_ambiguous`: East-Asian-Ambiguous characters in these
+  ranges take two cells in `Term::input` (Motty's `widen-ambiguous`).

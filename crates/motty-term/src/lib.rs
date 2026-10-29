@@ -202,10 +202,19 @@ pub struct SessionConfig {
     /// Output to show before the program's (restored scrollback).
     pub preload: Option<Vec<u8>>,
     pub vt: vt::VtOptions,
+    /// East-Asian-Ambiguous characters in these ranges take two cells
+    /// (`widen-ambiguous`). Fixed for the session's life: changing widths
+    /// under a running program would desync its cursor.
+    pub wide_ambiguous: Vec<std::ops::RangeInclusive<char>>,
 }
 
 /// The Term's config for Motty's options.
-fn term_config(cursor_style: CursorStyle, scrollback: usize, vt: &vt::VtOptions) -> term::Config {
+fn term_config(
+    cursor_style: CursorStyle,
+    scrollback: usize,
+    vt: &vt::VtOptions,
+    wide_ambiguous: &[std::ops::RangeInclusive<char>],
+) -> term::Config {
     term::Config {
         scrolling_history: if scrollback == 0 { 10_000 } else { scrollback },
         default_cursor_style: cursor_style,
@@ -213,6 +222,7 @@ fn term_config(cursor_style: CursorStyle, scrollback: usize, vt: &vt::VtOptions)
         // privileges (read asks by default).
         osc52: term::Osc52::CopyPaste,
         kitty_keyboard: vt.kitty_keyboard,
+        wide_ambiguous: wide_ambiguous.to_vec(),
         ..Default::default()
     }
 }
@@ -231,6 +241,7 @@ pub struct Session {
     redraws: Arc<AtomicU64>,
     /// `dedup-repaint-scrollback`.
     dedup_repaints: Arc<AtomicBool>,
+    wide_ambiguous: Vec<std::ops::RangeInclusive<char>>,
 }
 
 impl Session {
@@ -276,7 +287,12 @@ impl Session {
         let pid = pty.child().id();
         let master_fd = pty.file().as_raw_fd();
 
-        let term_config = term_config(config.cursor_style, config.scrollback, &config.vt);
+        let term_config = term_config(
+            config.cursor_style,
+            config.scrollback,
+            &config.vt,
+            &config.wide_ambiguous,
+        );
         let mut terminal = Term::new(term_config, &size, proxy.clone());
         if let Some(bytes) = &config.preload {
             let mut parser: alacritty_terminal::vte::ansi::Processor =
@@ -310,6 +326,7 @@ impl Session {
                 vt,
                 redraws,
                 dedup_repaints,
+                wide_ambiguous: config.wide_ambiguous,
             },
             rx,
         ))
@@ -318,7 +335,7 @@ impl Session {
     /// Applies changed config to a running terminal; the cursor style only
     /// matters until a program sets its own.
     pub fn set_options(&self, cursor_style: CursorStyle, scrollback: usize, vt: vt::VtOptions) {
-        let options = term_config(cursor_style, scrollback, &vt);
+        let options = term_config(cursor_style, scrollback, &vt, &self.wide_ambiguous);
         *self.vt.lock().unwrap_or_else(|e| e.into_inner()) = vt;
         self.term.lock().set_options(options);
     }
