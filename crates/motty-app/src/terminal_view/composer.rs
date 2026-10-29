@@ -50,7 +50,7 @@ pub struct Chip {
 }
 
 pub(super) struct Composer {
-    editor: Entity<FileEditor>,
+    pub(super) editor: Entity<FileEditor>,
     pub(super) open: bool,
     chips: Vec<Chip>,
 }

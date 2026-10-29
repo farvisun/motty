@@ -169,14 +169,7 @@ impl Workspace {
             }
             Pick::Home => self.add_tab(None, dirs::home_dir(), window, cx),
             Pick::Folder(path) => self.add_tab(None, Some(path), window, cx),
-            Pick::Shell(path) => {
-                // The tab runs this shell (with integration) instead of the
-                // configured one.
-                let configured = self.config.shell.replace(path.display().to_string());
-                let result = self.add_tab(None, None, window, cx);
-                self.config.shell = configured;
-                result
-            }
+            Pick::Shell(path) => self.new_shell_tab(&path, window, cx),
             Pick::Host(host) => self.connect_to_host(&host, window, cx),
             Pick::Open => {
                 self.open_from_finder(window, cx);
@@ -202,9 +195,23 @@ impl Workspace {
         }
     }
 
+    /// A tab running this shell (with integration) instead of the
+    /// configured one.
+    pub(super) fn new_shell_tab(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let configured = self.config.shell.replace(path.display().to_string());
+        let result = self.add_tab(None, None, window, cx);
+        self.config.shell = configured;
+        result
+    }
+
     /// A shell tab that runs `ssh host` first, so a failed or finished
     /// connection leaves the shell (and the error) behind.
-    fn connect_to_host(
+    pub(super) fn connect_to_host(
         &mut self,
         host: &str,
         window: &mut Window,
@@ -254,7 +261,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// The login shells in /etc/shells, one per name, by name.
-fn shells() -> Vec<PathBuf> {
+pub(crate) fn shells() -> Vec<PathBuf> {
     let text = std::fs::read_to_string("/etc/shells").unwrap_or_default();
     parse_shells(&text)
         .into_iter()
@@ -276,7 +283,7 @@ fn parse_shells(text: &str) -> Vec<PathBuf> {
 
 /// The `Host` names in ~/.ssh/config (and the files it includes), in file
 /// order, without patterns.
-fn ssh_hosts() -> Vec<String> {
+pub(crate) fn ssh_hosts() -> Vec<String> {
     let Some(dir) = dirs::home_dir().map(|h| h.join(".ssh")) else {
         return Vec::new();
     };

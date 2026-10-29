@@ -87,6 +87,13 @@ pub enum PaneState {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Quit and Keep Windows: the next launch reopens them even with session
+/// restore off.
+static KEEP: AtomicBool = AtomicBool::new(false);
+
+pub fn keep_windows() {
+    KEEP.store(true, Ordering::Relaxed);
+}
 
 fn dir() -> PathBuf {
     dirs::data_dir()
@@ -147,7 +154,9 @@ pub fn start(cx: &mut App) {
     })
     .detach();
     cx.on_app_quit(|cx| {
-        let state = capture(cx, true);
+        let mut state = capture(cx, true);
+        // Saved as if it hadn't quit cleanly, so it comes back.
+        state.clean &= !KEEP.load(Ordering::Relaxed);
         write(&state);
         async {}
     })

@@ -32,6 +32,13 @@ pub struct Snapshot {
     pub fork: Option<&'static str>,
     /// Each tab's title and its programs (pid, name), for Ports.
     pub tabs: Vec<(String, Vec<(i32, String)>)>,
+    pub read_only: bool,
+    pub vi: bool,
+    /// The active tab's Notifications & Privileges switches, and whether
+    /// they're its own rather than Settings'.
+    pub privileges: Option<(Vec<(&'static str, bool)>, bool)>,
+    /// Open in: (name, bundle id).
+    pub open_with: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +56,10 @@ struct Live {
     git: Option<Git>,
     /// Per tab: (title, [(port, program)]).
     ports: Vec<(String, Vec<(u16, String)>)>,
+    shells: Vec<PathBuf>,
+    hosts: Vec<String>,
+    folders: Vec<PathBuf>,
+    files: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +81,14 @@ impl Global for State {}
 
 /// The menus with nothing known about a window yet.
 pub fn set(cx: &mut App) {
-    build(&Snapshot::default(), &Live::default(), cx);
+    // What's quick to read is there from the start.
+    let live = Live {
+        shells: crate::workspace::shells(),
+        hosts: crate::workspace::ssh_hosts(),
+        files: crate::folders::recent_files(),
+        ..Live::default()
+    };
+    build(&Snapshot::default(), &live, cx);
 }
 
 /// Rebuilds the menus for the frontmost window, once git and the ports
@@ -147,8 +165,18 @@ fn look_up(s: &Snapshot) -> Live {
             }
         }
     }
-    Live { git, ports }
+    Live {
+        git,
+        ports,
+        shells: crate::workspace::shells(),
+        hosts: crate::workspace::ssh_hosts(),
+        folders: crate::folders::ranked().into_iter().take(RECENT).collect(),
+        files: crate::folders::recent_files(),
+    }
 }
+
+/// Open Folder and Open Recent list this many.
+const RECENT: usize = 10;
 
 fn git_info(dir: &std::path::Path) -> Option<Git> {
     let git = |args: &[&str]| -> Option<String> {
@@ -188,7 +216,7 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
         Menu::new("Motty").items([
             MenuItem::action("About Motty", About),
             MenuItem::separator(),
-            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Settings...", OpenSettings),
             MenuItem::action("Welcome Guide", ShowWelcome),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -198,145 +226,259 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action("Quit Motty", Quit),
+            MenuItem::action("Quit and Keep Windows", QuitKeepWindows),
         ]),
-        Menu::new("File").items([
-            MenuItem::action("New Window", NewWindow),
-            MenuItem::action("New Tab", NewTab),
-            MenuItem::action("New File Editor", NewFileEditor),
-            MenuItem::separator(),
-            MenuItem::action("Open…", OpenFile),
-            MenuItem::submenu(recent_menu()),
-            MenuItem::action("Open Quickly…", OpenQuickly),
-            MenuItem::separator(),
-            MenuItem::action("Save", Save),
-            MenuItem::separator(),
-            MenuItem::action("Close", CloseTab),
-            MenuItem::action("Close Window", CloseWindow),
-            MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
-        ]),
-        Menu::new("Edit").items([
-            MenuItem::os_action("Undo", Undo, OsAction::Undo),
-            MenuItem::os_action("Redo", Redo, OsAction::Redo),
-            MenuItem::separator(),
-            MenuItem::os_action("Cut", Cut, OsAction::Cut),
-            MenuItem::os_action("Copy", Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", Paste, OsAction::Paste),
-            MenuItem::submenu(Menu::new("Paste as").items([
-                MenuItem::action("Paste Selection", PasteSelection),
-                MenuItem::action("Paste Escaping Special Characters", PasteEscaped),
-                MenuItem::action("Bracketed Paste", PasteBracketed),
-            ])),
-            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Find").items([
-                MenuItem::action("Find…", Find),
-                MenuItem::action("Find Next", FindNext),
-                MenuItem::action("Find Previous", FindPrevious),
-                MenuItem::separator(),
-                MenuItem::action("Find in All Tabs…", GlobalSearch),
-            ])),
-            MenuItem::separator(),
-            MenuItem::action("Composer", ToggleComposer),
-            MenuItem::action("Prompt Queue…", TogglePromptQueue),
-            MenuItem::action("Send to Chat", SendToChat),
-            MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Insert from").items([MenuItem::action("File Path…", InsertFilePath)]),
-            ),
-            MenuItem::separator(),
-            MenuItem::action("Secure Keyboard Entry", ToggleSecureKeyboardEntry).checked(s.secure),
-        ]),
-        Menu::new("View").items([
-            MenuItem::action("Command Palette…", CommandPalette),
-            MenuItem::action("Open Quickly…", OpenQuickly),
-            MenuItem::action("Jump To…", JumpTo),
-            MenuItem::action("Open Files Quickly…", OpenFilesQuickly),
-            MenuItem::action("Agent History…", AgentHistory),
-            MenuItem::separator(),
-            MenuItem::action("Tabs Panel", ToggleTabsPanel),
-            MenuItem::action("Inbox", ToggleInbox),
-            MenuItem::action("Details Panel", ToggleDetailsPanel),
-            MenuItem::submenu(Menu::new("Details").items([
-                MenuItem::action("Info", DetailsInfo),
-                MenuItem::action("Outline", DetailsOutline),
-                MenuItem::action("Git", DetailsGit),
-                MenuItem::action("Files", DetailsFiles),
-            ])),
-            MenuItem::separator(),
-            MenuItem::action("Bigger", IncreaseFontSize),
-            MenuItem::action("Smaller", DecreaseFontSize),
-            MenuItem::action("Actual Size", ResetFontSize),
-            MenuItem::separator(),
-            MenuItem::action("Scroll to Top", ScrollToTop),
-            MenuItem::action("Scroll to Bottom", ScrollToBottom),
-            MenuItem::separator(),
-            MenuItem::action(
-                if s.pinned {
-                    "Unpin Window"
-                } else {
-                    "Pin Window"
-                },
-                PinWindow,
-            ),
-            MenuItem::action("Toggle Full Screen", ToggleFullScreen),
-        ]),
+        file_menu(live),
+        edit_menu(s),
         shell_menu(s, live),
+        view_menu(s),
         // AppKit lists the open windows after the last separator.
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", ZoomWindow),
             MenuItem::separator(),
-            MenuItem::action("Show Next Tab", NextTab),
             MenuItem::action("Show Previous Tab", PreviousTab),
-            MenuItem::action("Show Next Unread Tab", ShowNextUnread),
-            MenuItem::action("Next Pane", FocusNextPane),
-            MenuItem::action("Previous Pane", FocusPreviousPane),
-            MenuItem::separator(),
-            MenuItem::action("Move Tab Up", MoveTabUp),
-            MenuItem::action("Move Tab Down", MoveTabDown),
+            MenuItem::action("Show Next Tab", NextTab),
+            MenuItem::action("Show Unread Tab", ShowNextUnread),
             MenuItem::action("Move Tab to New Window", MoveTabToNewWindow),
+            MenuItem::action("Merge All Windows", MergeAllWindows),
             MenuItem::separator(),
         ]),
-        Menu::new("Help").items([MenuItem::action("Motty Help", OpenHelp)]),
+        Menu::new("Help").items([
+            MenuItem::action("Motty Help", OpenHelp),
+            MenuItem::action(
+                "Send Feedback...",
+                OpenUrl {
+                    url: "https://github.com/farvisun/motty/issues".into(),
+                },
+            ),
+            MenuItem::separator(),
+            MenuItem::action("Reload Terminal View", ReloadTerminalView),
+        ]),
     ]);
+    crate::window_menu::patch();
 }
 
-fn recent_menu() -> Menu {
+fn file_menu(live: &Live) -> Menu {
     let home = dirs::home_dir().unwrap_or_default();
-    let folders = crate::folders::ranked();
-    let mut items: Vec<MenuItem> = folders
-        .into_iter()
-        .take(10)
+    let shells: Vec<MenuItem> = live
+        .shells
+        .iter()
         .map(|path| {
-            let label = match path.strip_prefix(&home) {
-                Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-                Ok(rest) => format!("~/{}", rest.display()),
-                Err(_) => path.display().to_string(),
-            };
-            MenuItem::action(label, OpenFolder { path })
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            );
+            MenuItem::action(name, NewShell { path: path.clone() })
         })
         .collect();
-    if items.is_empty() {
-        items.push(MenuItem::action("No Recent Folders", OpenFolder::default()).disabled(true));
+
+    let mut recent: Vec<MenuItem> = live
+        .files
+        .iter()
+        .map(|path| {
+            MenuItem::action(
+                tilde(path, &home),
+                EditFiles {
+                    paths: vec![path.clone()],
+                },
+            )
+        })
+        .collect();
+    if recent.is_empty() {
+        recent.push(MenuItem::action("No Recent Items", CopyText::default()).disabled(true));
+    } else {
+        recent.push(MenuItem::separator());
+        recent.push(MenuItem::action("Clear Menu", ClearRecentFiles));
     }
-    Menu::new("Open Recent").items(items)
+
+    let mut folders = vec![MenuItem::action("~/", OpenFolder { path: home.clone() })];
+    folders.extend(
+        live.folders
+            .iter()
+            .map(|path| MenuItem::action(tilde(path, &home), OpenFolder { path: path.clone() })),
+    );
+    folders.push(MenuItem::separator());
+    folders.push(MenuItem::action("Config...", OpenConfigFolder));
+
+    let mut hosts: Vec<MenuItem> = live
+        .hosts
+        .iter()
+        .map(|host| MenuItem::action(host.clone(), ConnectToHost { host: host.clone() }))
+        .collect();
+    if hosts.is_empty() {
+        hosts.push(MenuItem::action("No Hosts Yet", CopyText::default()).disabled(true));
+    }
+
+    Menu::new("File").items([
+        MenuItem::action("New Window", NewWindow),
+        MenuItem::action("New Tab", NewTab),
+        MenuItem::submenu(Menu::new("New Shell").items(shells)),
+        MenuItem::action("Duplicate Tab", DuplicateTab),
+        MenuItem::separator(),
+        MenuItem::action("New File Editor", NewFileEditor),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Open Recent").items(recent)),
+        MenuItem::submenu(Menu::new("Open Folder").items(folders)),
+        MenuItem::submenu(Menu::new("Connect to Host").items(hosts)),
+        MenuItem::separator(),
+        MenuItem::action("Export Text As...", ExportText),
+        MenuItem::action("Export Selected Text As...", ExportSelectedText),
+        MenuItem::separator(),
+        MenuItem::action("Save...", Save),
+        MenuItem::separator(),
+        MenuItem::action("Close", CloseTab),
+        MenuItem::action("Close Window", CloseWindow),
+        MenuItem::action("Close All", CloseAll),
+    ])
+}
+
+fn edit_menu(s: &Snapshot) -> Menu {
+    Menu::new("Edit").items([
+        MenuItem::os_action("Undo", Undo, OsAction::Undo),
+        MenuItem::os_action("Redo", Redo, OsAction::Redo),
+        MenuItem::separator(),
+        MenuItem::os_action("Cut", Cut, OsAction::Cut),
+        MenuItem::os_action("Copy", Copy, OsAction::Copy),
+        MenuItem::os_action("Paste", Paste, OsAction::Paste),
+        MenuItem::submenu(Menu::new("Copy / Paste as").items([
+            MenuItem::action("Copy Selection", CopySelection),
+            MenuItem::action("Copy with Style", CopyWithStyle),
+            MenuItem::action("Copy as ANSI Sequence", CopyAsAnsi),
+            MenuItem::separator(),
+            MenuItem::action("Copy Screen", CopyScreen),
+            MenuItem::action("Copy Screen with Style", CopyScreenWithStyle),
+            MenuItem::action("Copy Screen as ANSI Sequence", CopyScreenAsAnsi),
+            MenuItem::separator(),
+            MenuItem::action("Paste Selection", PasteSelection),
+            MenuItem::action("Paste File Base64-Encoded…", PasteFileBase64),
+            MenuItem::action("Paste Escaping Special Characters", PasteEscaped),
+            MenuItem::action("Bracketed Paste", PasteBracketed),
+            MenuItem::separator(),
+            MenuItem::action("Paste and continue in Composer", PasteToComposer),
+        ])),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Insert").items([
+            MenuItem::action("File Path...", InsertFilePath),
+            MenuItem::action("Screenshot", InsertScreenshot),
+        ])),
+        MenuItem::action("Composer", ToggleComposer),
+        MenuItem::action("Prompt Queue...", TogglePromptQueue),
+        MenuItem::action("Send to Chat...", SendToChat),
+        MenuItem::separator(),
+        MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Find").items([
+            MenuItem::action("Find...", Find),
+            MenuItem::action("Find Next", FindNext),
+            MenuItem::action("Find Previous", FindPrevious),
+            MenuItem::separator(),
+            MenuItem::action("Use Selection for Find", UseSelectionForFind),
+            MenuItem::action("Jump to Selection", JumpToSelection),
+            MenuItem::separator(),
+            MenuItem::action("Find in All Tabs...", GlobalSearch),
+        ])),
+        MenuItem::separator(),
+        MenuItem::action("Secure Keyboard Entry", ToggleSecureKeyboardEntry).checked(s.secure),
+    ])
+}
+
+fn view_menu(s: &Snapshot) -> Menu {
+    Menu::new("View").items([
+        MenuItem::action("Split Right", SplitRight),
+        MenuItem::action("Split Left", SplitLeft),
+        MenuItem::action("Split Down", SplitDown),
+        MenuItem::action("Split Up", SplitUp),
+        MenuItem::separator(),
+        MenuItem::action("Zoom Split", ZoomSplit),
+        MenuItem::submenu(Menu::new("Resize Split").items([
+            MenuItem::action("Equalize Splits", EqualizeSplits),
+            MenuItem::separator(),
+            MenuItem::action("Move Divider Up", MoveDividerUp),
+            MenuItem::action("Move Divider Down", MoveDividerDown),
+            MenuItem::action("Move Divider Left", MoveDividerLeft),
+            MenuItem::action("Move Divider Right", MoveDividerRight),
+        ])),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Focus to Pane").items([
+            MenuItem::action("Focus Pane Above", FocusPaneUp),
+            MenuItem::action("Focus Pane Below", FocusPaneDown),
+            MenuItem::action("Focus Pane to the Left", FocusPaneLeft),
+            MenuItem::action("Focus Pane to the Right", FocusPaneRight),
+            MenuItem::separator(),
+            MenuItem::action("Focus Next Pane", FocusNextPane),
+            MenuItem::action("Focus Previous Pane", FocusPreviousPane),
+        ])),
+        MenuItem::separator(),
+        MenuItem::action("Command Palette", CommandPalette),
+        MenuItem::action("Open Quickly", OpenQuickly),
+        MenuItem::action("Jump To", JumpTo),
+        MenuItem::action("Open Files Quickly", OpenFilesQuickly),
+        MenuItem::action("Open Agent Session", AgentHistory),
+        MenuItem::separator(),
+        MenuItem::action("Search Agent Conversations", SearchAgentConversations),
+        MenuItem::separator(),
+        MenuItem::action("Toggle Tabs Panel", ToggleTabsPanel),
+        MenuItem::action("Toggle Details Panel", ToggleDetailsPanel),
+        MenuItem::action("Inbox", ToggleInbox),
+        MenuItem::separator(),
+        MenuItem::action("Info", DetailsInfo),
+        MenuItem::action("Outline", DetailsOutline),
+        MenuItem::action("Git", DetailsGit),
+        MenuItem::action("Files", DetailsFiles),
+        MenuItem::separator(),
+        MenuItem::action("Increase Font Size", IncreaseFontSize),
+        MenuItem::action("Decrease Font Size", DecreaseFontSize),
+        MenuItem::action("Reset Font Size", ResetFontSize),
+        MenuItem::separator(),
+        MenuItem::action("Pin Window", PinWindow).checked(s.pinned),
+    ])
+}
+
+/// `~/code/motty`: a path as the menus show it.
+fn tilde(path: &std::path::Path, home: &std::path::Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~/".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn shell_menu(s: &Snapshot, live: &Live) -> Menu {
+    let mut open_in: Vec<MenuItem> = s
+        .open_with
+        .iter()
+        .map(|(name, bundle)| {
+            MenuItem::action(
+                name.clone(),
+                OpenIn {
+                    bundle: bundle.clone(),
+                },
+            )
+        })
+        .collect();
+    if open_in.is_empty() {
+        open_in.push(MenuItem::action("No Apps", CopyText::default()).disabled(true));
+    }
     let mut items = vec![
-        MenuItem::action("Split Right", SplitRight),
-        MenuItem::action("Split Down", SplitDown),
-        MenuItem::submenu(Menu::new("Split").items([
-            MenuItem::action("Split Left", SplitLeft),
-            MenuItem::action("Split Up", SplitUp),
-            MenuItem::separator(),
-            MenuItem::action("Equalize Splits", EqualizeSplits),
-            MenuItem::action("Zoom Split", ZoomSplit),
-        ])),
+        MenuItem::action("Rename Tab...", RenameTab),
+        MenuItem::action("Set Tab Prefix...", SetTabPrefix),
         MenuItem::separator(),
-        MenuItem::submenu(about_line(s)),
+        MenuItem::action("Clear Screen", Clear),
+        MenuItem::action("Clear Scrollback Above", ClearScrollbackAbove),
+        MenuItem::separator(),
+        MenuItem::action("Copy Path", CopyPath),
+        MenuItem::action("Reveal in Finder", RevealInFinder),
+        MenuItem::submenu(Menu::new("Open in").items(open_in)),
+        MenuItem::separator(),
+        MenuItem::action("Vi Mode", ToggleViMode).checked(s.vi),
+        MenuItem::action("Mark Mode", MarkMode),
+        MenuItem::action("Open Link (Hint Mode)", HintOpen),
+        MenuItem::action("Read Only", ToggleReadOnly).checked(s.read_only),
+        MenuItem::separator(),
         MenuItem::submenu(ports_menu(live)),
         MenuItem::submenu(git_menu(live)),
+        MenuItem::submenu(about_line(s)),
     ];
     if let Some((label, session)) = &s.agent {
         let mut agent = vec![];
@@ -362,25 +504,26 @@ fn shell_menu(s: &Snapshot, live: &Live) -> Menu {
         agent.push(MenuItem::action("Clear Badge", ClearBadge));
         items.push(MenuItem::submenu(Menu::new(label.clone()).items(agent)));
     }
+    let privileges = match &s.privileges {
+        Some((list, own)) => {
+            let mut items: Vec<MenuItem> = list
+                .iter()
+                .enumerate()
+                .map(|(index, (label, on))| {
+                    MenuItem::action(*label, TogglePrivilege { index }).checked(*on)
+                })
+                .collect();
+            items.push(MenuItem::separator());
+            items.push(
+                MenuItem::action("Use Settings Defaults", UseDefaultPrivileges).disabled(!own),
+            );
+            items
+        }
+        None => vec![MenuItem::action("No Active Tab", CopyText::default()).disabled(true)],
+    };
     items.extend([
         MenuItem::separator(),
-        MenuItem::action("Clear Screen", Clear),
-        MenuItem::action("Clear Scrollback Above", ClearScrollbackAbove),
-        MenuItem::separator(),
-        MenuItem::action("Copy Path", CopyPath),
-        MenuItem::action("Reveal in Finder", RevealInFinder),
-        MenuItem::separator(),
-        MenuItem::action("Vi Mode", ToggleViMode),
-        MenuItem::submenu(Menu::new("Hint Mode").items([
-            MenuItem::action("Open Link", HintOpen),
-            MenuItem::action("Copy Link", HintCopy),
-            MenuItem::action("Paste Word", HintPaste),
-            MenuItem::action("Reveal Path", HintReveal),
-        ])),
-        MenuItem::action("Read Only", ToggleReadOnly),
-        MenuItem::separator(),
-        MenuItem::action("Rename Tab…", RenameTab),
-        MenuItem::action("Clear Badge", ClearBadge),
+        MenuItem::submenu(Menu::new("Notifications & Privileges").items(privileges)),
     ]);
     Menu::new("Shell").items(items)
 }

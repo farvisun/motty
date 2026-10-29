@@ -5,7 +5,7 @@
 use std::fmt::Write;
 
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
@@ -19,50 +19,121 @@ pub fn serialize<T>(term: &Term<T>, max_lines: usize) -> Option<Vec<u8>> {
     let grid = term.grid();
     let end = grid.cursor.point.line;
     let start = Line((end.0 - max_lines as i32).max(grid.topmost_line().0));
-    let mut out = String::new();
-    let mut style = String::new();
-    let mut line = start;
-    while line < end {
+    if start >= end {
+        return Some(Vec::new());
+    }
+    let last = Point::new(end - 1, grid.last_column());
+    let mut out = ansi(&rows(term, Point::new(start, Column(0)), last));
+    out.push_str("\r\n");
+    Some(out.into_bytes())
+}
+
+/// One row of a range of the grid: its cells (wide-character spacers left
+/// out, trailing blanks dropped unless it wraps) and whether it runs on
+/// into the next row.
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub cells: Vec<Cell>,
+    pub wraps: bool,
+}
+
+/// The rows from `start` to `end`, both included: what Copy as ANSI, Copy
+/// with Style and Export Text work from.
+pub fn rows<T>(term: &Term<T>, start: Point, end: Point) -> Vec<Row> {
+    let grid = term.grid();
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let start = Point::new(start.line.max(grid.topmost_line()), start.column);
+    let end = Point::new(end.line.min(grid.bottommost_line()), end.column);
+    let mut out = Vec::new();
+    let mut line = start.line;
+    while line <= end.line {
         let row = &grid[line];
-        let wraps = row[grid.last_column()].flags.contains(Flags::WRAPLINE);
-        // Trailing blanks are dropped unless the row wraps on.
-        let mut len = grid.columns();
+        let from = if line == start.line {
+            start.column.0
+        } else {
+            0
+        };
+        let to = if line == end.line {
+            end.column.0.min(grid.last_column().0) + 1
+        } else {
+            grid.columns()
+        };
+        let wraps = line < end.line && row[grid.last_column()].flags.contains(Flags::WRAPLINE);
+        let mut len = to;
         if !wraps {
-            while len > 0 && is_blank(&row[Column(len - 1)]) {
+            while len > from && is_blank(&row[Column(len - 1)]) {
                 len -= 1;
             }
         }
-        for col in 0..len {
-            let cell = &row[Column(col)];
-            if cell
-                .flags
-                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-            {
-                continue;
-            }
+        let cells = (from..len)
+            .map(|col| &row[Column(col)])
+            .filter(|cell| {
+                !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            })
+            .cloned()
+            .collect();
+        out.push(Row { cells, wraps });
+        line += 1;
+    }
+    out
+}
+
+/// The rows as text a terminal replays: SGR for colors and attributes,
+/// wrapped rows left unbroken so they reflow at a new width. No line break
+/// after the last row.
+pub fn ansi(rows: &[Row]) -> String {
+    let mut out = String::new();
+    let mut style = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        for cell in &row.cells {
             let sgr = sgr(cell);
             if sgr != style {
                 out.push_str(if sgr.is_empty() { "\x1b[0m" } else { &sgr });
                 style = sgr;
             }
-            out.push(cell.c);
-            for &c in cell.zerowidth().unwrap_or_default() {
-                out.push(c);
-            }
+            push_cell(&mut out, cell);
         }
-        if !wraps {
+        if !row.wraps {
             if !style.is_empty() {
                 out.push_str("\x1b[0m");
                 style.clear();
             }
-            out.push_str("\r\n");
+            if i + 1 < rows.len() {
+                out.push_str("\r\n");
+            }
         }
-        line += 1;
     }
     if !style.is_empty() {
         out.push_str("\x1b[0m");
     }
-    Some(out.into_bytes())
+    out
+}
+
+/// The rows as plain text, one line per unwrapped row.
+pub fn plain(rows: &[Row]) -> String {
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        for cell in &row.cells {
+            push_cell(&mut out, cell);
+        }
+        if !row.wraps && i + 1 < rows.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn push_cell(out: &mut String, cell: &Cell) {
+    out.push(cell.c);
+    for &c in cell.zerowidth().unwrap_or_default() {
+        out.push(c);
+    }
 }
 
 fn is_blank(cell: &Cell) -> bool {
@@ -159,5 +230,18 @@ mod tests {
             wide.grid()[Line(1)][Column(0)].fg,
             Color::Named(NamedColor::Red)
         );
+    }
+
+    #[test]
+    fn ranges_start_and_end_mid_row() {
+        let src = term(10, b"hello world\r\nab \x1b[1mcd\x1b[0m   \r\n");
+        let r = rows(
+            &src,
+            Point::new(Line(0), Column(6)),
+            Point::new(Line(2), Column(9)),
+        );
+        // "hello worl" wraps into "d"; the last row's trailing blanks go.
+        assert_eq!(plain(&r), "world\nab cd");
+        assert_eq!(ansi(&r[2..]), "ab \x1b[0;1mcd\x1b[0m");
     }
 }

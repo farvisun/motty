@@ -164,7 +164,12 @@ impl TerminalView {
 
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
         self.read_only = read_only;
+        cx.defer(crate::menus::refresh);
         cx.notify();
+    }
+
+    pub fn in_vi_mode(&self) -> bool {
+        self.vi.is_some()
     }
 
     pub(super) fn toggle_vi_mode(&mut self, cx: &mut Context<Self>) {
@@ -177,6 +182,7 @@ impl TerminalView {
             term.scroll_display(Scroll::Bottom);
         }
         drop(term);
+        cx.defer(crate::menus::refresh);
         cx.notify();
     }
 

@@ -126,6 +126,31 @@ actions!(
         ForkSessionLeft,
         ForkSessionDown,
         ForkSessionUp,
+        CopySelection,
+        CopyWithStyle,
+        CopyAsAnsi,
+        CopyScreen,
+        CopyScreenWithStyle,
+        CopyScreenAsAnsi,
+        PasteFileBase64,
+        PasteToComposer,
+        InsertScreenshot,
+        UseSelectionForFind,
+        JumpToSelection,
+        ExportText,
+        ExportSelectedText,
+        MarkMode,
+        SetTabPrefix,
+        DuplicateTab,
+        CloseAll,
+        QuitKeepWindows,
+        MinimizeAll,
+        MergeAllWindows,
+        ReloadTerminalView,
+        OpenConfigFolder,
+        UseDefaultPrivileges,
+        SearchAgentConversations,
+        ClearRecentFiles,
     ]
 );
 
@@ -205,6 +230,35 @@ pub struct ResumeSession {
     pub place: String,
 }
 
+/// File › New Shell: a tab running this shell instead of the configured one.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct NewShell {
+    pub path: std::path::PathBuf,
+}
+
+/// File › Connect to Host: a tab that runs `ssh host`.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct ConnectToHost {
+    pub host: String,
+}
+
+/// Shell › Open in: the focused pane's folder in the app with this bundle id.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct OpenIn {
+    pub bundle: String,
+}
+
+/// Shell › Notifications & Privileges: flips one of the active tab's
+/// switches (by its place in that menu).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct TogglePrivilege {
+    pub index: usize,
+}
+
 /// Opens files in editor tabs (files dropped on a pane's edge).
 #[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
 #[action(namespace = motty, no_json)]
@@ -241,8 +295,8 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-a", SelectAll, EDITOR),
         b("cmd-x", Cut, EDITOR),
         b("cmd-z", Undo, EDITOR),
-        b("cmd-shift-z", Redo, EDITOR),
         b("cmd-y", Redo, EDITOR),
+        b("cmd-shift-z", Redo, EDITOR),
         b("cmd-s", Save, EDITOR),
         b("cmd-f", Find, TERMINAL),
         b("cmd-shift-e", ToggleComposer, TERMINAL),
@@ -268,6 +322,8 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd--", DecreaseFontSize, TERMINAL),
         b("cmd-0", ResetFontSize, TERMINAL),
         b("cmd-q", Quit, None),
+        b("cmd-alt-q", QuitKeepWindows, None),
+        b("cmd-alt-shift-w", CloseAll, None),
         b("cmd-,", OpenSettings, None),
         b("cmd-h", HideApp, None),
         b("alt-cmd-h", HideOthers, None),

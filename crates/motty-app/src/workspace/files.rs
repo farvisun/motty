@@ -17,6 +17,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(path) = &path {
+            crate::folders::record_file(path);
+        }
         if let Some(path) = &path
             && let Some(ix) = self.tabs.iter().position(|t| {
                 t.as_editor()

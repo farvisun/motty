@@ -93,6 +93,8 @@ impl Order {
 pub(super) struct Rename {
     pub ix: usize,
     pub text: String,
+    /// Set Tab Prefix: the name goes before the title.
+    pub prefix: bool,
     pub focus: FocusHandle,
 }
 
@@ -139,6 +141,8 @@ enum Pick {
     About,
     Close,
     Group(Grouping),
+    /// The Inbox in place of the tabs.
+    Inbox,
     Order(Order),
     RemoveDividers,
     Action(Box<dyn gpui::Action>),
@@ -151,7 +155,7 @@ enum Pick {
 
 /// The title menu's Notifications & Privileges switches.
 #[derive(Clone, Copy, Debug)]
-enum Privilege {
+pub(super) enum Privilege {
     ExitStatus,
     Processing,
     Complete,
@@ -162,7 +166,7 @@ enum Privilege {
 }
 
 impl Privilege {
-    const ALL: [Privilege; 7] = [
+    pub(super) const ALL: [Privilege; 7] = [
         Privilege::ExitStatus,
         Privilege::Processing,
         Privilege::Complete,
@@ -172,7 +176,7 @@ impl Privilege {
         Privilege::Caffeinate,
     ];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Privilege::ExitStatus => "Badge Exit Status",
             Privilege::Processing => "Badge While Processing",
@@ -184,7 +188,7 @@ impl Privilege {
         }
     }
 
-    fn field(self, b: &mut motty_theme::Badges) -> &mut bool {
+    pub(super) fn field(self, b: &mut motty_theme::Badges) -> &mut bool {
         match self {
             Privilege::ExitStatus => &mut b.exit_status,
             Privilege::Processing => &mut b.agent_processing,
@@ -196,7 +200,7 @@ impl Privilege {
         }
     }
 
-    fn get(self, b: &motty_theme::Badges) -> bool {
+    pub(super) fn get(self, b: &motty_theme::Badges) -> bool {
         let mut b = *b;
         *self.field(&mut b)
     }
@@ -370,9 +374,10 @@ impl Workspace {
                     .collect(),
             );
             m.separator();
-            let mut git = Vec::new();
-            match crate::menus::git(cx) {
-                Some((branch, web)) => {
+            // Otty leaves Git out of a folder that isn't a repository.
+            if let Some((branch, web)) = crate::menus::git(cx) {
+                let mut git = Vec::new();
+                {
                     let typed = |label: &str, line: &str, run: bool| {
                         (
                             Item::new(label.to_owned()),
@@ -392,12 +397,8 @@ impl Workspace {
                         ));
                     }
                 }
-                None => git.push((
-                    Item::new("Not a Git Repository").enabled(false),
-                    Pick::Nothing,
-                )),
+                m.sub("Git", git);
             }
-            m.sub("Git", git);
             m.separator();
         }
         if tab.terms().is_some() {
@@ -507,36 +508,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Otty's: one list in three sections, each item with its symbol.
         let mut m = Menu::new();
-        m.sub(
-            "Group",
-            [
-                ("No Grouping", Grouping::None),
-                ("By Project", Grouping::Project),
-                ("By Date", Grouping::Date),
-            ]
-            .into_iter()
-            .map(|(label, g)| (Item::new(label).checked(self.grouping == g), Pick::Group(g)))
-            .collect(),
-        );
-        m.sub(
-            "Order",
-            [
-                ("Created Time", Order::Created),
-                ("Updated Time", Order::Updated),
-                ("Manual", Order::Manual),
-            ]
-            .into_iter()
-            .map(|(label, o)| (Item::new(label).checked(self.order == o), Pick::Order(o)))
-            .collect(),
+        m.entries.push(Entry::Header("GROUP".into()));
+        for (label, symbol, g) in [
+            ("No Grouping", "list.bullet", Grouping::None),
+            ("By Project", "folder", Grouping::Project),
+            ("By Date", "calendar", Grouping::Date),
+        ] {
+            let on = !self.inbox && self.grouping == g;
+            m.item(Item::new(label).symbol(symbol).checked(on), Pick::Group(g));
+        }
+        m.item(
+            Item::new("Inbox").symbol("bell").checked(self.inbox),
+            Pick::Inbox,
         );
         m.separator();
+        m.entries.push(Entry::Header("ORDER".into()));
+        for (label, symbol, o) in [
+            ("Created Time", "clock", Order::Created),
+            ("Updated Time", "clock.arrow.circlepath", Order::Updated),
+        ] {
+            m.item(
+                Item::new(label).symbol(symbol).checked(self.order == o),
+                Pick::Order(o),
+            );
+        }
+        m.separator();
+        m.entries.push(Entry::Header("DIVIDER".into()));
         m.item(
-            Item::new("Insert Divider").enabled(self.grouping == Grouping::None),
+            Item::new("Insert Divider")
+                .symbol("plus")
+                .enabled(self.grouping == Grouping::None && !self.inbox),
             Pick::Divider(true),
         );
         m.item(
-            Item::new("Remove All Dividers").enabled(self.tabs.iter().any(|t| t.divider)),
+            Item::new("Remove All Dividers").symbol("trash"),
             Pick::RemoveDividers,
         );
         let picks = m.picks;
@@ -579,6 +586,11 @@ impl Workspace {
             Pick::Close => self.close_asking(super::closing::Closing::Tab(ix), window, cx),
             Pick::Group(g) => {
                 self.grouping = g;
+                self.inbox = false;
+                cx.notify();
+            }
+            Pick::Inbox => {
+                self.inbox = true;
                 cx.notify();
             }
             Pick::Order(o) => {
@@ -608,12 +620,25 @@ impl Workspace {
 
     /// Rename Tab: the card's title becomes a text field.
     pub(super) fn start_rename(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_naming(ix, false, window, cx);
+    }
+
+    /// Rename Tab, or Set Tab Prefix (`prefix`): a name shown before the
+    /// title, which still follows the program.
+    pub(super) fn start_naming(
+        &mut self,
+        ix: usize,
+        prefix: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
         let text = match &tab.name {
-            Some(n) => n.text.clone(),
-            None => tab_title(tab, cx),
+            Some(n) if n.prefix == prefix => n.text.clone(),
+            _ if prefix => String::new(),
+            _ => tab_title(tab, cx),
         };
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -624,7 +649,12 @@ impl Workspace {
         .detach();
         self.sidebar_visible = true;
         self.inbox = false;
-        self.renaming = Some(Rename { ix, text, focus });
+        self.renaming = Some(Rename {
+            ix,
+            text,
+            prefix,
+            focus,
+        });
         cx.notify();
     }
 
@@ -664,7 +694,7 @@ impl Workspace {
             let text = rename.text.trim();
             tab.name = (!text.is_empty()).then(|| TabName {
                 text: text.to_owned(),
-                prefix: false,
+                prefix: rename.prefix,
             });
         }
         if rename.focus.is_focused(window) {
@@ -794,17 +824,7 @@ impl Workspace {
             return window.play_system_bell();
         }
         let tab = self.tabs.remove(ix);
-        // This window stops following its panes; the new one picks them up.
-        match &tab.content {
-            Content::Terminals(t) => {
-                for view in t.root.leaves() {
-                    self.pane_subscriptions.remove(&view.entity_id());
-                }
-            }
-            Content::Editor(e) => {
-                self.pane_subscriptions.remove(&e.entity_id());
-            }
-        }
+        self.unwatch(&tab);
         let next = if self.active > ix {
             self.active - 1
         } else {
@@ -815,6 +835,53 @@ impl Workspace {
         if let Err(e) = crate::open_window_with_tab(config, MovedTab(tab), cx) {
             tracing::error!("couldn't move the tab: {e:#}");
         }
+    }
+
+    /// This window stops following a tab's panes; the one it moves to
+    /// picks them up.
+    fn unwatch(&mut self, tab: &Tab) {
+        match &tab.content {
+            Content::Terminals(t) => {
+                for view in t.root.leaves() {
+                    self.pane_subscriptions.remove(&view.entity_id());
+                }
+            }
+            Content::Editor(e) => {
+                self.pane_subscriptions.remove(&e.entity_id());
+            }
+        }
+    }
+
+    /// Window › Merge All Windows: every other window's tabs come here and
+    /// those windows close.
+    pub(super) fn merge_all_windows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = window.window_handle();
+        let others: Vec<gpui::WindowHandle<Workspace>> = cx
+            .windows()
+            .into_iter()
+            .filter(|w| *w != here)
+            .filter_map(|w| w.downcast::<Workspace>())
+            .collect();
+        if others.is_empty() {
+            return window.play_system_bell();
+        }
+        let active = self.active;
+        for handle in others {
+            let moved = handle
+                .update(cx, |other, window, _| {
+                    let tabs = std::mem::take(&mut other.tabs);
+                    for tab in &tabs {
+                        other.unwatch(tab);
+                    }
+                    window.remove_window();
+                    tabs
+                })
+                .unwrap_or_default();
+            for tab in moved {
+                self.adopt(MovedTab(tab), window, cx);
+            }
+        }
+        self.activate(active, window, cx);
     }
 
     /// Takes in a tab moved from another window.

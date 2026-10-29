@@ -33,6 +33,8 @@ mod closing;
 mod details;
 mod files;
 mod global_search;
+mod menu_actions;
+pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
 mod open_quickly;
 mod palette;
@@ -357,6 +359,7 @@ impl Workspace {
             tracing::warn!("{w}");
         }
         let theme = parsed.theme;
+        crate::native_menu::follow_theme(theme.meta.mode == motty_theme::Mode::Dark);
         let ui_font = crate::fonts::ui_family(&theme.token.font_ui, cx).into();
         let mono_font = crate::fonts::terminal_family(&config, &theme, cx).into();
 
@@ -1251,6 +1254,7 @@ impl Workspace {
             tracing::warn!("{w}");
         }
         self.theme = parsed.theme;
+        crate::native_menu::follow_theme(self.theme.meta.mode == motty_theme::Mode::Dark);
         self.ui_font = crate::fonts::ui_family(&self.theme.token.font_ui, cx).into();
         self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
         let style = terminal_style(&self.config, &self.theme, cx);
@@ -1917,6 +1921,8 @@ impl Workspace {
                 .status
                 .as_ref()
                 .and_then(|st| Some((st.agent.clone()?, st.session.clone())));
+            s.read_only = v.is_read_only();
+            s.vi = v.in_vi_mode();
             s.fork = v.status.as_ref().and_then(|st| {
                 let (agent, id) = (st.agent_id.as_deref()?, st.session.as_deref()?);
                 crate::agents::sessions::fork_command(agent, id)
@@ -1938,6 +1944,8 @@ impl Workspace {
                 Some((tab_title(tab, cx), procs))
             })
             .collect();
+        s.privileges = self.privileges_for_menus();
+        s.open_with = open_with_apps(&self.config.open_with_apps);
         s
     }
 
@@ -2711,8 +2719,8 @@ impl Render for Workspace {
             .child(container)
             .child(title_band);
 
-        div()
-            .id("workspace")
+        let root = div().id("workspace");
+        self.register_menu_actions(root, cx)
             .relative()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)

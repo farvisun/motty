@@ -101,6 +101,57 @@ pub fn ranked() -> Vec<PathBuf> {
     list.into_iter().map(|(path, _)| path).collect()
 }
 
+/// File › Open Recent lists this many files.
+const RECENT_FILES: usize = 10;
+
+fn files_file() -> PathBuf {
+    file().with_file_name("recent-files.json")
+}
+
+fn read_recent_files() -> Vec<PathBuf> {
+    std::fs::read(files_file())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn write_recent_files(list: &[PathBuf]) {
+    let result = serde_json::to_vec(list)
+        .map_err(std::io::Error::other)
+        .and_then(|json| {
+            let path = files_file();
+            std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+            std::fs::write(path, json)
+        });
+    if let Err(e) = result {
+        tracing::warn!("couldn't save recent files: {e}");
+    }
+}
+
+/// A file opened in an editor tab, for File › Open Recent.
+pub fn record_file(path: &Path) {
+    if !crate::recovery::enabled() {
+        return;
+    }
+    let mut list = read_recent_files();
+    list.retain(|p| p != path);
+    list.insert(0, path.to_path_buf());
+    list.truncate(RECENT_FILES);
+    write_recent_files(&list);
+}
+
+/// Files opened lately that still exist, the latest first.
+pub fn recent_files() -> Vec<PathBuf> {
+    let mut list = read_recent_files();
+    list.retain(|p| p.is_file());
+    list
+}
+
+/// Open Recent › Clear Menu.
+pub fn clear_recent_files() {
+    write_recent_files(&[]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

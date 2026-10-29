@@ -28,6 +28,7 @@ mod autocomplete;
 mod behavior;
 mod composer;
 mod context_menu;
+mod copy_as;
 mod find;
 mod hints;
 mod links;
@@ -895,8 +896,8 @@ impl Render for TerminalView {
             .children(self.render_vi_key_hints())
             .children(self.render_find_bar(cx))
             .children(self.render_drop_zone(cx));
-        div()
-            .id("terminal")
+        let root = div().id("terminal");
+        self.register_copy_as(root, cx)
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
             .size_full()

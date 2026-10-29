@@ -133,9 +133,18 @@ pub fn popup_then(
     );
 }
 
+thread_local! {
+    static THEME_DARK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Menus are drawn dark or light as the theme is, not as the system is.
+pub fn follow_theme(dark: bool) {
+    THEME_DARK.with(|d| d.set(Some(dark)));
+}
+
 /// [`popup_then`] for a menu with an [`Entry::Name`] field: `on_close`
 /// also gets the field's value when it was changed (or reset to empty).
-/// `dark` draws it dark or light rather than as the system is.
+/// `dark` draws it dark or light rather than as the theme is.
 pub fn popup_named(
     entries: Vec<Entry>,
     position: Point<Pixels>,
@@ -145,6 +154,7 @@ pub fn popup_named(
     cx: &mut App,
     on_close: impl FnOnce(Option<usize>, Option<NameField>, &mut Window, &mut App) + 'static,
 ) {
+    let dark = dark.or_else(|| THEME_DARK.with(|d| d.get()));
     #[cfg(target_os = "macos")]
     mac::popup(entries, position, selected, dark, window, cx, on_close);
     #[cfg(not(target_os = "macos"))]
@@ -163,14 +173,16 @@ mod mac {
     use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-        NSAttributedStringAttachmentConveniences, NSAutoresizingMaskOptions, NSButton, NSColor,
-        NSControlStateValueOn, NSEventModifierFlags, NSFont, NSFontAttributeName,
-        NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem, NSSegmentSwitchTracking,
-        NSSegmentedControl, NSTextAttachment, NSTextField, NSTextFieldBezelStyle, NSView,
+        NSAttributedStringAttachmentConveniences, NSAttributedStringNSStringDrawing,
+        NSAutoresizingMaskOptions, NSButton, NSColor, NSControlStateValueOn, NSEventModifierFlags,
+        NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem,
+        NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSSegmentSwitchTracking,
+        NSSegmentedControl, NSTextAlignment, NSTextAttachment, NSTextField, NSTextFieldBezelStyle,
+        NSTextTab, NSView,
     };
     use objc2_foundation::{
-        NSArray, NSAttributedString, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize,
-        NSString,
+        NSArray, NSAttributedString, NSDictionary, NSMutableAttributedString, NSPoint, NSRange,
+        NSRect, NSSize, NSString,
     };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -419,6 +431,21 @@ mod mac {
     ) -> Retained<NSMenu> {
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
+        // With symbols, items line up after an icon column and a check goes
+        // on the right, past the widest label, as in Otty's menus.
+        let symbols = entries
+            .iter()
+            .any(|e| matches!(e, Entry::Item(i) if i.symbol.is_some()));
+        let check_at = symbols.then(|| {
+            let widest = entries
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Item(i) => Some(label_width(&i.label)),
+                    _ => None,
+                })
+                .fold(0., f64::max);
+            ICON_COLUMN + widest + 36.
+        });
         for entry in entries {
             match entry {
                 Entry::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
@@ -431,7 +458,7 @@ mod mac {
                 Entry::Info { label, symbol } => {
                     let item = NSMenuItem::new(mtm);
                     item.setEnabled(false);
-                    item.setAttributedTitle(Some(&info_title(label, symbol)));
+                    item.setAttributedTitle(Some(&info_title(label, symbol, false)));
                     menu.addItem(&item);
                 }
                 Entry::Name(spec) => {
@@ -442,6 +469,9 @@ mod mac {
                 Entry::Submenu { label, entries } => {
                     let item = NSMenuItem::new(mtm);
                     item.setTitle(&NSString::from_str(label));
+                    if symbols {
+                        item.setAttributedTitle(Some(&symbol_title(label, None, true, None)));
+                    }
                     let sub = build(entries, target, mtm, count, selected, positioning);
                     item.setSubmenu(Some(&sub));
                     menu.addItem(&item);
@@ -451,17 +481,15 @@ mod mac {
                     item.setTitle(&NSString::from_str(&spec.label));
                     item.setTag(*count as isize);
                     item.setEnabled(spec.enabled);
-                    if spec.checked {
-                        item.setState(NSControlStateValueOn);
-                    }
-                    if let Some(name) = spec.symbol
-                        && let Some(image) =
-                            NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                                &NSString::from_str(name),
-                                None,
-                            )
-                    {
-                        item.setImage(Some(&image));
+                    match check_at {
+                        Some(check_at) => item.setAttributedTitle(Some(&symbol_title(
+                            &spec.label,
+                            spec.symbol,
+                            spec.enabled,
+                            spec.checked.then_some(check_at),
+                        ))),
+                        None if spec.checked => item.setState(NSControlStateValueOn),
+                        None => {}
                     }
                     if let Some(ks) = &spec.keystroke
                         && let Some(key) = native_key(ks)
@@ -486,10 +514,88 @@ mod mac {
         menu
     }
 
-    /// `label` after `symbol`, in the menu's font and the secondary label
-    /// colour. Menus here don't draw items' images, so the symbol goes into
-    /// the title.
-    fn info_title(label: &str, symbol: &str) -> Retained<NSAttributedString> {
+    /// Where labels start after a symbol.
+    const ICON_COLUMN: f64 = 24.;
+
+    fn symbol_attachment(name: &str) -> Option<Retained<NSAttributedString>> {
+        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(name),
+            None,
+        )?;
+        let attachment = NSTextAttachment::new();
+        attachment.setImage(Some(&image));
+        Some(NSAttributedString::attributedStringWithAttachment(
+            &attachment,
+        ))
+    }
+
+    fn label_width(label: &str) -> f64 {
+        let text = NSMutableAttributedString::from_nsstring(&NSString::from_str(label));
+        let range = NSRange::new(0, text.length());
+        // SAFETY: a font for the font key.
+        unsafe {
+            text.addAttribute_value_range(NSFontAttributeName, &NSFont::menuFontOfSize(0.), range);
+        }
+        text.size().width
+    }
+
+    /// An item's title in a menu with symbols: its symbol in the icon
+    /// column, the label after it and, when `check_at`, a checkmark there.
+    /// Menus here don't draw items' images, so they go into the title.
+    fn symbol_title(
+        label: &str,
+        symbol: Option<&str>,
+        enabled: bool,
+        check_at: Option<f64>,
+    ) -> Retained<NSAttributedString> {
+        let text = NSMutableAttributedString::new();
+        let plain = |s: &str| NSAttributedString::from_nsstring(&NSString::from_str(s));
+        if let Some(icon) = symbol.and_then(symbol_attachment) {
+            text.appendAttributedString(&icon);
+        }
+        text.appendAttributedString(&plain("\t"));
+        text.appendAttributedString(&plain(label));
+        if let Some(check) = check_at.and_then(|_| symbol_attachment("checkmark")) {
+            text.appendAttributedString(&plain("\t"));
+            text.appendAttributedString(&check);
+        }
+        let mut tabs = vec![tab(NSTextAlignment::Left, ICON_COLUMN)];
+        if let Some(at) = check_at {
+            tabs.push(tab(NSTextAlignment::Right, at));
+        }
+        let style = NSMutableParagraphStyle::new();
+        style.setTabStops(Some(&NSArray::from_retained_slice(&tabs)));
+        let range = NSRange::new(0, text.length());
+        let color = if enabled {
+            NSColor::labelColor()
+        } else {
+            NSColor::tertiaryLabelColor()
+        };
+        // SAFETY: the values have the types these keys take.
+        unsafe {
+            text.addAttribute_value_range(NSFontAttributeName, &NSFont::menuFontOfSize(0.), range);
+            text.addAttribute_value_range(NSForegroundColorAttributeName, &color, range);
+            text.addAttribute_value_range(NSParagraphStyleAttributeName, &style, range);
+        }
+        Retained::into_super(text)
+    }
+
+    fn tab(alignment: NSTextAlignment, location: f64) -> Retained<NSTextTab> {
+        // SAFETY: no options.
+        unsafe {
+            NSTextTab::initWithTextAlignment_location_options(
+                objc2::AnyThread::alloc(),
+                alignment,
+                location,
+                &NSDictionary::new(),
+            )
+        }
+    }
+
+    /// `label` after `symbol`, in the menu's font, in the label colour
+    /// (`enabled`) or the secondary one. Menus here don't draw items'
+    /// images, so the symbol goes into the title.
+    fn info_title(label: &str, symbol: &str, enabled: bool) -> Retained<NSAttributedString> {
         let text = NSMutableAttributedString::new();
         if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
             &NSString::from_str(symbol),
@@ -508,14 +614,15 @@ mod mac {
             label,
         )));
         let range = NSRange::new(0, text.length());
+        let color = if enabled {
+            NSColor::labelColor()
+        } else {
+            NSColor::secondaryLabelColor()
+        };
         // SAFETY: the values have the types these keys take.
         unsafe {
             text.addAttribute_value_range(NSFontAttributeName, &NSFont::menuFontOfSize(0.), range);
-            text.addAttribute_value_range(
-                NSForegroundColorAttributeName,
-                &NSColor::secondaryLabelColor(),
-                range,
-            );
+            text.addAttribute_value_range(NSForegroundColorAttributeName, &color, range);
         }
         Retained::into_super(text)
     }

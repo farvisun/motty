@@ -11,12 +11,14 @@ mod menus;
 mod native_menu;
 mod notifications;
 mod panes;
+mod pasteboard;
 mod recovery;
 mod secure_input;
 mod settings;
 mod shell_integration;
 mod terminal_view;
 mod titlebar;
+mod window_menu;
 mod workspace;
 
 use gpui::{
@@ -41,6 +43,15 @@ fn main() {
             fonts::load(cx);
             ipc::start(cx);
             cx.on_action(|_: &actions::Quit, cx| cx.quit());
+            cx.on_action(|_: &actions::QuitKeepWindows, cx| {
+                recovery::keep_windows();
+                cx.quit()
+            });
+            cx.on_action(|_: &actions::MinimizeAll, _| minimize_all());
+            cx.on_action(|_: &actions::ClearRecentFiles, cx| {
+                folders::clear_recent_files();
+                menus::refresh(cx);
+            });
             cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
             cx.on_action(|_: &actions::About, _| menus::show_about());
             cx.on_action(|a: &actions::CopyText, cx| {
@@ -268,4 +279,12 @@ fn open_window_inner(
         anyhow::bail!("failed to start the shell");
     }
     Ok(window)
+}
+
+/// Window › Minimize All.
+fn minimize_all() {
+    #[cfg(target_os = "macos")]
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        objc2_app_kit::NSApplication::sharedApplication(mtm).miniaturizeAll(None);
+    }
 }

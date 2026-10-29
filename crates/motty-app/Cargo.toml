@@ -31,8 +31,8 @@ raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "NSGlassEffectView", "NSResponder", "NSColor", "NSGraphics", "NSAppearance", "NSWindow", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSImage", "NSEvent", "NSCell", "NSApplication", "NSRunningApplication", "NSSegmentedControl", "NSTextField", "NSFont", "NSTextAttachment", "NSAttributedString"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSBundle", "NSString", "NSError", "NSArray", "NSAttributedString", "NSRange"] }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "NSGlassEffectView", "NSResponder", "NSColor", "NSGraphics", "NSAppearance", "NSWindow", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSImage", "NSEvent", "NSCell", "NSApplication", "NSRunningApplication", "NSSegmentedControl", "NSTextField", "NSFont", "NSTextAttachment", "NSAttributedString", "NSPasteboard", "NSParagraphStyle", "NSText", "NSStringDrawing"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSBundle", "NSString", "NSError", "NSArray", "NSAttributedString", "NSRange", "NSDictionary"] }
 objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "block2"] }
 block2 = "0.6"
 
