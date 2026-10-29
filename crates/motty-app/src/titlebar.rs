@@ -109,6 +109,23 @@ pub fn chevron(color: Hsla) -> impl IntoElement {
     })
 }
 
+/// A group heading's disclosure chevron: down when open, right when folded.
+pub fn disclosure(color: Hsla, open: bool) -> impl IntoElement {
+    icon(10., 10., move |o, window| {
+        stroke(o, color, window, 1.2, |p, at| {
+            if open {
+                p.move_to(at(2.5, 3.75));
+                p.line_to(at(5., 6.25));
+                p.line_to(at(7.5, 3.75));
+            } else {
+                p.move_to(at(3.75, 2.5));
+                p.line_to(at(6.25, 5.));
+                p.line_to(at(3.75, 7.5));
+            }
+        });
+    })
+}
+
 /// A 12pt-wide bell with a round dome and a cup-shaped clapper.
 pub fn bell(color: Hsla) -> impl IntoElement {
     icon(BUTTON, BUTTON, move |o, window| {

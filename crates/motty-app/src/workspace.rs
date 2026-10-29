@@ -237,6 +237,8 @@ pub struct Workspace {
     /// The tabs panel's Group and Order (its filter button).
     grouping: tabs::Grouping,
     order: tabs::Order,
+    /// Group sections folded in this window, by heading.
+    collapsed: std::collections::BTreeSet<String>,
     /// A tab's name being typed.
     renaming: Option<tabs::Rename>,
     /// View › Pin Window: above other apps' windows.
@@ -465,6 +467,7 @@ impl Workspace {
             new_menu_open: false,
             inbox: false,
             grouping: Default::default(),
+            collapsed: Default::default(),
             order: Default::default(),
             renaming: None,
             pinned: false,
@@ -520,6 +523,7 @@ impl Workspace {
             details_visible: self.details.visible,
             grouping: self.grouping.key().to_owned(),
             order: self.order.key().to_owned(),
+            collapsed: self.collapsed.iter().cloned().collect(),
             // Editor tabs aren't kept: their files are on disk.
             active: self.tabs[..self.active.min(self.tabs.len())]
                 .iter()
@@ -543,6 +547,7 @@ impl Workspace {
         self.details.visible = state.details_visible;
         self.grouping = tabs::Grouping::from_key(&state.grouping);
         self.order = tabs::Order::from_key(&state.order);
+        self.collapsed = state.collapsed.iter().cloned().collect();
         for tab in &state.tabs {
             match self.restore_tab(tab, &crate::recovery::read_scrollback, window, cx) {
                 Ok(tab) => self.tabs.push(tab),
@@ -1540,7 +1545,11 @@ impl Workspace {
             for group in self.sidebar_groups(cx) {
                 let last = group.tabs.last().copied();
                 if let Some(heading) = group.heading {
+                    let folded = self.collapsed.contains(&heading);
                     rows.push(self.group_heading(heading, group.folder, cx));
+                    if folded {
+                        continue;
+                    }
                 }
                 for ix in group.tabs {
                     let card = self.render_tab_card(ix, None, cx);
@@ -1909,6 +1918,34 @@ impl Workspace {
     ) -> AnyElement {
         let t = &self.theme;
         let id = SharedString::from(format!("group-{heading}"));
+        let folded = self.collapsed.contains(&heading);
+        let color = hsla(t.token.tertiary);
+        // Clicking the heading folds its section; the chevron shows on
+        // hover, and stays while folded.
+        let name = div()
+            .id(SharedString::from(format!("{id}-fold")))
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(div().truncate().child(heading.to_uppercase()))
+            .child(
+                div()
+                    .flex_none()
+                    .when(!folded, |d| {
+                        d.invisible().group_hover(id.clone(), |s| s.visible())
+                    })
+                    .child(titlebar::disclosure(color, !folded)),
+            )
+            .on_click(cx.listener({
+                let heading = heading.clone();
+                move |this, _, _, cx| {
+                    if !this.collapsed.remove(&heading) {
+                        this.collapsed.insert(heading.clone());
+                    }
+                    cx.notify();
+                }
+            }));
         div()
             .id(id.clone())
             .group(id.clone())
@@ -1920,8 +1957,8 @@ impl Workspace {
             .justify_between()
             .text_size(px(10.))
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(hsla(t.token.tertiary))
-            .child(div().truncate().child(heading.to_uppercase()))
+            .text_color(color)
+            .child(name)
             .child(
                 div()
                     .id(SharedString::from(format!("{id}-new")))

@@ -41,6 +41,9 @@ pub struct WindowState {
     pub grouping: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub order: String,
+    /// The group headings whose sections are folded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collapsed: Vec<String>,
     pub active: usize,
     pub tabs: Vec<TabState>,
 }
