@@ -1596,14 +1596,70 @@ impl SettingsWindow {
         ));
 
         // Editor
+        let e = c.editor;
+        for (title, detail, key, on) in [
+            (
+                "Soft Wrap",
+                "Wrap long lines instead of scrolling horizontally",
+                "editor-line-wrap",
+                e.line_wrap,
+            ),
+            (
+                "Show Line Numbers",
+                "Display the line-number gutter in text panes",
+                "editor-show-line-numbers",
+                e.line_numbers,
+            ),
+            (
+                "Show Whitespace",
+                "Render spaces and tabs as visible glyphs",
+                "editor-visible-whitespace",
+                e.whitespace,
+            ),
+        ] {
+            rows.push(row(
+                Editor,
+                "Editor",
+                title,
+                Some(detail),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
         rows.push(row(
             Editor,
             "Editor",
-            "Show Line Numbers",
-            Some("The line-number gutter in file editor tabs"),
+            "Tab Size",
+            Some("Visual width of a tab character, in columns"),
+            Control::Stepper {
+                key: "editor-tab-size",
+                value: e.tab_size as f32,
+                min: 1.,
+                max: 16.,
+            },
+        ));
+        rows.push(row(
+            Editor,
+            "Editor",
+            "Scroll Past Last Line",
+            Some("Let the file pane scroll until its last line sits at the top"),
             Control::Toggle {
-                key: "editor-show-line-numbers",
-                on: c.editor_line_numbers,
+                key: "editor-scroll-past-end",
+                on: e.scroll_past_end,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Editor,
+            "Editor",
+            "Default to Preview / Read-Only",
+            Some("Open Markdown, SVG and HTML in preview and start file panes read-only"),
+            Control::Toggle {
+                key: "editor-default-to-preview-readonly",
+                on: e.preview_readonly,
                 invert: false,
             },
         ));

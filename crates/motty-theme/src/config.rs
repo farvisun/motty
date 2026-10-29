@@ -105,8 +105,8 @@ pub struct Config {
     pub clipboard_read: Access,
     /// `clipboard-write`: a program setting the clipboard (OSC 52).
     pub clipboard_write: Access,
-    /// `editor-show-line-numbers`: the file editor's line-number gutter.
-    pub editor_line_numbers: bool,
+    /// The `editor-*` keys: how file panes show text.
+    pub editor: EditorPrefs,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -114,6 +114,37 @@ pub struct Config {
 
 /// What marks a tab and what posts a notification (Otty's `privilege-*`
 /// keys; all on except keeping the Mac awake).
+/// Settings › Editor: how file panes show text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorPrefs {
+    /// `editor-line-wrap`: wrap long lines instead of scrolling sideways.
+    pub line_wrap: bool,
+    /// `editor-show-line-numbers`.
+    pub line_numbers: bool,
+    /// `editor-visible-whitespace`: spaces, tabs and line ends as glyphs.
+    pub whitespace: bool,
+    /// `editor-tab-size`: a tab's width in columns (1–16).
+    pub tab_size: usize,
+    /// `editor-scroll-past-end`: the last line can scroll up to the top.
+    pub scroll_past_end: bool,
+    /// `editor-default-to-preview-readonly`: Markdown, SVG and HTML open
+    /// as previews, and files open read-only.
+    pub preview_readonly: bool,
+}
+
+impl Default for EditorPrefs {
+    fn default() -> Self {
+        Self {
+            line_wrap: true,
+            line_numbers: true,
+            whitespace: false,
+            tab_size: 4,
+            scroll_past_end: true,
+            preview_readonly: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Badges {
     /// `privilege-badge-exit-status`: a dot or triangle after a command.
@@ -691,7 +722,7 @@ impl Config {
             link_detection: true,
             restore_session: true,
             restore_banner: true,
-            editor_line_numbers: true,
+            editor: EditorPrefs::default(),
             clipboard_write: Access::Allow,
             ..Default::default()
         };
@@ -889,7 +920,20 @@ impl Config {
                     out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
                 }
                 "editor-show-line-numbers" => {
-                    out.editor_line_numbers = value.as_bool().unwrap_or(true)
+                    out.editor.line_numbers = value.as_bool().unwrap_or(true)
+                }
+                "editor-line-wrap" => out.editor.line_wrap = value.as_bool().unwrap_or(true),
+                "editor-visible-whitespace" => {
+                    out.editor.whitespace = value.as_bool().unwrap_or(false)
+                }
+                "editor-tab-size" => {
+                    out.editor.tab_size = value.as_integer().map_or(4, |n| n.clamp(1, 16) as usize)
+                }
+                "editor-scroll-past-end" => {
+                    out.editor.scroll_past_end = value.as_bool().unwrap_or(true)
+                }
+                "editor-default-to-preview-readonly" => {
+                    out.editor.preview_readonly = value.as_bool().unwrap_or(true)
                 }
                 "quit-after-last-window-closed" => {
                     out.quit_after_last_window = value.as_bool().unwrap_or(false)

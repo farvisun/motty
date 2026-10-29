@@ -7,6 +7,7 @@
 
 mod buffer;
 mod prose;
+mod rows;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ use motty_theme::Rgba;
 
 use buffer::order;
 pub use buffer::{Buffer, Pos};
+use motty_theme::EditorPrefs;
+use rows::{DisplayRow, Rows};
 
 use crate::actions::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 
@@ -57,13 +60,36 @@ struct Layout {
     line_height: Pixels,
     /// x of column 0 (after horizontal scrolling).
     text_left: Pixels,
-    first: usize,
-    lines: Vec<ShapedLine>,
+    /// Every line's rows at the width painted.
+    rows: Rc<Rows>,
+    /// The rows drawn, from `first_row`.
+    first_row: usize,
+    drawn: Vec<RowLayout>,
+    /// The widest row drawn, for horizontal scrolling.
+    widest: Pixels,
     /// Prose: every line wrapped, and how far below the top each starts.
     wrapped: Vec<WrappedLine>,
     tops: Vec<Pixels>,
     content_height: Pixels,
 }
+
+/// One row on screen: a slice of a line, as drawn.
+struct RowLayout {
+    line: usize,
+    range: std::ops::Range<usize>,
+    display: DisplayRow,
+    shaped: ShapedLine,
+}
+
+/// Rows already worked out for this text, width and tab size.
+#[derive(Default)]
+struct RowCache {
+    key: (u64, Option<usize>, usize),
+    rows: Rc<Rows>,
+}
+
+/// Colors for some lines' byte ranges (syntax highlighting).
+pub type LineColors = std::collections::HashMap<usize, Vec<(std::ops::Range<usize>, Hsla, bool)>>;
 
 pub struct FileEditor {
     focus: FocusHandle,
@@ -95,8 +121,11 @@ pub struct FileEditor {
     name: Option<String>,
     /// Buttons on the toolbar's right, each sending its action.
     buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
-    /// `editor-show-line-numbers`.
-    line_numbers: bool,
+    /// Settings › Editor.
+    prefs: EditorPrefs,
+    /// Bumped on every change to the text, so rows are worked out again.
+    revision: u64,
+    rows: Rc<RefCell<RowCache>>,
     /// A preview (Search in Files): read-only until its lock is opened.
     lockable: bool,
     /// The next reveal centers the cursor's line.
@@ -136,7 +165,9 @@ impl FileEditor {
             prose: None,
             name: None,
             buttons: Vec::new(),
-            line_numbers: true,
+            prefs: EditorPrefs::default(),
+            revision: 0,
+            rows: Rc::default(),
             lockable: false,
             center: false,
         };
@@ -151,6 +182,7 @@ impl FileEditor {
             Ok((text, editable)) => {
                 self.buffer = Buffer::from_text(&text);
                 self.saved = text;
+                self.revision += 1;
                 self.read_only = !editable;
                 self.error = None;
             }
@@ -240,9 +272,9 @@ impl FileEditor {
         cx.notify();
     }
 
-    /// `editor-show-line-numbers`.
-    pub fn set_line_numbers(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.line_numbers = on;
+    /// Settings › Editor.
+    pub fn set_prefs(&mut self, prefs: EditorPrefs, cx: &mut Context<Self>) {
+        self.prefs = prefs;
         cx.notify();
     }
 
@@ -252,6 +284,7 @@ impl FileEditor {
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.revision += 1;
         self.reveal = true;
         cx.emit(EditorEvent::Changed);
         cx.notify();
@@ -330,39 +363,76 @@ impl FileEditor {
         cx.notify();
     }
 
-    /// The line `delta` lines away, at the remembered x.
+    /// The row `delta` rows away, at the remembered x.
     fn vertical(&mut self, delta: isize, window: &mut Window) -> Pos {
         let goal = match self.goal_x {
             Some(x) => x,
             None => self.x_for(self.cursor, window),
         };
         self.goal_x = Some(goal);
-        let last = self.buffer.line_count() as isize - 1;
-        let target = self.cursor.line as isize + delta;
-        if target < 0 {
+        let mut rows = self.layout.borrow().rows.clone();
+        // Not painted since the text changed: a row per line will do.
+        if rows.lines() != self.buffer.line_count() {
+            rows = Rc::new(Rows::new(
+                (0..self.buffer.line_count()).map(|i| self.buffer.line(i)),
+                self.prefs.tab_size,
+                None,
+            ));
+        }
+        let row = rows.row_of(self.cursor.line, self.cursor.col) as isize + delta;
+        if row < 0 {
             return Pos::default();
         }
-        if target > last {
+        if row as usize >= rows.total() {
             return self.buffer.end();
         }
-        let line = target as usize;
-        let shaped = self.shape(line, window);
-        Pos::new(line, shaped.closest_index_for_x(goal))
+        let (line, seg) = rows.locate(row as usize);
+        if line >= self.buffer.line_count() {
+            return self.buffer.end();
+        }
+        let range = rows.segment(line, seg, self.buffer.line(line).len());
+        let (display, shaped) = self.shape_row(line, range.clone(), window);
+        let col = range.start + display.to_source(shaped.closest_index_for_x(goal));
+        // The end of a wrapped row is the start of the next.
+        let col = if col == range.end && range.end < self.buffer.line(line).len() {
+            self.buffer.prev(Pos::new(line, col)).col
+        } else {
+            col
+        };
+        Pos::new(line, col)
     }
 
-    fn shape(&self, line: usize, window: &mut Window) -> ShapedLine {
-        let text = SharedString::from(self.buffer.line(line).to_owned());
-        shape(
-            &text,
+    /// `range` of `line` as drawn, plain.
+    fn shape_row(
+        &self,
+        line: usize,
+        range: std::ops::Range<usize>,
+        window: &mut Window,
+    ) -> (DisplayRow, ShapedLine) {
+        let text = self.buffer.line(line);
+        let tab = self.prefs.tab_size;
+        let col = rows::columns(&text[..range.start], 0, tab);
+        let display = DisplayRow::new(&text[range], col, tab, self.prefs.whitespace);
+        let shaped = shape(
+            &SharedString::from(display.text.clone()),
             &self.style.font,
             self.style.font_size,
             hsla(self.foreground()),
             window,
-        )
+        );
+        (display, shaped)
     }
 
+    /// `pos`'s x within its row.
     fn x_for(&self, pos: Pos, window: &mut Window) -> Pixels {
-        self.shape(pos.line, window).x_for_index(pos.col)
+        let rows = self.layout.borrow().rows.clone();
+        let range = rows.segment(
+            pos.line,
+            rows.segment_of(pos.line, pos.col),
+            self.buffer.line(pos.line).len(),
+        );
+        let (display, shaped) = self.shape_row(pos.line, range.clone(), window);
+        shaped.x_for_index(display.to_display(pos.col.saturating_sub(range.start)))
     }
 
     fn page_lines(&self) -> isize {
@@ -624,6 +694,7 @@ impl FileEditor {
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.push_undo();
         self.buffer = Buffer::from_text(&self.saved);
+        self.revision += 1;
         self.cursor = self.buffer.clamp(self.cursor);
         self.anchor = None;
         self.changed(cx);
@@ -637,16 +708,38 @@ impl FileEditor {
         }
         let layout = self.layout.borrow();
         let lh = layout.line_height.max(px(1.));
+        let rows = layout.rows.clone();
         let y = at.y - layout.bounds.top() + self.scroll.y;
-        let line = ((y / lh).floor().max(0.) as usize).min(self.buffer.line_count() - 1);
         let x = at.x - layout.text_left;
-        let col = match layout.lines.get(line.wrapping_sub(layout.first)) {
-            Some(shaped) => shaped.closest_index_for_x(x),
-            None => {
-                drop(layout);
-                self.shape(line, window).closest_index_for_x(x)
-            }
-        };
+        if rows.lines() != self.buffer.line_count() || rows.total() == 0 {
+            let line = ((y / lh).floor().max(0.) as usize).min(self.buffer.line_count() - 1);
+            return Pos::new(line, 0);
+        }
+        let row = ((y / lh).floor().max(0.) as usize).min(rows.total() - 1);
+        if let Some(r) = layout.drawn.get(row.wrapping_sub(layout.first_row)) {
+            return self.row_pos(r.line, &r.range, &r.display, &r.shaped, x);
+        }
+        drop(layout);
+        let (line, seg) = rows.locate(row);
+        let range = rows.segment(line, seg, self.buffer.line(line).len());
+        let (display, shaped) = self.shape_row(line, range.clone(), window);
+        self.row_pos(line, &range, &display, &shaped, x)
+    }
+
+    /// The position at `x` on a row; past a wrapped row's end it stays on
+    /// that row.
+    fn row_pos(
+        &self,
+        line: usize,
+        range: &std::ops::Range<usize>,
+        display: &DisplayRow,
+        shaped: &ShapedLine,
+        x: Pixels,
+    ) -> Pos {
+        let col = range.start + display.to_source(shaped.closest_index_for_x(x));
+        if col == range.end && range.end < self.buffer.line(line).len() {
+            return self.buffer.prev(Pos::new(line, col));
+        }
         Pos::new(line, col)
     }
 
@@ -709,18 +802,29 @@ impl FileEditor {
         let layout = self.layout.borrow();
         let lh = layout.line_height.max(px(1.));
         let delta = event.delta.pixel_delta(lh);
-        let content = lh * self.buffer.line_count() as f32;
-        let max_y = (content - layout.bounds.size.height + lh * 3.).max(px(0.));
-        let widest = layout
-            .lines
-            .iter()
-            .map(|l| l.width)
-            .fold(px(0.), Pixels::max);
-        let max_x = (widest - layout.bounds.size.width + lh * 2.).max(self.scroll.x);
+        let content = lh * layout.rows.total().max(1) as f32;
+        let height = layout.bounds.size.height;
+        // `editor-scroll-past-end`: the last line can reach the top.
+        let max_y = if self.prefs.scroll_past_end {
+            content - lh
+        } else {
+            content - height + lh / 2.
+        }
+        .max(px(0.));
+        let max_x = if self.prefs.line_wrap {
+            px(0.)
+        } else {
+            (layout.widest - layout.bounds.size.width + lh * 2.).max(self.scroll.x)
+        };
         drop(layout);
         self.scroll.y = (self.scroll.y - delta.y).clamp(px(0.), max_y);
         self.scroll.x = (self.scroll.x - delta.x).clamp(px(0.), max_x.max(px(0.)));
         cx.notify();
+    }
+
+    /// Syntax colors for the lines about to be drawn.
+    fn line_colors(&mut self) -> LineColors {
+        LineColors::default()
     }
 
     fn foreground(&self) -> Rgba {
@@ -912,7 +1016,7 @@ impl Render for FileEditor {
             focused,
             style: style.clone(),
             fg: hsla(fg),
-            numbers: self.name.is_none() && self.line_numbers,
+            numbers: self.name.is_none() && self.prefs.line_numbers,
             gutter_bg: ink(if dark { 0.04 } else { 0.025 }),
             number: ink(0.38),
             current_line: if dark {
@@ -922,6 +1026,11 @@ impl Render for FileEditor {
             },
             selection_bg: hsla(style.selection_background),
             caret: accent,
+            faint: ink(0.25),
+            prefs: self.prefs,
+            revision: self.revision,
+            rows: self.rows.clone(),
+            colors: Rc::new(self.line_colors()),
             layout: self.layout.clone(),
         };
         let entity = cx.entity();
@@ -996,10 +1105,16 @@ struct PaintState {
     current_line: Hsla,
     selection_bg: Hsla,
     caret: Hsla,
+    /// Whitespace glyphs.
+    faint: Hsla,
+    prefs: EditorPrefs,
+    revision: u64,
+    rows: Rc<RefCell<RowCache>>,
+    colors: Rc<LineColors>,
     layout: Rc<RefCell<Layout>>,
 }
 
-/// Paints the gutter and the visible lines; returns a new scroll offset when
+/// Paints the gutter and the visible rows; returns a new scroll offset when
 /// the cursor had to be brought into view.
 fn paint_text(
     s: PaintState,
@@ -1022,12 +1137,80 @@ fn paint_text(
         point(bounds.left() + gutter + px(TEXT_PAD), bounds.top()),
         bounds.bottom_right(),
     );
+    let tab = s.prefs.tab_size;
+    let wrap = s.prefs.line_wrap;
+    let cols = wrap
+        .then(|| ((text_bounds.size.width - px(TEXT_PAD)) / digit.max(px(1.))).floor() as usize);
+    let rows = {
+        let mut cache = s.rows.borrow_mut();
+        let key = (s.revision, cols, tab);
+        if cache.key != key || cache.rows.lines() != count {
+            cache.rows = Rc::new(Rows::new((0..count).map(|i| s.lines.line(i)), tab, cols));
+            cache.key = key;
+        }
+        cache.rows.clone()
+    };
+
+    // A row as drawn: its slice of the line in the highlighter's colors,
+    // whitespace glyphs faint, the IME's composition underlined.
+    let lay_row = |line: usize, range: std::ops::Range<usize>, window: &mut Window| {
+        let text = s.lines.line(line);
+        let col = rows::columns(&text[..range.start], 0, tab);
+        let mut display = DisplayRow::new(&text[range.clone()], col, tab, s.prefs.whitespace);
+        let mut overlays: Vec<(std::ops::Range<usize>, Hsla, bool)> = Vec::new();
+        for (r, color, italic) in s.colors.get(&line).into_iter().flatten() {
+            let (a, b) = (r.start.max(range.start), r.end.min(range.end));
+            if a < b {
+                let a = display.to_display(a - range.start);
+                let b = display.to_display(b - range.start);
+                overlays.push((a..b, *color, *italic));
+            }
+        }
+        for g in &display.glyphs {
+            overlays.push((g.clone(), s.faint, false));
+        }
+        let mut underline = None;
+        if let Some(m) = &s.marked
+            && line == s.cursor.line
+            && (range.contains(&s.cursor.col) || s.cursor.col == range.end)
+        {
+            let at = display.to_display(s.cursor.col - range.start);
+            display.text.insert_str(at, m);
+            for (r, _, _) in &mut overlays {
+                if r.start >= at {
+                    r.start += m.len();
+                }
+                if r.end > at {
+                    r.end += m.len();
+                }
+            }
+            underline = Some(at..at + m.len());
+        }
+        let runs = styled_runs(display.text.len(), font, s.fg, &overlays, underline);
+        let shaped =
+            window
+                .text_system()
+                .shape_line(display.text.clone().into(), font_size, &runs, None);
+        RowLayout {
+            line,
+            range,
+            display,
+            shaped,
+        }
+    };
+    let segment = |line: usize, col: usize| {
+        rows.segment(line, rows.segment_of(line, col), s.lines.line(line).len())
+    };
 
     // Keep the cursor in view after it moved.
     let mut scroll = s.scroll;
+    if wrap {
+        scroll.x = px(0.);
+    }
     let mut moved = false;
+    let cursor_row = rows.row_of(s.cursor.line, s.cursor.col);
     if s.reveal {
-        let top = lh * s.cursor.line as f32;
+        let top = lh * cursor_row as f32;
         let height = text_bounds.size.height;
         if s.center && (top < scroll.y || top + lh > scroll.y + height) {
             scroll.y = (top - (height - lh) / 2.).max(px(0.));
@@ -1035,32 +1218,31 @@ fn paint_text(
         } else if top < scroll.y {
             scroll.y = top;
             moved = true;
-        } else if top + lh > scroll.y + text_bounds.size.height {
-            scroll.y = top + lh - text_bounds.size.height;
+        } else if top + lh > scroll.y + height {
+            scroll.y = top + lh - height;
             moved = true;
         }
-        let line = shape(
-            &SharedString::from(s.lines.line(s.cursor.line).to_owned()),
-            font,
-            font_size,
-            s.fg,
-            window,
-        );
-        let x = line.x_for_index(s.cursor.col);
-        let width = text_bounds.size.width - lh;
-        if x < scroll.x {
-            scroll.x = (x - lh * 2.).max(px(0.));
-            moved = true;
-        } else if x > scroll.x + width {
-            scroll.x = x - width;
-            moved = true;
+        if !wrap {
+            let r = lay_row(s.cursor.line, segment(s.cursor.line, s.cursor.col), window);
+            let x = r
+                .shaped
+                .x_for_index(r.display.to_display(s.cursor.col - r.range.start));
+            let width = text_bounds.size.width - lh;
+            if x < scroll.x {
+                scroll.x = (x - lh * 2.).max(px(0.));
+                moved = true;
+            } else if x > scroll.x + width {
+                scroll.x = x - width;
+                moved = true;
+            }
         }
     }
 
-    let first = (scroll.y / lh).floor() as usize;
+    let total = rows.total();
+    let first_row = (scroll.y / lh).floor() as usize;
     let visible = (text_bounds.size.height / lh).ceil() as usize + 1;
-    let last = (first + visible).min(count);
-    let top = text_bounds.top() - scroll.y + lh * first as f32;
+    let last_row = (first_row + visible).min(total);
+    let top = text_bounds.top() - scroll.y + lh * first_row as f32;
     let text_left = text_bounds.left() - scroll.x;
 
     if s.numbers {
@@ -1070,23 +1252,18 @@ fn paint_text(
         ));
     }
 
-    let mut shaped = Vec::with_capacity(last.saturating_sub(first));
+    let mut drawn = Vec::with_capacity(last_row.saturating_sub(first_row));
+    let mut widest = px(0.);
     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-        for line in first..last {
-            let y = top + lh * (line - first) as f32;
-            let mut text = s.lines.line(line).to_owned();
-            // The IME's composition shows at the cursor.
-            let marked_range = (line == s.cursor.line)
-                .then_some(s.marked.as_ref())
-                .flatten()
-                .map(|m| {
-                    text.insert_str(s.cursor.col, m);
-                    s.cursor.col..s.cursor.col + m.len()
-                });
-            let runs = runs(&text, font, s.fg, marked_range.clone());
-            let layout = window
-                .text_system()
-                .shape_line(text.into(), font_size, &runs, None);
+        for row in first_row..last_row {
+            let (line, seg) = rows.locate(row);
+            let y = top + lh * (row - first_row) as f32;
+            let len = s.lines.line(line).len();
+            let r = lay_row(line, rows.segment(line, seg, len), window);
+            let x_of = |col: usize| {
+                let col = col.clamp(r.range.start, r.range.end) - r.range.start;
+                r.shaped.x_for_index(r.display.to_display(col))
+            };
 
             if s.numbers && line == s.cursor.line && s.selection.is_none() {
                 window.paint_quad(fill(
@@ -1101,26 +1278,26 @@ fn paint_text(
                 && line >= a.line
                 && line <= b.line
             {
-                let start = if line == a.line {
-                    layout.x_for_index(a.col)
-                } else {
-                    px(0.)
-                };
-                let end = if line == b.line {
-                    layout.x_for_index(b.col)
-                } else {
+                let from = if line == a.line { a.col } else { 0 };
+                let to = if line == b.line { b.col } else { usize::MAX };
+                if from <= r.range.end && to >= r.range.start {
+                    let start = x_of(from);
                     // The line break shows as a bit of selection.
-                    layout.width + digit
-                };
-                if end > start {
-                    window.paint_quad(fill(
-                        Bounds::new(point(text_left + start, y), size(end - start, lh)),
-                        s.selection_bg,
-                    ));
+                    let end = if to > len || (to == usize::MAX && r.range.end == len) {
+                        r.shaped.width + digit
+                    } else {
+                        x_of(to)
+                    };
+                    if end > start {
+                        window.paint_quad(fill(
+                            Bounds::new(point(text_left + start, y), size(end - start, lh)),
+                            s.selection_bg,
+                        ));
+                    }
                 }
             }
 
-            if s.numbers {
+            if s.numbers && seg == 0 {
                 let number = shape(
                     &SharedString::from((line + 1).to_string()),
                     font,
@@ -1146,10 +1323,12 @@ fn paint_text(
                 }),
                 |window| {
                     let _ =
-                        layout.paint(point(text_left, y), lh, TextAlign::Left, None, window, cx);
-                    if s.focused && line == s.cursor.line {
-                        let col = s.cursor.col + marked_range.as_ref().map_or(0, |r| r.len());
-                        let x = text_left + layout.x_for_index(col);
+                        r.shaped
+                            .paint(point(text_left, y), lh, TextAlign::Left, None, window, cx);
+                    if s.focused && row == cursor_row {
+                        let marked = s.marked.as_ref().map_or(0, String::len);
+                        let col = r.display.to_display(s.cursor.col - r.range.start) + marked;
+                        let x = text_left + r.shaped.x_for_index(col);
                         window.paint_quad(fill(
                             Bounds::new(point(x, y + px(2.)), size(px(2.), lh - px(4.))),
                             s.caret,
@@ -1157,7 +1336,8 @@ fn paint_text(
                     }
                 },
             );
-            shaped.push(layout);
+            widest = widest.max(r.shaped.width);
+            drawn.push(r);
         }
     });
 
@@ -1165,8 +1345,10 @@ fn paint_text(
         bounds: text_bounds,
         line_height: lh,
         text_left,
-        first,
-        lines: shaped,
+        rows,
+        first_row,
+        drawn,
+        widest,
         ..Layout::default()
     };
     moved.then_some(scroll)
@@ -1178,31 +1360,56 @@ fn runs(
     color: Hsla,
     marked: Option<std::ops::Range<usize>>,
 ) -> Vec<TextRun> {
-    let run = |len, underline: bool| TextRun {
-        len,
-        font: font.clone(),
-        color,
-        background_color: None,
-        underline: underline.then(|| gpui::UnderlineStyle {
-            thickness: px(1.),
-            color: Some(color),
-            wavy: false,
-        }),
-        strikethrough: None,
-    };
-    match marked {
-        Some(r) => [
-            (r.start, false),
-            (r.len(), true),
-            (text.len() - r.end, false),
-        ]
-        .into_iter()
-        .filter(|(len, _)| *len > 0)
-        .map(|(len, u)| run(len, u))
-        .collect(),
-        None if text.is_empty() => Vec::new(),
-        None => vec![run(text.len(), false)],
+    styled_runs(text.len(), font, color, &[], marked)
+}
+
+/// Runs over `len` bytes in `base`, with `overlays` (later ones win)
+/// recoloring and italicizing ranges and `underline` marking one.
+fn styled_runs(
+    len: usize,
+    font: &Font,
+    base: Hsla,
+    overlays: &[(std::ops::Range<usize>, Hsla, bool)],
+    underline: Option<std::ops::Range<usize>>,
+) -> Vec<TextRun> {
+    let mut cuts = vec![0, len];
+    for (r, _, _) in overlays {
+        cuts.extend([r.start.min(len), r.end.min(len)]);
     }
+    if let Some(u) = &underline {
+        cuts.extend([u.start.min(len), u.end.min(len)]);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (color, italic) = overlays
+                .iter()
+                .rev()
+                .find(|(r, _, _)| r.start <= a && b <= r.end)
+                .map_or((base, false), |(_, c, i)| (*c, *i));
+            let mut font = font.clone();
+            if italic {
+                font.style = gpui::FontStyle::Italic;
+            }
+            let underlined = underline
+                .as_ref()
+                .is_some_and(|u| u.start <= a && b <= u.end);
+            TextRun {
+                len: b - a,
+                font,
+                color,
+                background_color: None,
+                underline: underlined.then(|| gpui::UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(color),
+                    wavy: false,
+                }),
+                strikethrough: None,
+            }
+        })
+        .collect()
 }
 
 impl EntityInputHandler for FileEditor {
@@ -1279,7 +1486,8 @@ impl EntityInputHandler for FileEditor {
         }
         let x = self.x_for(self.cursor, window);
         let layout = self.layout.borrow();
-        let y = layout.bounds.top() + layout.line_height * self.cursor.line as f32 - self.scroll.y;
+        let row = layout.rows.row_of(self.cursor.line, self.cursor.col);
+        let y = layout.bounds.top() + layout.line_height * row as f32 - self.scroll.y;
         Some(Bounds::new(
             point(layout.text_left + x, y),
             size(px(2.), layout.line_height),

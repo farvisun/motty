@@ -1512,13 +1512,13 @@ impl Workspace {
                             }
                             PaneItem::File(e) => e.update(cx, |e, cx| {
                                 e.set_style(style.clone(), cx);
-                                e.set_line_numbers(self.config.editor_line_numbers, cx);
+                                e.set_prefs(self.config.editor, cx);
                             }),
                         }
                     }
                 }
                 Content::Search(s) => s.update(cx, |s, cx| {
-                    s.set_style(style.clone(), self.config.editor_line_numbers, cx)
+                    s.set_style(style.clone(), self.config.editor, cx)
                 }),
             }
         }

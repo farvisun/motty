@@ -25,6 +25,7 @@ motty-term.workspace = true
 motty-theme.workspace = true
 toml.workspace = true
 unicode-segmentation = "1.12"
+unicode-width = "0.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 raw-window-handle = "0.6"

@@ -44,10 +44,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::Entity<FileEditor> {
         let style = terminal_style(&self.config, &self.theme, cx);
-        let line_numbers = self.config.editor_line_numbers;
+        let prefs = self.config.editor;
         let editor = cx.new(|cx| {
             let mut editor = FileEditor::new(path, style, cx);
-            editor.set_line_numbers(line_numbers, cx);
+            editor.set_prefs(prefs, cx);
             editor
         });
         self.watch_editor(&editor, cx);

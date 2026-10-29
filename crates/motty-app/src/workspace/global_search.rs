@@ -87,8 +87,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let style = terminal_style(&self.config, &self.theme, cx);
-        let line_numbers = self.config.editor_line_numbers;
-        let view = cx.new(|cx| SearchView::new(scope, folder, query, style, line_numbers, cx));
+        let prefs = self.config.editor;
+        let view = cx.new(|cx| SearchView::new(scope, folder, query, style, prefs, cx));
         self.watch_search(&view, window, cx);
         let ix = self.new_tab_index();
         self.tabs

@@ -94,7 +94,7 @@ pub struct SearchView {
     width: Pixels,
     preview: Option<Entity<FileEditor>>,
     style: TerminalStyle,
-    line_numbers: bool,
+    prefs: motty_theme::EditorPrefs,
     cancel: Arc<AtomicBool>,
     _task: Option<Task<()>>,
 }
@@ -119,7 +119,7 @@ impl SearchView {
         folder: Option<PathBuf>,
         query: String,
         style: TerminalStyle,
-        line_numbers: bool,
+        prefs: motty_theme::EditorPrefs,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -143,7 +143,7 @@ impl SearchView {
             width: px(0.),
             preview: None,
             style,
-            line_numbers,
+            prefs,
             cancel: Arc::default(),
             _task: None,
         }
@@ -185,13 +185,18 @@ impl SearchView {
         self.preview.clone().filter(|e| e.read(cx).is_dirty())
     }
 
-    pub fn set_style(&mut self, style: TerminalStyle, line_numbers: bool, cx: &mut Context<Self>) {
+    pub fn set_style(
+        &mut self,
+        style: TerminalStyle,
+        prefs: motty_theme::EditorPrefs,
+        cx: &mut Context<Self>,
+    ) {
         self.style = style.clone();
-        self.line_numbers = line_numbers;
+        self.prefs = prefs;
         if let Some(preview) = &self.preview {
             preview.update(cx, |e, cx| {
                 e.set_style(style, cx);
-                e.set_line_numbers(line_numbers, cx);
+                e.set_prefs(prefs, cx);
             });
         }
         cx.notify();
@@ -378,11 +383,11 @@ impl SearchView {
                 return;
             }
             let style = self.style.clone();
-            let line_numbers = self.line_numbers;
+            let prefs = self.prefs;
             let path = hit.path.clone();
             self.preview = Some(cx.new(|cx| {
                 let mut editor = FileEditor::new(Some(path), style, cx);
-                editor.set_line_numbers(line_numbers, cx);
+                editor.set_prefs(prefs, cx);
                 editor.set_lockable();
                 editor
             }));
