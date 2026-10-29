@@ -3,18 +3,13 @@ mod agents;
 mod dock;
 mod dock_click;
 mod editor;
-// Not shown anywhere yet: the pane kinds for images and Quick Look.
-#[allow(dead_code)]
 mod file_kind;
 mod file_search;
-#[allow(dead_code)]
 mod file_toolbar;
-#[allow(dead_code)]
 mod folder_view;
 mod folders;
 mod fonts;
 mod history;
-#[allow(dead_code)]
 mod image_view;
 mod ipc;
 mod materials;
@@ -24,6 +19,7 @@ mod notifications;
 mod panes;
 mod pasteboard;
 mod preview;
+// Opening another file in place (`open`) isn't used yet.
 #[allow(dead_code)]
 mod quick_look;
 mod recipes;
@@ -36,8 +32,8 @@ mod tab_icons;
 mod terminal_view;
 mod titlebar;
 mod tooltip;
-// Not shown anywhere yet.
 mod web_pane;
+// Some of the web view's API isn't used yet.
 #[allow(dead_code)]
 mod web_view;
 mod window_menu;

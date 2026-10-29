@@ -45,6 +45,7 @@ impl Workspace {
                     w.read(cx).url().map(str::to_owned).into_iter().collect(),
                     None,
                 ),
+                pane => (Vec::new(), pane.folder(cx)),
             },
             Content::Search(s) => {
                 let s = s.read(cx);

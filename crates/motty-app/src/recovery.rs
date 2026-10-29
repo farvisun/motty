@@ -87,6 +87,8 @@ pub enum PaneState {
     File { path: PathBuf },
     /// A web pane, at the page it showed.
     Web { url: Option<String> },
+    /// A folder pane.
+    Folder { path: PathBuf },
     Split {
         /// Children stacked top and bottom (else side by side).
         vertical: bool,

@@ -1094,6 +1094,10 @@ impl Workspace {
                     crate::panes::PaneItem::Web(w) => {
                         w.read(cx).url().unwrap_or("New Tab").to_owned()
                     }
+                    pane => pane
+                        .path(cx)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1212,6 +1216,9 @@ impl Workspace {
                         }
                         crate::panes::PaneItem::File(e) => self.watch_editor(e, cx),
                         crate::panes::PaneItem::Web(w) => self.watch_web(w, cx),
+                        crate::panes::PaneItem::Folder(f) => self.watch_folder(f, window, cx),
+                        crate::panes::PaneItem::Image(v) => self.watch_image(v, cx),
+                        crate::panes::PaneItem::QuickLook(v) => self.watch_quick_look(v, cx),
                     }
                 }
             }

@@ -13,6 +13,9 @@ use gpui::{
 };
 
 use crate::editor::FileEditor;
+use crate::folder_view::FolderView;
+use crate::image_view::ImageView;
+use crate::quick_look::QuickLookView;
 use crate::terminal_view::TerminalView;
 use crate::web_pane::WebPane;
 
@@ -59,6 +62,9 @@ pub enum PaneItem {
     Terminal(Entity<TerminalView>),
     File(Entity<FileEditor>),
     Web(Entity<WebPane>),
+    Folder(Entity<FolderView>),
+    Image(Entity<ImageView>),
+    QuickLook(Entity<QuickLookView>),
 }
 
 impl PaneItem {
@@ -81,6 +87,9 @@ impl PaneItem {
             PaneItem::Terminal(view) => view.entity_id(),
             PaneItem::File(editor) => editor.entity_id(),
             PaneItem::Web(web) => web.entity_id(),
+            PaneItem::Folder(v) => v.entity_id(),
+            PaneItem::Image(v) => v.entity_id(),
+            PaneItem::QuickLook(v) => v.entity_id(),
         }
     }
 
@@ -89,6 +98,9 @@ impl PaneItem {
             PaneItem::Terminal(view) => view.focus_handle(cx),
             PaneItem::File(editor) => editor.focus_handle(cx),
             PaneItem::Web(web) => web.focus_handle(cx),
+            PaneItem::Folder(v) => v.focus_handle(cx),
+            PaneItem::Image(v) => v.focus_handle(cx),
+            PaneItem::QuickLook(v) => v.focus_handle(cx),
         }
     }
 
@@ -97,6 +109,9 @@ impl PaneItem {
             PaneItem::Terminal(view) => view.clone().into_any_element(),
             PaneItem::File(editor) => editor.clone().into_any_element(),
             PaneItem::Web(web) => web.clone().into_any_element(),
+            PaneItem::Folder(v) => v.clone().into_any_element(),
+            PaneItem::Image(v) => v.clone().into_any_element(),
+            PaneItem::QuickLook(v) => v.clone().into_any_element(),
         }
     }
 
@@ -106,6 +121,20 @@ impl PaneItem {
             PaneItem::Terminal(view) => view.read(cx).display_title(),
             PaneItem::File(editor) => editor.read(cx).title(),
             PaneItem::Web(web) => web.read(cx).title(),
+            PaneItem::Folder(v) => v.read(cx).title(),
+            PaneItem::Image(v) => v.read(cx).title(),
+            PaneItem::QuickLook(v) => v.read(cx).title(),
+        }
+    }
+
+    /// The file or folder the pane shows.
+    pub fn path(&self, cx: &App) -> Option<std::path::PathBuf> {
+        match self {
+            PaneItem::Terminal(_) | PaneItem::Web(_) => None,
+            PaneItem::File(editor) => editor.read(cx).path().map(Into::into),
+            PaneItem::Folder(v) => Some(v.read(cx).path().into()),
+            PaneItem::Image(v) => Some(v.read(cx).path().into()),
+            PaneItem::QuickLook(v) => Some(v.read(cx).path().into()),
         }
     }
 
@@ -115,6 +144,9 @@ impl PaneItem {
             PaneItem::Terminal(view) => view.read(cx).cwd.clone(),
             PaneItem::File(editor) => editor.read(cx).folder(),
             PaneItem::Web(_) => None,
+            PaneItem::Folder(v) => Some(v.read(cx).path().into()),
+            PaneItem::Image(v) => v.read(cx).folder(),
+            PaneItem::QuickLook(v) => v.read(cx).folder(),
         }
     }
 }
@@ -122,6 +154,24 @@ impl PaneItem {
 impl From<Entity<TerminalView>> for PaneItem {
     fn from(view: Entity<TerminalView>) -> Self {
         PaneItem::Terminal(view)
+    }
+}
+
+impl From<Entity<FolderView>> for PaneItem {
+    fn from(v: Entity<FolderView>) -> Self {
+        PaneItem::Folder(v)
+    }
+}
+
+impl From<Entity<ImageView>> for PaneItem {
+    fn from(v: Entity<ImageView>) -> Self {
+        PaneItem::Image(v)
+    }
+}
+
+impl From<Entity<QuickLookView>> for PaneItem {
+    fn from(v: Entity<QuickLookView>) -> Self {
+        PaneItem::QuickLook(v)
     }
 }
 
@@ -223,6 +273,18 @@ impl<T: Clone + PartialEq> Pane<T> {
                 s.first.split(target, new.clone(), direction, id)
                     || s.second.split(target, new, direction, id)
             }
+        }
+    }
+
+    /// Puts `new` where `target` is.
+    pub fn replace(&mut self, target: &T, new: T) -> bool {
+        match self {
+            Pane::Leaf(view) if view == target => {
+                *view = new;
+                true
+            }
+            Pane::Leaf(_) => false,
+            Pane::Split(s) => s.first.replace(target, new.clone()) || s.second.replace(target, new),
         }
     }
 

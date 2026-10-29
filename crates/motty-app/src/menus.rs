@@ -388,6 +388,7 @@ fn file_menu(live: &Live) -> Menu {
         MenuItem::action("Duplicate Tab", DuplicateTab),
         MenuItem::separator(),
         MenuItem::action("New File Editor", NewFileEditor),
+        MenuItem::action("New File Browser", NewFileBrowser),
         MenuItem::action("New Web Browser", NewWebBrowser),
         MenuItem::separator(),
         MenuItem::submenu(Menu::new("Open Recent").items(recent)),
@@ -532,6 +533,10 @@ fn view_menu(s: &Snapshot, live: &Live) -> Menu {
         MenuItem::action("Git", DetailsGit),
         MenuItem::action("Files", DetailsFiles),
         MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Switch to View").items([
+            MenuItem::action("Terminal", SwitchToTerminal),
+            MenuItem::action("File Browser", SwitchToFileBrowser),
+        ])),
         MenuItem::submenu(Menu::new("Theme").items(themes)),
         MenuItem::separator(),
         MenuItem::action("Increase Font Size", IncreaseFontSize),

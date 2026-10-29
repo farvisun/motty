@@ -7,6 +7,10 @@ use gpui::{Context, PromptLevel, Window, prelude::*};
 
 use super::{Content, Panes, Tab, Workspace, terminal_style};
 use crate::editor::{EditorEvent, FileEditor};
+use crate::file_kind::FileKind;
+use crate::image_view::{ImageEvent, ImageView};
+use crate::panes::PaneItem;
+use crate::quick_look::{QuickLookEvent, QuickLookView};
 use crate::web_pane::{WebPane, WebPaneEvent};
 
 impl Workspace {
@@ -25,17 +29,56 @@ impl Workspace {
             self.tabs
                 .iter()
                 .filter_map(|t| t.panes())
-                .flat_map(|p| p.files())
-                .find(|e| e.read(cx).path() == Some(path))
+                .flat_map(|p| p.root.leaves())
+                .find(|item| item.path(cx).as_deref() == Some(path))
                 .cloned()
         });
-        if let Some(editor) = open {
-            self.reveal_item(&editor.into(), window, cx);
+        if let Some(item) = open {
+            self.reveal_item(&item, window, cx);
             return;
         }
-        let editor = self.make_editor(path, cx);
-        self.tabs.push(Tab::editor(editor));
+        let item = match path {
+            Some(path) => self.make_file_pane(path, cx),
+            None => self.make_editor(None, cx).into(),
+        };
+        self.tabs
+            .push(Tab::holding(Content::Panes(Panes::new(item))));
         self.activate(self.tabs.len() - 1, window, cx);
+    }
+
+    /// The pane for a file of its kind: an image, Quick Look (PDFs and
+    /// other binaries), or the editor.
+    pub(super) fn make_file_pane(&mut self, path: PathBuf, cx: &mut Context<Self>) -> PaneItem {
+        let style = terminal_style(&self.config, &self.theme, cx);
+        match crate::file_kind::kind_of(&path) {
+            FileKind::Image => {
+                let view = cx.new(|cx| ImageView::new(path, style, cx));
+                self.watch_image(&view, cx);
+                view.into()
+            }
+            FileKind::QuickLook => {
+                let view = cx.new(|cx| QuickLookView::new(path, style, cx));
+                self.watch_quick_look(&view, cx);
+                view.into()
+            }
+            FileKind::Text => self.make_editor(Some(path), cx).into(),
+        }
+    }
+
+    pub(super) fn watch_image(&mut self, view: &gpui::Entity<ImageView>, cx: &mut Context<Self>) {
+        let subscription = cx.subscribe(view, |_, _, _: &ImageEvent, cx| cx.notify());
+        self.pane_subscriptions
+            .insert(view.entity_id(), subscription);
+    }
+
+    pub(super) fn watch_quick_look(
+        &mut self,
+        view: &gpui::Entity<QuickLookView>,
+        cx: &mut Context<Self>,
+    ) {
+        let subscription = cx.subscribe(view, |_, _, _: &QuickLookEvent, cx| cx.notify());
+        self.pane_subscriptions
+            .insert(view.entity_id(), subscription);
     }
 
     /// A web pane in a new tab, at `url` or with its address field ready.

@@ -99,8 +99,8 @@ impl Workspace {
         ));
         entries.push(add(
             &mut picks,
-            Item::new("New File Browser").enabled(false),
-            Pick::None,
+            Item::new("New File Browser"),
+            Pick::Action(Box::new(NewFileBrowser)),
         ));
         entries.push(add(
             &mut picks,

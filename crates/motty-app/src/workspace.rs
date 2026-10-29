@@ -35,6 +35,7 @@ mod files;
 mod global_search;
 mod hover_card;
 mod menu_actions;
+mod views;
 pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
 mod open_quickly;
@@ -300,6 +301,8 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
+    /// Terminals a folder pane stands in for (View ▸ Switch to View).
+    switched: HashMap<EntityId, PaneItem>,
     /// Ids for new splits.
     next_split: usize,
     /// The split whose divider is being dragged.
@@ -612,6 +615,7 @@ impl Workspace {
             pinned: false,
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
+            switched: HashMap::new(),
             next_split: 0,
             dragging: None,
             sidebar_drag: None,
@@ -777,7 +781,10 @@ impl Workspace {
                 }
                 Pane::Leaf(view.into())
             }
-            PaneState::File { path } => Pane::Leaf(self.make_editor(Some(path.clone()), cx).into()),
+            PaneState::File { path } => Pane::Leaf(self.make_file_pane(path.clone(), cx)),
+            PaneState::Folder { path } => {
+                Pane::Leaf(self.make_folder(path.clone(), window, cx).into())
+            }
             PaneState::Web { url } => Pane::Leaf(self.make_web(url.clone(), cx).into()),
             PaneState::Split {
                 vertical,
@@ -1511,6 +1518,15 @@ impl Workspace {
                             }),
                             PaneItem::Web(w) => {
                                 w.update(cx, |w, cx| w.set_style(style.clone(), cx))
+                            }
+                            PaneItem::Folder(v) => {
+                                v.update(cx, |v, cx| v.set_style(style.clone(), cx))
+                            }
+                            PaneItem::Image(v) => {
+                                v.update(cx, |v, cx| v.set_style(style.clone(), cx))
+                            }
+                            PaneItem::QuickLook(v) => {
+                                v.update(cx, |v, cx| v.set_style(style.clone(), cx))
                             }
                         }
                     }
@@ -3385,6 +3401,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_file_editor))
             .on_action(cx.listener(Self::new_web_browser))
+            .on_action(cx.listener(Self::new_file_browser))
+            .on_action(cx.listener(Self::switch_to_file_browser))
+            .on_action(cx.listener(Self::switch_to_terminal))
             .on_action(cx.listener(Self::toggle_inbox))
             .on_action(cx.listener(|this, _: &RenameTab, window, cx| {
                 this.start_rename(this.active, window, cx)
@@ -3662,6 +3681,12 @@ fn tab_state(
         match pane {
             Pane::Leaf(PaneItem::Web(web)) => PaneState::Web {
                 url: web.read(cx).url().map(str::to_owned),
+            },
+            Pane::Leaf(PaneItem::Folder(v)) => PaneState::Folder {
+                path: v.read(cx).path().into(),
+            },
+            Pane::Leaf(item @ (PaneItem::Image(_) | PaneItem::QuickLook(_))) => PaneState::File {
+                path: item.path(cx).unwrap_or_default(),
             },
             Pane::Leaf(PaneItem::File(editor)) => match editor.read(cx).path() {
                 Some(path) => PaneState::File {
