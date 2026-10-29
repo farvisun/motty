@@ -5,6 +5,13 @@
 //! with one [`Response`] line carrying the same `id`. Shells started by
 //! Motty find the socket in `$MOTTY_SOCKET` and their own pane in
 //! `$MOTTY_PANE_ID`.
+//!
+//! Ids last as long as the app runs and never move: a pane's is a number
+//! (`$MOTTY_PANE_ID`, also written `p_<n>`), a tab's `t_<n>` and a
+//! window's `w_<n>`, each counted from 1 in the order they were made. A
+//! tab keeps its id when it moves to another window. Selectors (ids,
+//! indexes, `current`, ...) are in [`select`]; `motty://` links in
+//! [`link`].
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -16,10 +23,14 @@ pub use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod link;
+pub mod select;
 pub mod skills;
 
 pub const SOCKET_ENV: &str = "MOTTY_SOCKET";
 pub const PANE_ENV: &str = "MOTTY_PANE_ID";
+/// Bumped when a method changes in a way an older client can't follow.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -36,7 +47,38 @@ pub struct Response {
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The exit status the CLI should use for `error`, e.g. [`NO_MATCH`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<i32>,
 }
+
+/// A selector named no pane, tab or window (Otty's exit status 4).
+pub const NO_MATCH: i32 = 4;
+
+/// An error the app answered with, and the exit status it asks for.
+#[derive(Debug)]
+pub struct IpcError {
+    pub message: String,
+    pub code: Option<i32>,
+}
+
+impl IpcError {
+    /// `No pane matched selector`, as Otty words it.
+    pub fn no_match(kind: &str, selector: impl std::fmt::Display) -> Self {
+        Self {
+            message: format!("No {kind} matched selector {selector}"),
+            code: Some(NO_MATCH),
+        }
+    }
+}
+
+impl std::fmt::Display for IpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IpcError {}
 
 /// Methods, with their parameter and result types below.
 pub mod method {
@@ -59,6 +101,30 @@ pub mod method {
     pub const CONFIG_RELOAD: &str = "config-reload";
     /// Apply config lines to the running app only ([`super::ConfigSetParams`]).
     pub const CONFIG_SET: &str = "config-set";
+    pub const APP_INFO: &str = "app-info";
+    pub const LIST_WINDOWS: &str = "list-windows";
+    pub const LIST_TABS: &str = "list-tabs";
+    pub const NEW_WINDOW: &str = "new-window";
+    pub const CLOSE_WINDOW: &str = "close-window";
+    pub const CLOSE_TAB: &str = "close-tab";
+    pub const CLOSE_PANE: &str = "close-pane";
+    pub const FOCUS_WINDOW: &str = "focus-window";
+    pub const FOCUS_TAB: &str = "focus-tab";
+    pub const RENAME_WINDOW: &str = "rename-window";
+    pub const RENAME_TAB: &str = "rename-tab";
+    pub const MOVE_TAB: &str = "move-tab";
+    pub const ZOOM_PANE: &str = "zoom-pane";
+    pub const RESIZE_PANE: &str = "resize-pane";
+    pub const TAB_BADGE: &str = "tab-badge";
+    pub const VIEW: &str = "view";
+    pub const PANE_LINK: &str = "pane-link";
+    pub const AGENT_INTEGRATION: &str = "agent-integration";
+    pub const JUMP: &str = "jump";
+    pub const LEARN: &str = "learn";
+    pub const IGNORE: &str = "ignore";
+    pub const KEYBIND_LIST: &str = "keybind-list";
+    pub const RECIPE_LIST: &str = "recipe-list";
+    pub const RECIPE_APPLY: &str = "recipe-apply";
 }
 
 /// `motty config set --transient`: config.toml lines that take the place
@@ -124,10 +190,19 @@ pub struct AgentStateParams {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub id: u64,
-    /// Index of the window among Motty's windows.
+    /// Index of the window among Motty's windows, frontmost first (from 0).
     pub window: usize,
-    /// Index of the tab in its window.
+    /// Index of the tab in its window (from 0).
     pub tab: usize,
+    /// The window's id, `w_<n>`.
+    #[serde(default)]
+    pub window_id: String,
+    /// The tab's id, `t_<n>`.
+    #[serde(default)]
+    pub tab_id: String,
+    /// Its place among the tab's panes, in reading order (from 1).
+    #[serde(default)]
+    pub index: usize,
     pub title: String,
     pub cwd: Option<String>,
     pub process: Option<String>,
@@ -142,6 +217,9 @@ pub struct PaneInfo {
     /// The coding agent that reported from this pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Its id, as `motty state:<agent>` and `watch:<agent>` name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// The tab badge: running, awaiting, done, finished or error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub badge: Option<String>,
@@ -176,11 +254,272 @@ impl PaneInfo {
     }
 }
 
-/// Which pane a request is about; `None` means the focused one.
+/// Which pane a request is about: by id, else by selector, else the
+/// focused pane of the tab or window named, else of the front window.
+/// Requests about a tab or a window take the one holding the pane named.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PaneRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<u64>,
+    /// A pane selector (see [`select`]), when `pane` isn't given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select: Option<String>,
+    /// A tab selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    /// A window selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
+impl PaneRef {
+    pub fn id(pane: Option<u64>) -> Self {
+        Self {
+            pane,
+            ..Default::default()
+        }
+    }
+
+    /// Names a pane itself, not just a tab or window.
+    pub fn names_pane(&self) -> bool {
+        self.pane.is_some() || self.select.is_some()
+    }
+
+    /// Names nothing: the focused pane (or tab, or window).
+    pub fn is_empty(&self) -> bool {
+        !self.names_pane() && self.tab.is_none() && self.window.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WindowInfo {
+    /// `w_<n>`.
+    pub id: String,
+    /// Frontmost first, from 1.
+    pub index: usize,
+    pub title: String,
+    /// Set with `window rename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The frontmost window.
+    pub focused: bool,
+    pub tabs: usize,
+    /// The active tab's id.
+    pub active_tab: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TabInfo {
+    /// `t_<n>`.
+    pub id: String,
+    pub window_id: String,
+    /// In its window, from 1.
+    pub index: usize,
+    pub title: String,
+    /// Set with `tab rename` (or Rename Tab).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The window's active tab.
+    pub active: bool,
+    /// Terminal panes, by id.
+    pub panes: Vec<u64>,
+    /// Its badge: running, awaiting, done, finished or error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    pub zoomed: bool,
+}
+
+/// Closes a pane, tab or window. Without `force`, one whose close would
+/// ask first (`confirm-close-*`) is refused instead.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CloseParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RenameParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    /// Empty goes back to the title Motty makes.
+    pub name: String,
+}
+
+/// Moves a tab: to `index` (from 1) in its window or in `to_window`, or
+/// into a new window.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MoveTabParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_window: Option<String>,
+    #[serde(default)]
+    pub new_window: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ZoomParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    /// Zoom in or out; toggles when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<bool>,
+}
+
+/// Moves the dividers beside a pane, by cells: `right` moves the divider
+/// on its right (else on its left) to the right, and so on.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ResizeParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    #[serde(default)]
+    pub left: u16,
+    #[serde(default)]
+    pub right: u16,
+    #[serde(default)]
+    pub up: u16,
+    #[serde(default)]
+    pub down: u16,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FocusParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// Scroll this stable row (see [`link`]) into view, briefly lit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
+}
+
+/// Sets (or with no `kind`, clears) a tab's badge: one of [`BADGE_KINDS`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TabBadgeParams {
+    #[serde(flatten)]
+    pub target: PaneRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+pub const BADGE_KINDS: [&str; 6] = [
+    "running",
+    "completed",
+    "finished",
+    "unread",
+    "error",
+    "awaiting-input",
+];
+
+/// Opens a file or an http(s) URL as a pane: read-only unless `edit`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ViewParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// An absolute path or a URL.
+    pub target: String,
+    #[serde(default)]
+    pub edit: bool,
+    #[serde(default)]
+    pub place: Place,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LinkParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// The row where the pane's last command starts.
+    #[serde(default)]
+    pub last_command: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkInfo {
+    pub pane: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentIntegration {
+    /// Motty knows how to set this agent up (custom agents it doesn't).
+    pub known: bool,
+    /// Its hooks are installed.
+    pub installed: bool,
+}
+
+/// `motty jump`: the best folder for `query`, or with none, home and back.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct JumpParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Where the jump starts: the caller's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Also type `cd <path>` into the pane.
+    #[serde(default)]
+    pub cd: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JumpResult {
+    pub path: String,
+}
+
+/// `learn` and `ignore`: a folder, else the pane's.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FolderParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// An absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeybindInfo {
+    /// As `keybind` lines spell it: `cmd+shift+t`.
+    pub keys: String,
+    /// As `keybind` lines name it: `new_tab`.
+    pub action: String,
+    /// `default` or `config`.
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecipeInfo {
+    pub id: String,
+    pub name: String,
+    /// tab, window, commands or snippet.
+    pub scope: String,
+    /// Commands it replays.
+    pub commands: usize,
+    /// Unix seconds.
+    pub updated: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RecipeApplyParams {
+    /// Its id, or its name ignoring case.
+    pub recipe: String,
+    #[serde(default)]
+    pub new_window: bool,
+    #[serde(default)]
+    pub new_tab: bool,
+    /// For its Current Folder paths; the front tab's folder when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppInfo {
+    pub version: String,
+    pub protocol: u32,
+    pub pid: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -264,6 +603,12 @@ pub struct SplitParams {
     /// Keep focus where it is.
     #[serde(default)]
     pub no_focus: bool,
+    /// The new pane's share of the space, in percent (10–90).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u8>,
+    /// A command line typed into the new shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -278,6 +623,34 @@ pub struct NewTabParams {
     /// Bring back the last closed tab instead (as ⇧⌘T does).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reopen: bool,
+    /// A window selector, instead of `window`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select_window: Option<String>,
+    /// A command line typed into the new shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// The tab's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NewWindowParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// A command line typed into its shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// The window's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WindowCreated {
+    pub window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -404,8 +777,11 @@ pub struct Client {
 
 impl Client {
     pub fn connect() -> anyhow::Result<Self> {
-        let path = socket_path();
-        let stream = UnixStream::connect(&path)
+        Self::connect_at(&socket_path())
+    }
+
+    pub fn connect_at(path: &std::path::Path) -> anyhow::Result<Self> {
+        let stream = UnixStream::connect(path)
             .with_context(|| format!("can't reach Motty at {} (is it running?)", path.display()))?;
         Ok(Self {
             reader: BufReader::new(stream.try_clone()?),
@@ -439,8 +815,12 @@ impl Client {
             bail!("Motty closed the connection");
         }
         let response: Response = serde_json::from_str(&answer)?;
-        if let Some(error) = response.error {
-            bail!("{error}");
+        if let Some(message) = response.error {
+            return Err(IpcError {
+                message,
+                code: response.code,
+            }
+            .into());
         }
         Ok(serde_json::from_value(
             response.result.unwrap_or(Value::Null),
@@ -477,7 +857,7 @@ mod tests {
     #[test]
     fn params_are_flat_and_kebab_case() {
         let p = ReadParams {
-            pane: PaneRef { pane: Some(3) },
+            pane: PaneRef::id(Some(3)),
             range: TextRange::Lines(20),
         };
         assert_eq!(
