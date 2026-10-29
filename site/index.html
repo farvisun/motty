@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motty — the terminal that works with your agents</title>
+  <meta name="description" content="Motty is a fast, GPU-accelerated macOS terminal written in Rust. Tabs, splits, session recovery, and an MCP server so Claude Code, Codex and other coding agents can read and drive your panes.">
+  <meta name="theme-color" content="#0a0a0b">
+  <link rel="canonical" href="https://farvisun.github.io/motty/">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="apple-touch-icon" href="assets/icon-256.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Motty — the terminal that works with your agents">
+  <meta property="og:description" content="A fast, GPU-accelerated macOS terminal in Rust, with first-class support for coding agents.">
+  <meta property="og:url" content="https://farvisun.github.io/motty/">
+  <meta property="og:image" content="https://farvisun.github.io/motty/assets/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>document.documentElement.classList.add("js")</script>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preload" as="image" href="assets/shots/hero.webp" fetchpriority="high">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Motty",
+    "operatingSystem": "macOS 13 or later",
+    "applicationCategory": "DeveloperApplication",
+    "description": "A fast, GPU-accelerated terminal for macOS, built in Rust, with first-class support for coding agents.",
+    "url": "https://farvisun.github.io/motty/",
+    "downloadUrl": "https://github.com/farvisun/motty/releases/latest",
+    "license": "https://github.com/farvisun/motty/blob/main/LICENSE-MIT",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="nav">
+    <a class="brand" href="#top" aria-label="Motty home">
+      <img src="assets/icon-256.png" alt="" width="28" height="28">
+      <span>motty</span>
+    </a>
+    <nav aria-label="Primary">
+      <a href="#agents">Agents</a>
+      <a href="#panes">Panes</a>
+      <a href="#themes">Themes</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="nav-gh" href="https://github.com/farvisun/motty" rel="noopener">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>GitHub</span>
+    </a>
+  </header>
+
+  <main id="main">
+    <!-- Hero -->
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow reveal"><span class="dot"></span> Open source · macOS · Rust</p>
+        <h1 class="display reveal">
+          <span class="line">The terminal</span>
+          <span class="line">that works</span>
+          <span class="line"><em>with</em> your agents.</span>
+        </h1>
+        <p class="lede reveal">Motty is a fast, GPU-accelerated terminal for macOS. Tabs, splits and sessions that come back the way you left them, and a built-in MCP server so Claude Code, Codex and friends can read and drive your panes.</p>
+        <div class="cta reveal">
+          <a class="btn btn-primary" href="https://github.com/farvisun/motty/releases/latest/download/Motty.dmg" data-smile>
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.37 12.6c-.02-2.3 1.88-3.4 1.97-3.46-1.07-1.57-2.74-1.78-3.33-1.8-1.42-.14-2.77.83-3.49.83-.72 0-1.83-.81-3-.79-1.55.02-2.97.9-3.77 2.28-1.6 2.78-.41 6.9 1.15 9.16.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.77.74 2.98.72 1.23-.02 2.01-1.12 2.77-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.4-.92-2.42-3.66zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.01.61-2.66 1.37-.58.67-1.09 1.75-.96 2.79 1.02.08 2.05-.52 2.68-1.27z"/></svg>
+            Download for macOS
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/farvisun/motty" data-smile>Star on GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="fine reveal">Free · MIT or Apache-2.0 · macOS 13+ · Apple silicon &amp; Intel</p>
+      </div>
+
+      <div class="bot reveal" aria-hidden="true">
+        <div class="bot-shell">
+          <div class="bot-head">
+            <div class="bot-visor">
+              <span class="eye eye-l"></span>
+              <span class="eye eye-r"></span>
+              <span class="mouth"></span>
+            </div>
+          </div>
+        </div>
+        <div class="bot-floor"></div>
+      </div>
+    </section>
+
+    <section class="stage" aria-label="Motty screenshot">
+      <figure class="stage-frame">
+        <img src="assets/shots/hero.webp" srcset="assets/shots/hero-1200.webp 1200w, assets/shots/hero.webp 2400w" sizes="(max-width: 1300px) 94vw, 1240px" width="2400" height="1472" alt="Motty window with a tabs sidebar and three split panes: git log, btop and the motty CLI listing tabs.">
+      </figure>
+      <div class="stage-glow" aria-hidden="true"></div>
+    </section>
+
+    <!-- Ticker -->
+    <div class="ticker" aria-hidden="true">
+      <div class="ticker-track">
+        <span>GPU rendered with GPUI</span><span>alacritty_terminal core</span><span>Kitty graphics</span><span>Sixel</span><span>iTerm2 images</span><span>MCP server</span><span>OSC 133 shell integration</span><span>Session recovery</span><span>Vi mode &amp; hints</span><span>Ligatures</span><span>Bidi text</span><span>AppleScript</span>
+        <span>GPU rendered with GPUI</span><span>alacritty_terminal core</span><span>Kitty graphics</span><span>Sixel</span><span>iTerm2 images</span><span>MCP server</span><span>OSC 133 shell integration</span><span>Session recovery</span><span>Vi mode &amp; hints</span><span>Ligatures</span><span>Bidi text</span><span>AppleScript</span>
+      </div>
+    </div>
+
+    <!-- 01 Agents -->
+    <section class="chapter" id="agents">
+      <header class="chapter-head reveal">
+        <span class="num">01</span>
+        <h2 class="display-sm">Built for the way you work <em>now</em>.</h2>
+      </header>
+      <div class="split">
+        <div class="split-copy reveal">
+          <p class="body-lg">Coding agents shouldn't have to guess what's on your screen. Motty serves its panes over MCP, so an agent can list them, read output, search scrollback, run a command in a split and wait for it to finish.</p>
+          <p class="body">Agents never type into their own pane. They split one off and work there, while you watch. The same operations are a shell command away with the <code>motty</code> CLI, for scripts and for you.</p>
+          <ul class="chips" aria-label="MCP tools">
+            <li>list_panes</li><li>read_pane</li><li>find_in_pane</li><li>run_command</li><li>send_text</li><li>split_pane</li><li>new_tab</li><li>focus_pane</li><li>close_pane</li>
+          </ul>
+        </div>
+        <div class="term reveal" role="img" aria-label="Terminal: adding Motty's MCP server to Claude Code, then splitting a pane to run tests and reading the result.">
+          <div class="term-bar"><i></i><i></i><i></i><span>~/src/api</span></div>
+          <pre class="term-body" data-typer><code></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 Panes -->
+    <section class="chapter" id="panes">
+      <header class="chapter-head reveal">
+        <span class="num">02</span>
+        <h2 class="display-sm">Know what every pane is <em>doing</em>.</h2>
+      </header>
+      <figure class="shot shot-wide reveal">
+        <img src="assets/shots/details.webp" loading="lazy" width="2000" height="1227" alt="The details panel next to a terminal, showing the working directory, running processes and a listening port.">
+      </figure>
+      <div class="cols3">
+        <div class="reveal"><h3>Info</h3><p>The folder, the processes in the pane and the ports they listen on. One click opens it in your editor or browser.</p></div>
+        <div class="reveal"><h3>Agent usage</h3><p>With Claude Code, Codex or omp running, see context in use, tokens, cost and plan quota, read from the agent's own logs.</p></div>
+        <div class="reveal"><h3>Outline &amp; Git</h3><p>Every command the pane ran, newest last. Branch, diff stats and changed files without leaving the terminal.</p></div>
+      </div>
+    </section>
+
+    <!-- 03 Keyboard -->
+    <section class="chapter" id="keys">
+      <header class="chapter-head reveal">
+        <span class="num">03</span>
+        <h2 class="display-sm">Everything is a keystroke <em>away</em>.</h2>
+      </header>
+      <div class="duo">
+        <figure class="shot reveal">
+          <img src="assets/shots/palette.webp" loading="lazy" width="2000" height="1227" alt="The command palette listing actions with their shortcuts.">
+          <figcaption><kbd>⇧</kbd><kbd>⌘</kbd><kbd>P</kbd> Command palette: every action, with or without a shortcut.</figcaption>
+        </figure>
+        <figure class="shot shot-offset reveal">
+          <img src="assets/shots/files.webp" loading="lazy" width="2000" height="1227" alt="Open Quickly listing files in the current folder.">
+          <figcaption><kbd>⇧</kbd><kbd>⌘</kbd><kbd>O</kbd> Open Quickly: tabs, recent folders, SSH hosts, agent sessions and files.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- 04 Themes -->
+    <section class="chapter" id="themes">
+      <header class="chapter-head reveal">
+        <span class="num">04</span>
+        <h2 class="display-sm">Make it <em>yours</em>.</h2>
+      </header>
+      <div class="themes">
+        <div class="themes-copy reveal">
+          <p class="body-lg">Eighteen themes built in, light and dark picked per system appearance. Drop <code>.ottytheme</code> files or fonts into the config folder and they show up. Save the config and open windows change right away.</p>
+          <p class="body">Coming from Ghostty, Kitty or Alacritty? <code>motty import</code> brings your config along.</p>
+          <div class="theme-picker" role="tablist" aria-label="Themes">
+            <button role="tab" aria-selected="true" data-theme="tokyo-night" style="--sw:#1a1b26;--sw2:#7aa2f7">Tokyo Night</button>
+            <button role="tab" aria-selected="false" data-theme="rose-pine" style="--sw:#191724;--sw2:#ebbcba">Rosé Pine</button>
+            <button role="tab" aria-selected="false" data-theme="gruvbox-dark" style="--sw:#282828;--sw2:#fabd2f">Gruvbox Dark</button>
+            <button role="tab" aria-selected="false" data-theme="nord" style="--sw:#2e3440;--sw2:#88c0d0">Nord</button>
+            <button role="tab" aria-selected="false" data-theme="catppuccin-latte" style="--sw:#eff1f5;--sw2:#8839ef">Catppuccin Latte</button>
+            <button role="tab" aria-selected="false" data-theme="one-light" style="--sw:#fafafa;--sw2:#4078f2">One Light</button>
+          </div>
+        </div>
+        <figure class="shot theme-view reveal" aria-live="polite">
+          <img src="assets/shots/theme-tokyo-night.webp" loading="lazy" width="1600" height="1000" alt="Motty in the Tokyo Night theme.">
+        </figure>
+      </div>
+    </section>
+
+    <!-- 05 Details -->
+    <section class="chapter" id="details">
+      <header class="chapter-head reveal">
+        <span class="num">05</span>
+        <h2 class="display-sm">Sweat in the <em>small</em> things.</h2>
+      </header>
+      <div class="bento">
+        <article class="card card-tall reveal">
+          <img src="assets/shots/welcome.webp" loading="lazy" width="2000" height="1227" alt="Motty's welcome guide on first launch.">
+          <div><h3>A minute to set up</h3><p>The first launch walks through a theme, the MCP command for your agent and installing the <code>motty</code> CLI. Only the lines it sets change in your config.</p></div>
+        </article>
+        <article class="card reveal"><h3>Sessions come back</h3><p>Windows, tabs, splits, folders and scrollback, colors included, are restored on the next launch, and after a crash.</p></article>
+        <article class="card reveal"><h3>Inline images</h3><p>Kitty graphics, iTerm2 and Sixel, painted on the GPU and anchored to the text around them.</p></article>
+        <article class="card reveal"><h3>Vi mode &amp; hints</h3><p>Move through scrollback with vi keys, select blocks, and label every link and path on screen to open it from the keyboard.</p></article>
+        <article class="card reveal"><h3>Autocomplete</h3><p>Suggestions from the commands you ran in this folder, as dim text after the cursor. Secrets are never remembered.</p></article>
+        <article class="card card-wide reveal">
+          <img src="assets/shots/settings.webp" loading="lazy" width="1400" height="1014" alt="Motty's settings window with sections in a sidebar.">
+          <div><h3>Settings that write plain text</h3><p>Every toggle writes one line to <code>config.toml</code> and applies to every window. Search all settings by typing.</p></div>
+        </article>
+        <article class="card reveal"><h3>Shell integration</h3><p>zsh, bash and fish report prompts, exit status and folder (OSC 133, OSC 7), so commands become something you can jump to and capture.</p></article>
+        <article class="card reveal"><h3>Links that know paths</h3><p>⌘-click a URL or <code>file:line:col</code> to open it. Relative paths resolve against the shell's folder.</p></article>
+      </div>
+    </section>
+
+    <!-- Under the hood -->
+    <section class="hood">
+      <div class="hood-inner reveal">
+        <p class="eyebrow">Under the hood</p>
+        <p class="display-md">Rust from the PTY to the pixel. Drawn by <em>GPUI</em> on Metal, with a patched <em>alacritty_terminal</em> for the VT state.</p>
+        <dl class="specs">
+          <div><dt>Renderer</dt><dd>GPUI · Metal</dd></div>
+          <div><dt>Terminal core</dt><dd>alacritty_terminal</dd></div>
+          <div><dt>Protocols</dt><dd>Kitty keys &amp; graphics, Sixel, OSC 8/9/133/777</dd></div>
+          <div><dt>Scripting</dt><dd>motty CLI · MCP · AppleScript</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <!-- Install -->
+    <section class="install" id="install">
+      <div class="install-card reveal">
+        <h2 class="display-sm">Say hello to <em>Motty</em>.</h2>
+        <p class="body-lg">One universal download for Apple silicon and Intel Macs running macOS 13 or later.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/farvisun/motty/releases/latest/download/Motty.dmg" data-smile>Download Motty.dmg</a>
+          <a class="btn btn-ghost" href="https://github.com/farvisun/motty/releases" data-smile>All releases <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="fine">Not notarized yet: the first time, right-click Motty in Applications and choose <strong>Open</strong>.</p>
+        <div class="code">
+          <div class="code-head"><span>Or build from source</span><button type="button" class="copy" data-copy="#src">Copy</button></div>
+<pre id="src"><code>git clone https://github.com/farvisun/motty.git
+cd motty
+cargo xtask bundle --release
+open target/release/Motty.app</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wordmark" aria-hidden="true">motty</div>
+    <div class="footer-row">
+      <p>Made in Rust by <a href="https://github.com/farvisun">farvisun</a>. Dual-licensed MIT or Apache-2.0.</p>
+      <nav aria-label="Footer">
+        <a href="https://github.com/farvisun/motty#readme">Docs</a>
+        <a href="https://github.com/farvisun/motty/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/farvisun/motty/issues">Issues</a>
+        <a href="https://github.com/farvisun/motty">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
+</html>
