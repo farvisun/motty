@@ -27,7 +27,8 @@ const OUTPUT_LINES: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct Session {
-    /// The catalog id: `claude`, `codex`, `opencode`, `pi`, `omp`, `cursor`.
+    /// The catalog id: `claude`, `codex`, `opencode`, `pi`, `omp`, `cursor`,
+    /// `kimi`.
     pub agent: &'static str,
     /// What resuming takes; for Pi and omp, the file's path.
     pub id: String,
@@ -64,6 +65,8 @@ pub struct Roots {
     pub claude: Vec<PathBuf>,
     /// `$CODEX_HOME`, when set.
     pub codex: Option<PathBuf>,
+    /// `$KIMI_CODE_HOME`, when set.
+    pub kimi: Option<PathBuf>,
 }
 
 impl Roots {
@@ -83,6 +86,7 @@ impl Roots {
             home,
             claude,
             codex: var("CODEX_HOME"),
+            kimi: var("KIMI_CODE_HOME"),
         }
     }
 }
@@ -166,6 +170,7 @@ struct Found {
 struct Lookups {
     codex_names: Option<HashMap<String, String>>,
     cursor_dirs: HashMap<OsString, Option<PathBuf>>,
+    kimi_dirs: Option<HashMap<String, PathBuf>>,
 }
 
 fn found(roots: &Roots) -> Vec<Found> {
@@ -210,7 +215,27 @@ fn found(roots: &Roots) -> Vec<Found> {
             }
         }
     }
-    // Kimi Code: its session store isn't read yet.
+    // Kimi Code: `sessions/<workspace>/session_<id>/agents/main/wire.jsonl`,
+    // the main agent's log (subagents have their own beside it).
+    for workspace in subdirs(&kimi_home(roots).join("sessions")) {
+        for session in subdirs(&workspace) {
+            if !session
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("session_"))
+            {
+                continue;
+            }
+            let path = session.join("agents/main/wire.jsonl");
+            if let Some(modified) = file_modified(&path) {
+                out.push(Found {
+                    agent: "kimi",
+                    path,
+                    modified,
+                });
+            }
+        }
+    }
     out
 }
 
@@ -278,6 +303,13 @@ fn codex_home(roots: &Roots) -> PathBuf {
         .unwrap_or_else(|| roots.home.join(".codex"))
 }
 
+fn kimi_home(roots: &Roots) -> PathBuf {
+    roots
+        .kimi
+        .clone()
+        .unwrap_or_else(|| roots.home.join(".kimi-code"))
+}
+
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -327,6 +359,7 @@ fn read_session(found: Found, roots: &Roots, lookups: &mut Lookups) -> Option<Se
         "opencode" => opencode_head(&path),
         "pi" | "omp" => pi_head(&path),
         "cursor" => cursor_head(&path, lookups),
+        "kimi" => kimi_head(&path, roots, lookups),
         _ => None,
     }?;
     Some(Session {
@@ -565,6 +598,94 @@ fn cursor_head(path: &Path, lookups: &mut Lookups) -> Option<Head> {
     })
 }
 
+fn kimi_head(path: &Path, roots: &Roots, lookups: &mut Lookups) -> Option<Head> {
+    let session = path.parent()?.parent()?.parent()?;
+    let id = session.file_name()?.to_str()?.to_owned();
+    let state = kimi_state(session);
+    // Sessions Kimi imported from the older kimi-cli; it hides them too.
+    if state["custom"]["imported_from_kimi_cli"] == true {
+        return None;
+    }
+    let state_cwd = ["cwd", "workDir"]
+        .iter()
+        .find_map(|k| non_empty(state[*k].as_str()))
+        .map(PathBuf::from);
+    let (mut cwd, mut prompt) = (state_cwd, None);
+    for v in head_lines(path) {
+        match v["type"].as_str() {
+            Some("config.update") if cwd.is_none() => {
+                cwd = non_empty(v["cwd"].as_str()).map(PathBuf::from);
+            }
+            Some("context.append_message") if prompt.is_none() => {
+                prompt = kimi_prompt(&v["message"]).map(str::to_owned);
+            }
+            _ => {}
+        }
+        if cwd.is_some() && prompt.is_some() {
+            break;
+        }
+    }
+    if cwd.is_none() {
+        let dirs = lookups
+            .kimi_dirs
+            .get_or_insert_with(|| kimi_dirs(&kimi_home(roots)));
+        cwd = dirs.get(&id).cloned();
+    }
+    // A title Kimi wrote or the user gave; otherwise it's the first prompt.
+    let named = state["isCustomTitle"] == true
+        || matches!(state["titleKind"].as_str(), Some("custom" | "generated"));
+    let title = non_empty(state["title"].as_str()).filter(|t| *t != "New Session");
+    let title = match (named, title) {
+        (true, Some(t)) => t.to_owned(),
+        _ => prompt.or(title.map(str::to_owned))?,
+    };
+    Some(Head { id, cwd, title })
+}
+
+/// A Kimi Code session's `state.json` (older ones keep it in `session-meta/`).
+fn kimi_state(session: &Path) -> Value {
+    ["state.json", "session-meta/state.json"]
+        .iter()
+        .find_map(|f| serde_json::from_slice(&fs::read(session.join(f)).ok()?).ok())
+        .unwrap_or_default()
+}
+
+/// Each session's folder from Kimi's `session_index.jsonl`.
+fn kimi_dirs(home: &Path) -> HashMap<String, PathBuf> {
+    let Ok(file) = File::open(home.join("session_index.jsonl")) else {
+        return HashMap::new();
+    };
+    json_lines(BufReader::new(file))
+        .filter_map(|v| {
+            let id = v["sessionId"].as_str()?.to_owned();
+            Some((id, PathBuf::from(non_empty(v["workDir"].as_str())?)))
+        })
+        .collect()
+}
+
+/// A user message's words, when the user typed it: Kimi also adds user
+/// messages of its own (reminders, retries, compaction summaries), which
+/// say so in `origin`.
+fn kimi_prompt(message: &Value) -> Option<&str> {
+    if message["role"] != "user" {
+        return None;
+    }
+    let origin = &message["origin"];
+    let typed = match origin["kind"].as_str() {
+        None | Some("user") => true,
+        Some("skill_activation" | "plugin_command") => origin["trigger"] == "user-slash",
+        Some(_) => false,
+    };
+    if !typed {
+        return None;
+    }
+    message["content"]
+        .as_array()?
+        .iter()
+        .filter(|p| p["type"] == "text")
+        .find_map(|p| real(p["text"].as_str()?))
+}
+
 fn cursor_prompt(text: &str) -> Option<&str> {
     let text = text.trim();
     match text.strip_prefix("<user_query>") {
@@ -623,6 +744,7 @@ pub fn transcript(session: &Session) -> Vec<Message> {
             .unwrap_or_default(),
         "pi" | "omp" => all_lines(path).flat_map(|v| pi_messages(&v)).collect(),
         "cursor" => all_lines(path).flat_map(|v| cursor_messages(&v)).collect(),
+        "kimi" => all_lines(path).flat_map(|v| kimi_messages(&v)).collect(),
         _ => Vec::new(),
     }
 }
@@ -879,6 +1001,68 @@ fn cursor_messages(v: &Value) -> Vec<Message> {
                 }
             }
             out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A Kimi Code wire line. Prompts are whole messages; a reply is recorded
+/// as it streams, a text part, tool call or tool result at a time (older
+/// logs hold whole assistant and tool messages instead).
+fn kimi_messages(v: &Value) -> Vec<Message> {
+    // Seconds in older logs, milliseconds now.
+    let time = v["time"].as_f64().filter(|t| *t > 0.).map(|t| {
+        let ms = if t > 1e12 { t } else { t * 1000. };
+        iso_from_millis(ms as i64)
+    });
+    let time = time.as_deref();
+    match v["type"].as_str() {
+        Some("context.append_message") => {
+            let m = &v["message"];
+            match m["role"].as_str() {
+                Some("user") => kimi_prompt(m)
+                    .and_then(|t| message(Role::User, t, time))
+                    .into_iter()
+                    .collect(),
+                Some("assistant") => {
+                    let mut out: Vec<Message> = texts(&m["content"])
+                        .iter()
+                        .filter_map(|t| message(Role::Assistant, t, time))
+                        .collect();
+                    for call in m["toolCalls"].as_array().into_iter().flatten() {
+                        // `{name, arguments}`, or nested under `function`.
+                        let f = if call["function"].is_object() {
+                            &call["function"]
+                        } else {
+                            call
+                        };
+                        out.extend(tool_call(
+                            f["name"].as_str().unwrap_or_default(),
+                            &f["arguments"],
+                            time,
+                        ));
+                    }
+                    out
+                }
+                Some("tool") => tool_output(&texts(&m["content"]).join("\n"), time)
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+        Some("context.append_loop_event") => {
+            let e = &v["event"];
+            let out = match e["type"].as_str() {
+                Some("content.part") if e["part"]["type"] == "text" => e["part"]["text"]
+                    .as_str()
+                    .and_then(|t| message(Role::Assistant, t, time)),
+                Some("tool.call") => {
+                    tool_call(e["name"].as_str().unwrap_or_default(), &e["args"], time)
+                }
+                Some("tool.result") => tool_output(&output_text(&e["result"]["output"]), time),
+                _ => None,
+            };
+            out.into_iter().collect()
         }
         _ => Vec::new(),
     }
@@ -1238,6 +1422,7 @@ mod tests {
             home: home.to_owned(),
             claude: vec![home.join(".claude")],
             codex: None,
+            kimi: None,
         }
     }
 
@@ -1512,6 +1697,166 @@ Done.
         );
     }
 
+    const KIMI_ID: &str = "session_3f2a9c1e-7b4d-4e8a-9c2f-1d5e6b7a8c90";
+
+    /// A Kimi Code home: one session with a reply and a tool call, a
+    /// renamed one, an empty one and one imported from kimi-cli.
+    fn kimi_fixture(home: &Path) {
+        let sessions = home.join("sessions/wd_app_1a2b3c4d5e6f");
+        let state = |dir: &Path, v: Value| write(&dir.join("state.json"), &[v], 0);
+        let main = sessions.join(KIMI_ID);
+        state(
+            &main,
+            serde_json::json!({"createdAt":"2026-10-28T09:00:00.000Z","updatedAt":"2026-10-28T09:01:00.000Z","title":"Fix the flaky test","isCustomTitle":false,"lastPrompt":"thanks","agents":{"main":{"type":"main","parentAgentId":null},"agent-0":{"type":"sub","parentAgentId":"main"}},"custom":{}}),
+        );
+        let event = |e: Value| serde_json::json!({"type":"context.append_loop_event","agentId":"main","event":e,"time":1_793_178_005_000_i64});
+        write(
+            &main.join("agents/main/wire.jsonl"),
+            &[
+                serde_json::json!({"type":"metadata","protocol_version":"1.4","created_at":1_793_178_000_000_i64}),
+                serde_json::json!({"type":"config.update","cwd":"/work/kimi","profileName":"agent","time":1_793_178_000_100_i64}),
+                serde_json::json!({"type":"turn.prompt","input":[{"type":"text","text":"Fix the flaky test"}],"origin":{"kind":"user"},"time":1_793_178_000_200_i64}),
+                serde_json::json!({"type":"context.append_message","agentId":"main","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>Plan mode is off</system-reminder>"}],"toolCalls":[],"origin":{"kind":"injection","variant":"plan_mode"}},"time":1_793_178_000_250_i64}),
+                serde_json::json!({"type":"context.append_message","agentId":"main","message":{"role":"user","content":[{"type":"text","text":"Fix the flaky test"}],"toolCalls":[],"origin":{"kind":"user"}},"time":1_793_178_000_300_i64}),
+                event(serde_json::json!({"type":"step.begin","uuid":"s1","turnId":"t1","step":0})),
+                event(
+                    serde_json::json!({"type":"content.part","stepUuid":"s1","part":{"type":"think","think":"Look at the test first."}}),
+                ),
+                event(
+                    serde_json::json!({"type":"content.part","stepUuid":"s1","part":{"type":"text","text":"Running it."}}),
+                ),
+                event(
+                    serde_json::json!({"type":"tool.call","stepUuid":"s1","toolCallId":"call_1","name":"Shell","args":{"command":"cargo test flaky"}}),
+                ),
+                event(
+                    serde_json::json!({"type":"step.end","uuid":"s1","finishReason":"tool_calls"}),
+                ),
+                event(
+                    serde_json::json!({"type":"tool.result","toolCallId":"call_1","result":{"output":[{"type":"text","text":"test flaky ... ok"}],"isError":false}}),
+                ),
+                serde_json::json!({"type":"usage.record","model":"kimi-k2","usage":{"inputOther":10,"output":5},"time":1_793_178_006_000_i64}),
+                event(serde_json::json!({"type":"step.begin","uuid":"s2","turnId":"t1","step":1})),
+                event(
+                    serde_json::json!({"type":"content.part","stepUuid":"s2","part":{"type":"text","text":"It passes now."}}),
+                ),
+                serde_json::json!("not a record"),
+                serde_json::json!({"type":"context.append_message","agentId":"main","message":{"role":"user","content":[{"type":"text","text":"thanks"}],"toolCalls":[]},"time":1_793_178_060.5}),
+            ],
+            30,
+        );
+        write(
+            &main.join("agents/agent-0/wire.jsonl"),
+            &[
+                serde_json::json!({"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"subagent task"}],"toolCalls":[]}}),
+            ],
+            1,
+        );
+        // Renamed, with its folder only in Kimi's index, and an older
+        // log's whole messages.
+        let renamed = sessions.join("session_renamed");
+        state(
+            &renamed,
+            serde_json::json!({"title":"Release notes","titleKind":"custom"}),
+        );
+        write(
+            &renamed.join("agents/main/wire.jsonl"),
+            &[
+                serde_json::json!({"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Write the notes"}],"toolCalls":[]},"time":1_793_178_000_000_i64}),
+                serde_json::json!({"type":"context.append_message","message":{"role":"assistant","content":[{"type":"text","text":"Reading the log."}],"toolCalls":[{"type":"function","id":"c1","function":{"name":"ReadFile","arguments":"{\"path\":\"CHANGELOG.md\"}"}}]}}),
+                serde_json::json!({"type":"context.append_message","message":{"role":"tool","toolCallId":"c1","content":[{"type":"text","text":"## 1.0"}]}}),
+            ],
+            20,
+        );
+        write(
+            &home.join("session_index.jsonl"),
+            &[
+                serde_json::json!({"sessionId":"session_renamed","sessionDir":renamed,"workDir":"/work/notes"}),
+            ],
+            0,
+        );
+        // Nothing asked yet.
+        let empty = sessions.join("session_empty");
+        state(&empty, serde_json::json!({"title":"New Session"}));
+        write(
+            &empty.join("agents/main/wire.jsonl"),
+            &[
+                serde_json::json!({"type":"metadata","protocol_version":"1.4","created_at":1}),
+                serde_json::json!({"type":"config.update","cwd":"/work/kimi"}),
+            ],
+            5,
+        );
+        let imported = sessions.join("session_imported");
+        state(
+            &imported,
+            serde_json::json!({"title":"old","custom":{"imported_from_kimi_cli":true}}),
+        );
+        write(
+            &imported.join("agents/main/wire.jsonl"),
+            &[
+                serde_json::json!({"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"old"}]}}),
+            ],
+            2,
+        );
+    }
+
+    #[test]
+    fn lists_and_reads_kimi_sessions() {
+        let home = temp_home("kimi");
+        // `$KIMI_CODE_HOME` somewhere other than `~/.kimi-code`.
+        let kimi = home.join("kimi-home");
+        kimi_fixture(&kimi);
+        assert!(list(&roots(&home), 10).is_empty());
+        let roots = Roots {
+            kimi: Some(kimi),
+            ..roots(&home)
+        };
+        let sessions = list(&roots, 10);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["session_renamed", KIMI_ID]);
+        assert!(sessions.iter().all(|s| s.agent == "kimi"));
+        let (renamed, session) = (&sessions[0], &sessions[1]);
+        assert_eq!(renamed.title, "Release notes");
+        assert_eq!(renamed.cwd.as_deref(), Some(Path::new("/work/notes")));
+        assert_eq!(session.title, "Fix the flaky test");
+        assert_eq!(session.cwd.as_deref(), Some(Path::new("/work/kimi")));
+        assert_eq!(
+            resume_command("kimi", &session.id).unwrap(),
+            format!("kimi --session {KIMI_ID}")
+        );
+        assert_eq!(fork_command("kimi", &session.id), None);
+
+        let messages = transcript(session);
+        let texts: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Fix the flaky test",
+                "Running it.",
+                "⏺ Shell  cargo test flaky",
+                "⎿ test flaky ... ok",
+                "It passes now.",
+                "thanks"
+            ]
+        );
+        let roles: Vec<Role> = messages.iter().map(|m| m.role).collect();
+        use Role::*;
+        assert_eq!(roles, [User, Assistant, Tool, Tool, Assistant, User]);
+        assert_eq!(messages[0].time.as_deref(), Some("2026-10-28T09:00:00Z"));
+        // Seconds, as older logs have them.
+        assert_eq!(messages[5].time.as_deref(), Some("2026-10-28T09:01:00Z"));
+
+        let texts: Vec<String> = transcript(renamed).into_iter().map(|m| m.text).collect();
+        assert_eq!(
+            texts,
+            [
+                "Write the notes",
+                "Reading the log.",
+                "⏺ ReadFile  CHANGELOG.md",
+                "⎿ ## 1.0"
+            ]
+        );
+    }
+
     #[test]
     fn quotes_ids_in_commands() {
         assert_eq!(
@@ -1525,6 +1870,14 @@ Done.
         assert_eq!(
             fork_command("pi", "/tmp/it's here.jsonl").as_deref(),
             Some(r"pi --fork '/tmp/it'\''s here.jsonl'")
+        );
+        assert_eq!(
+            resume_command("antigravity", "c1").as_deref(),
+            Some("agy --conversation c1")
+        );
+        assert_eq!(
+            resume_command("cursor", "c1").as_deref(),
+            Some("agent --resume c1")
         );
         assert_eq!(fork_command("cursor", "x"), None);
         assert_eq!(resume_command("nope", "x"), None);
@@ -1593,7 +1946,7 @@ Done.
                 roles(s)
             );
         }
-        for agent in ["claude", "codex", "opencode", "pi", "omp", "cursor"] {
+        for agent in ["claude", "codex", "opencode", "pi", "omp", "cursor", "kimi"] {
             for s in sessions.iter().filter(|s| s.agent == agent).take(3) {
                 let messages = transcript(s);
                 println!(
