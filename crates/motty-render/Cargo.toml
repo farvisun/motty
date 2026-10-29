@@ -8,3 +8,8 @@ license.workspace = true
 gpui.workspace = true
 motty-term.workspace = true
 motty-theme.workspace = true
+unicode-bidi = "0.3.18"
+
+# CoreText itself, to check right-to-left shaping without a window.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_apple = { package = "gpui-pre-apple", version = "=0.3.10", features = ["font-kit", "runtime_shaders"] }

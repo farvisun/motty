@@ -3174,8 +3174,10 @@ name = "motty-render"
 version = "0.1.0"
 dependencies = [
  "gpui-pre",
+ "gpui-pre-apple",
  "motty-term",
  "motty-theme",
+ "unicode-bidi",
 ]
 
 [[package]]
