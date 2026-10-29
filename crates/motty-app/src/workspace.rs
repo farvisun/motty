@@ -22,7 +22,7 @@ use crate::actions::*;
 use crate::agents::Badge;
 use crate::editor::FileEditor;
 use crate::materials::{Backdrop, Backdrops, Region};
-use crate::panes::{Direction, Pane, PaneStyle};
+use crate::panes::{Direction, Pane, PaneItem, PaneStyle};
 use crate::recovery::{PaneState, TabState, WindowState};
 use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -115,7 +115,7 @@ const MAX_CLOSED_TABS: usize = 10;
 const DIVIDER_INSET: f32 = 8.;
 const DIVIDER_SPACE: f32 = 4.;
 
-/// A sidebar tab: terminals in splits, or a file editor.
+/// A sidebar tab: panes in splits, or search results.
 pub(crate) struct Tab {
     content: Content,
     /// A divider follows this tab in the sidebar.
@@ -141,42 +141,68 @@ pub(crate) struct Tab {
 }
 
 enum Content {
-    Terminals(Terminals),
-    Editor(Entity<FileEditor>),
+    Panes(Panes),
     /// Find in All Tabs or Search in Files results.
     Search(Entity<search_view::SearchView>),
 }
 
-struct Terminals {
+struct Panes {
     root: Pane,
     /// The pane that has (or last had) focus.
-    focused: Entity<TerminalView>,
+    focused: PaneItem,
     /// Showing only the focused pane.
     zoomed: bool,
 }
 
-impl Tab {
-    fn new(view: Entity<TerminalView>) -> Self {
+impl Panes {
+    fn new(item: PaneItem) -> Self {
         Self {
-            content: Content::Terminals(Terminals {
-                root: Pane::Leaf(view.clone()),
-                focused: view,
-                zoomed: false,
-            }),
-            divider: false,
-            divider_label: String::new(),
-            updated: std::time::SystemTime::now(),
-            created: std::time::SystemTime::now(),
-            name: None,
-            mark: None,
-            privileges: None,
-            continued: false,
-            look: Default::default(),
+            root: Pane::Leaf(item.clone()),
+            focused: item,
+            zoomed: false,
         }
     }
 
+    /// The focused pane, when it's a terminal.
+    fn terminal(&self) -> Option<&Entity<TerminalView>> {
+        self.focused.terminal()
+    }
+
+    fn terminals(&self) -> impl Iterator<Item = &Entity<TerminalView>> {
+        self.root
+            .leaves()
+            .into_iter()
+            .filter_map(PaneItem::terminal)
+    }
+
+    fn files(&self) -> impl Iterator<Item = &Entity<FileEditor>> {
+        self.root.leaves().into_iter().filter_map(PaneItem::file)
+    }
+
+    /// The focused pane's folder: a terminal's, or the open file's.
+    fn folder(&self, cx: &App) -> Option<std::path::PathBuf> {
+        match &self.focused {
+            PaneItem::Terminal(view) => view.read(cx).cwd.clone(),
+            PaneItem::File(editor) => editor.read(cx).folder(),
+        }
+    }
+
+    /// The focused pane's title.
+    fn title(&self, cx: &App) -> String {
+        match &self.focused {
+            PaneItem::Terminal(view) => view.read(cx).display_title(),
+            PaneItem::File(editor) => editor.read(cx).title(),
+        }
+    }
+}
+
+impl Tab {
+    fn new(view: Entity<TerminalView>) -> Self {
+        Self::holding(Content::Panes(Panes::new(view.into())))
+    }
+
     fn editor(editor: Entity<FileEditor>) -> Self {
-        Self::holding(Content::Editor(editor))
+        Self::holding(Content::Panes(Panes::new(editor.into())))
     }
 
     fn holding(content: Content) -> Self {
@@ -194,34 +220,37 @@ impl Tab {
         }
     }
 
-    /// The tab's terminals, unless it's an editor.
-    fn terms(&self) -> Option<&Terminals> {
+    /// The tab's panes, unless it holds search results.
+    fn panes(&self) -> Option<&Panes> {
         match &self.content {
-            Content::Terminals(t) => Some(t),
-            _ => None,
+            Content::Panes(p) => Some(p),
+            Content::Search(_) => None,
         }
     }
 
-    fn terms_mut(&mut self) -> Option<&mut Terminals> {
+    fn panes_mut(&mut self) -> Option<&mut Panes> {
         match &mut self.content {
-            Content::Terminals(t) => Some(t),
-            _ => None,
+            Content::Panes(p) => Some(p),
+            Content::Search(_) => None,
         }
     }
 
+    /// Whether any of the tab's panes is a terminal.
+    fn has_terminal(&self) -> bool {
+        self.panes().is_some_and(|p| p.terminals().next().is_some())
+    }
+
+    /// The focused pane's editor.
     fn as_editor(&self) -> Option<&Entity<FileEditor>> {
-        match &self.content {
-            Content::Editor(e) => Some(e),
-            _ => None,
-        }
+        self.panes()?.focused.file()
     }
 
-    /// An editor with unsaved changes: the tab's, or its search preview's.
+    /// An editor with unsaved changes: one of the tab's, or its search
+    /// preview's.
     fn dirty_editor(&self, cx: &App) -> Option<Entity<FileEditor>> {
         match &self.content {
-            Content::Editor(e) => Some(e.clone()).filter(|e| e.read(cx).is_dirty()),
+            Content::Panes(p) => p.files().find(|e| e.read(cx).is_dirty()).cloned(),
             Content::Search(s) => s.read(cx).dirty_preview(cx),
-            Content::Terminals(_) => None,
         }
     }
 }
@@ -379,14 +408,18 @@ fn show_memory_report(cx: &mut App) {
         let Ok(ws) = handle.read(cx) else { continue };
         let (mut panes, mut rows, mut editors) = (0, 0, 0);
         for tab in &ws.tabs {
-            match tab.terms() {
-                Some(t) => {
-                    for view in t.root.leaves() {
+            let Some(p) = tab.panes() else {
+                editors += 1;
+                continue;
+            };
+            for item in p.root.leaves() {
+                match item {
+                    PaneItem::Terminal(view) => {
                         panes += 1;
                         rows += view.read(cx).session().term.lock().grid().history_size();
                     }
+                    _ => editors += 1,
                 }
-                None => editors += 1,
             }
         }
         let plural = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
@@ -506,8 +539,8 @@ impl Workspace {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     let mut changed = false;
-                    for tab in this.tabs.iter().filter_map(Tab::terms) {
-                        for view in tab.root.leaves() {
+                    for tab in this.tabs.iter().filter_map(Tab::panes) {
+                        for view in tab.terminals() {
                             changed |= view.update(cx, |t, _| t.refresh_process());
                         }
                     }
@@ -636,10 +669,10 @@ impl Workspace {
             grouping: self.grouping.key().to_owned(),
             order: self.order.key().to_owned(),
             collapsed: self.collapsed.iter().cloned().collect(),
-            // Editor tabs aren't kept: their files are on disk.
+            // Search results aren't kept.
             active: self.tabs[..self.active.min(self.tabs.len())]
                 .iter()
-                .filter(|t| t.terms().is_some())
+                .filter(|t| t.panes().is_some())
                 .count(),
             tabs: self
                 .tabs
@@ -689,7 +722,7 @@ impl Workspace {
             .cloned()
             .expect("a pane tree has a leaf");
         Ok(Tab {
-            content: Content::Terminals(Terminals {
+            content: Content::Panes(Panes {
                 root,
                 focused,
                 zoomed: state.zoomed,
@@ -748,8 +781,9 @@ impl Workspace {
                     let queue = queue.clone();
                     view.update(cx, |v, cx| v.enqueue(queue, window, cx));
                 }
-                Pane::Leaf(view)
+                Pane::Leaf(view.into())
             }
+            PaneState::File { path } => Pane::Leaf(self.make_editor(Some(path.clone()), cx).into()),
             PaneState::Split {
                 vertical,
                 ratio,
@@ -857,7 +891,7 @@ impl Workspace {
                     cx.notify();
                     cx.defer(refresh_dock);
                 }
-                TerminalEvent::Exited => this.close_pane(terminal, window, cx),
+                TerminalEvent::Exited => this.close_pane(&terminal.clone().into(), window, cx),
                 TerminalEvent::CommandFinished { exit, duration } => {
                     tracing::debug!(?exit, ?duration, "command finished");
                     crate::ipc::command_finished(terminal, *exit, *duration, cx);
@@ -956,20 +990,33 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Entity<TerminalView>> {
         let cwd = cwd.or_else(|| self.start_dir(motty_theme::NewTerminal::Split, cx));
-        let tab = self.active_terms().context("no terminal tab")?;
+        let tab = self.active_panes().context("no pane to split")?;
         let rect = direction.half(tab.root.rect_of(&tab.focused).unwrap_or([0., 0., 1., 1.]));
         let terminal = self.new_terminal(command, cwd, rect, window, cx)?;
+        self.split_with(terminal.clone().into(), direction, focus, window, cx)?;
+        Ok(terminal)
+    }
+
+    /// Puts `item` beside the active tab's focused pane.
+    pub(crate) fn split_with(
+        &mut self,
+        item: PaneItem,
+        direction: Direction,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
         let id = self.next_split;
         self.next_split += 1;
-        let tab = self.active_terms_mut().context("no terminal tab")?;
+        let tab = self.active_panes_mut().context("no pane to split")?;
         tab.zoomed = false;
         tab.root
-            .split(&tab.focused.clone(), terminal.clone(), direction, id);
+            .split(&tab.focused.clone(), item.clone(), direction, id);
         if focus {
-            self.focus_pane(terminal.clone(), window, cx);
+            self.focus_pane(item, window, cx);
         }
         cx.notify();
-        Ok(terminal)
+        Ok(())
     }
 
     /// Opens a tab running `command` (else a shell) in `cwd` (else where the
@@ -983,21 +1030,16 @@ impl Workspace {
     ) -> anyhow::Result<Entity<TerminalView>> {
         let cwd = cwd.or_else(|| self.active_folder(cx));
         self.add_tab(command, cwd, window, cx)?;
-        let tab = self
-            .tabs
-            .get(self.active)
-            .and_then(Tab::terms)
-            .context("no tab")?;
-        Ok(tab.focused.clone())
+        self.focused_pane().context("no tab")
     }
 
-    /// Every pane, by tab.
+    /// Every terminal pane, by tab.
     pub fn panes(&self) -> impl Iterator<Item = (usize, &Entity<TerminalView>)> {
         self.tabs
             .iter()
             .enumerate()
-            .filter_map(|(ix, tab)| Some((ix, tab.terms()?)))
-            .flat_map(|(ix, tab)| tab.root.leaves().into_iter().map(move |v| (ix, v)))
+            .filter_map(|(ix, tab)| Some((ix, tab.panes()?)))
+            .flat_map(|(ix, tab)| tab.terminals().map(move |v| (ix, v)))
     }
 
     pub fn find_pane(&self, id: u64, cx: &App) -> Option<Entity<TerminalView>> {
@@ -1007,72 +1049,66 @@ impl Workspace {
             .cloned()
     }
 
-    /// The pane that has focus in the active tab.
     /// Whether `view` is in the active tab (so it's drawn).
     pub fn is_pane_shown(&self, view: &Entity<TerminalView>) -> bool {
-        self.active_terms()
-            .is_some_and(|tab| tab.root.contains(view))
+        self.active_panes()
+            .is_some_and(|tab| tab.terminals().any(|v| v == view))
     }
 
+    /// The pane that has focus in the active tab, when it's a terminal.
     pub fn focused_pane(&self) -> Option<Entity<TerminalView>> {
-        self.active_terms().map(|tab| tab.focused.clone())
+        self.active_panes()?.terminal().cloned()
     }
 
     pub fn is_focused_pane(&self, view: &Entity<TerminalView>) -> bool {
-        self.active_terms().is_some_and(|tab| tab.focused == *view)
+        self.active_panes().is_some_and(|tab| tab.focused == *view)
     }
 
-    /// The active tab's terminals, unless it's an editor.
-    fn active_terms(&self) -> Option<&Terminals> {
-        self.tabs.get(self.active).and_then(Tab::terms)
+    /// The active tab's panes, unless it holds search results.
+    fn active_panes(&self) -> Option<&Panes> {
+        self.tabs.get(self.active).and_then(Tab::panes)
     }
 
-    fn active_terms_mut(&mut self) -> Option<&mut Terminals> {
-        self.tabs.get_mut(self.active).and_then(Tab::terms_mut)
+    fn active_panes_mut(&mut self) -> Option<&mut Panes> {
+        self.tabs.get_mut(self.active).and_then(Tab::panes_mut)
     }
 
-    /// Where new tabs start: the active terminal's folder, or the edited
+    /// Where new tabs start: the focused terminal's folder, or the open
     /// file's.
     fn active_folder(&self, cx: &App) -> Option<std::path::PathBuf> {
         match &self.tabs.get(self.active)?.content {
-            Content::Terminals(t) => t.focused.read(cx).cwd.clone(),
-            Content::Editor(e) => e.read(cx).folder(),
+            Content::Panes(p) => p.folder(cx),
             Content::Search(s) => s.read(cx).folder(),
         }
     }
 
-    /// What has focus in the active tab: its focused pane or its editor.
+    /// What has focus in the active tab: its focused pane or its results.
     fn active_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
         Some(match &self.tabs.get(self.active)?.content {
-            Content::Terminals(t) => t.focused.focus_handle(cx),
-            Content::Editor(e) => e.focus_handle(cx),
+            Content::Panes(p) => p.focused.focus_handle(cx),
             Content::Search(s) => s.focus_handle(cx),
         })
     }
 
-    /// The tab holding `view`.
-    fn tab_of(&self, view: &Entity<TerminalView>) -> Option<usize> {
+    /// The tab holding `item` (a pane, or a terminal view).
+    fn tab_of(&self, item: &(impl Clone + Into<PaneItem>)) -> Option<usize> {
+        let item: PaneItem = item.clone().into();
         self.tabs
             .iter()
-            .position(|t| t.terms().is_some_and(|t| t.root.contains(view)))
+            .position(|t| t.panes().is_some_and(|p| p.root.contains(&item)))
     }
 
     /// `focus-follows-mouse`: the pane under the pointer takes focus from
     /// the focused one (not from the palette, a rename or the find bar).
-    fn follow_mouse(
-        &mut self,
-        view: &Entity<TerminalView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(focused) = self.focused_pane() else {
+    fn follow_mouse(&mut self, item: &PaneItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(focused) = self.active_panes().map(|p| p.focused.clone()) else {
             return;
         };
-        if focused != *view
+        if focused != *item
             && window.is_window_active()
             && focused.focus_handle(cx).is_focused(window)
         {
-            self.focus_pane(view.clone(), window, cx);
+            self.focus_pane(item.clone(), window, cx);
         }
     }
 
@@ -1104,9 +1140,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(ix) = self.tab_of(view) {
+        self.reveal_item(&view.clone().into(), window, cx);
+    }
+
+    pub(crate) fn reveal_item(
+        &mut self,
+        item: &PaneItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ix) = self.tab_of(item) {
             self.activate(ix, window, cx);
-            self.focus_pane(view.clone(), window, cx);
+            self.focus_pane(item.clone(), window, cx);
         }
     }
 
@@ -1116,26 +1161,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_pane(view, window, cx);
+        self.close_pane(&view.clone().into(), window, cx);
     }
 
     fn focus_pane(
         &mut self,
-        view: Entity<TerminalView>,
+        item: impl Into<PaneItem>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.active_terms_mut() else {
+        let item = item.into();
+        let Some(tab) = self.active_panes_mut() else {
             return;
         };
-        if !tab.root.contains(&view) {
+        if !tab.root.contains(&item) {
             return;
         }
-        if tab.focused != view {
+        if tab.focused != item {
             tab.zoomed = false;
         }
-        window.focus(&view.focus_handle(cx), cx);
-        tab.focused = view;
+        window.focus(&item.focus_handle(cx), cx);
+        tab.focused = item;
+        cx.defer(crate::menus::refresh);
         cx.notify();
     }
 
@@ -1145,17 +1192,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.active_terms() else {
+        let Some(tab) = self.active_panes() else {
             return;
         };
-        if let Some(view) = tab.root.neighbor(&tab.focused, direction) {
-            self.focus_pane(view, window, cx);
+        if let Some(item) = tab.root.neighbor(&tab.focused, direction) {
+            self.focus_pane(item, window, cx);
         }
     }
 
     /// Focuses the next (or previous) pane in reading order, wrapping around.
     fn cycle_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_terms() else {
+        let Some(tab) = self.active_panes() else {
             return;
         };
         let leaves = tab.root.leaves();
@@ -1168,23 +1215,21 @@ impl Workspace {
 
     /// Removes a pane (its shell exited or it was closed); the last pane
     /// takes its tab with it.
-    fn close_pane(
-        &mut self,
-        view: &Entity<TerminalView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(ix) = self.tab_of(view) else {
+    fn close_pane(&mut self, item: &PaneItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.tab_of(item) else {
             return;
         };
-        self.pane_subscriptions.remove(&view.entity_id());
-        let Some(tab) = self.tabs[ix].terms_mut() else {
+        let Some(tab) = self.tabs[ix].panes_mut() else {
             return;
         };
         if tab.root.leaves().len() == 1 {
             return self.close_tab_at(ix, window, cx);
         }
-        if tab.focused == *view {
+        self.pane_subscriptions.remove(&item.entity_id());
+        let Some(tab) = self.tabs[ix].panes_mut() else {
+            return;
+        };
+        if tab.focused == *item {
             let near = [
                 Direction::Left,
                 Direction::Up,
@@ -1192,12 +1237,12 @@ impl Workspace {
                 Direction::Down,
             ]
             .into_iter()
-            .find_map(|d| tab.root.neighbor(view, d));
+            .find_map(|d| tab.root.neighbor(item, d));
             tab.focused = near.unwrap_or_else(|| tab.root.leaves()[0].clone());
             tab.zoomed = false;
         }
         let root = std::mem::replace(&mut tab.root, Pane::Leaf(tab.focused.clone()));
-        tab.root = root.without(view).expect("another pane remains");
+        tab.root = root.without(item).expect("another pane remains");
         if ix == self.active {
             let focused = tab.focused.clone();
             self.focus_pane(focused, window, cx);
@@ -1228,10 +1273,10 @@ impl Workspace {
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
-        if tab.terms().is_none() {
-            if tab.dirty_editor(cx).is_some() {
-                return self.confirm_close_editor(ix, window, cx);
-            }
+        if tab.dirty_editor(cx).is_some() {
+            return self.confirm_close_editor(ix, window, cx);
+        }
+        if tab.panes().is_none() {
             self.remove_tab(ix, window, cx);
             return;
         }
@@ -1246,11 +1291,11 @@ impl Workspace {
         ) else {
             return;
         };
-        let Some(terms) = self.tabs[ix].terms() else {
+        let Some(panes) = self.tabs[ix].panes() else {
             return;
         };
         let title = tab_title(&self.tabs[ix], cx);
-        let cwd = terms.focused.read(cx).cwd.clone();
+        let cwd = panes.folder(cx);
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let closed = &mut cx.default_global::<ClosedTabs>().0;
         if closed.len() == MAX_CLOSED_TABS {
@@ -1272,13 +1317,10 @@ impl Workspace {
     fn remove_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.tabs.remove(ix);
         match &tab.content {
-            Content::Terminals(t) => {
-                for view in t.root.leaves() {
-                    self.pane_subscriptions.remove(&view.entity_id());
+            Content::Panes(t) => {
+                for item in t.root.leaves() {
+                    self.pane_subscriptions.remove(&item.entity_id());
                 }
-            }
-            Content::Editor(e) => {
-                self.pane_subscriptions.remove(&e.entity_id());
             }
             Content::Search(s) => {
                 self.pane_subscriptions.remove(&s.entity_id());
@@ -1342,11 +1384,10 @@ impl Workspace {
         let tab = self
             .restore_tab(&closed.state, &scrollback, window, cx)
             .context("couldn't reopen the tab")?;
-        let focused = tab.terms().context("not a terminal tab")?.focused.clone();
         let ix = closed.index.min(self.tabs.len());
         self.tabs.insert(ix, tab);
         self.activate(ix, window, cx);
-        Ok(focused)
+        self.focused_pane().context("not a terminal tab")
     }
 
     /// Opens the config file in the default text editor, first creating
@@ -1463,15 +1504,19 @@ impl Workspace {
         let style = terminal_style(&self.config, &self.theme, cx);
         for tab in &self.tabs {
             match &tab.content {
-                Content::Terminals(t) => {
-                    for view in t.root.leaves() {
-                        view.update(cx, |t, cx| t.set_style(style.clone(), cx));
+                Content::Panes(t) => {
+                    for item in t.root.leaves() {
+                        match item {
+                            PaneItem::Terminal(view) => {
+                                view.update(cx, |t, cx| t.set_style(style.clone(), cx))
+                            }
+                            PaneItem::File(e) => e.update(cx, |e, cx| {
+                                e.set_style(style.clone(), cx);
+                                e.set_line_numbers(self.config.editor_line_numbers, cx);
+                            }),
+                        }
                     }
                 }
-                Content::Editor(e) => e.update(cx, |e, cx| {
-                    e.set_style(style.clone(), cx);
-                    e.set_line_numbers(self.config.editor_line_numbers, cx);
-                }),
                 Content::Search(s) => s.update(cx, |s, cx| {
                     s.set_style(style.clone(), self.config.editor_line_numbers, cx)
                 }),
@@ -1484,12 +1529,11 @@ impl Workspace {
     /// `unfocused-split-opacity`.
     fn render_panes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let tab = match &self.tabs.get(self.active)?.content {
-            Content::Terminals(t) => t,
-            Content::Editor(e) => return Some(e.clone().into_any_element()),
+            Content::Panes(t) => t,
             Content::Search(s) => return Some(s.clone().into_any_element()),
         };
         if tab.zoomed {
-            return Some(tab.focused.clone().into_any_element());
+            return Some(tab.focused.element());
         }
         let focused = tab.focused.clone();
         let split = matches!(tab.root, Pane::Split(_));
@@ -1507,7 +1551,7 @@ impl Workspace {
             on_hover: (split && self.config.behavior.focus_follows_mouse).then(|| {
                 let weak = cx.entity().downgrade();
                 Rc::new(
-                    move |view: &Entity<TerminalView>,
+                    move |item: &PaneItem,
                           event: &gpui::MouseMoveEvent,
                           window: &mut Window,
                           cx: &mut App| {
@@ -1515,7 +1559,7 @@ impl Workspace {
                             return;
                         }
                         let Some(this) = weak.upgrade() else { return };
-                        this.update(cx, |this, cx| this.follow_mouse(view, window, cx));
+                        this.update(cx, |this, cx| this.follow_mouse(item, window, cx));
                     },
                 ) as Rc<crate::panes::PaneHover>
             }),
@@ -1534,14 +1578,14 @@ impl Workspace {
             self.dragging = None;
             return;
         }
-        if let Some(split) = self.active_terms_mut().and_then(|t| t.root.split_mut(id)) {
+        if let Some(split) = self.active_panes_mut().and_then(|t| t.root.split_mut(id)) {
             split.drag_to(event.position);
             cx.notify();
         }
     }
 
     fn equalize_splits(&mut self, cx: &mut Context<Self>) {
-        if let Some(tab) = self.active_terms_mut() {
+        if let Some(tab) = self.active_panes_mut() {
             tab.root.equalize();
             cx.notify();
         }
@@ -1550,7 +1594,7 @@ impl Workspace {
     /// Otty's ⌃⇧⌘ arrows: move the divider beside the focused pane.
     fn move_divider(&mut self, direction: Direction, cx: &mut Context<Self>) {
         const STEP: f32 = 10.;
-        let Some(tab) = self.active_terms_mut() else {
+        let Some(tab) = self.active_panes_mut() else {
             return;
         };
         let (axis, delta) = match direction {
@@ -1567,7 +1611,7 @@ impl Workspace {
     }
 
     fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
-        if let Some(tab) = self.active_terms_mut()
+        if let Some(tab) = self.active_panes_mut()
             && matches!(tab.root, Pane::Split(_))
         {
             tab.zoomed = !tab.zoomed;
@@ -1813,33 +1857,40 @@ impl Workspace {
     /// the most pressing badge of its panes and that pane's status line.
     fn tab_summary(&self, tab: &Tab, cx: &App) -> TabSummary {
         match &tab.content {
-            Content::Terminals(terms) => {
-                let view = terms.focused.read(cx);
+            Content::Panes(p) => {
                 // With splits, Otty counts the panes instead.
-                let panes = terms.root.leaves();
-                let process = if panes.len() > 1 {
-                    panes.len().to_string()
+                let count = p.root.leaves().len();
+                let process = if count > 1 {
+                    count.to_string()
                 } else {
-                    view.process.clone().unwrap_or_default()
+                    p.terminal()
+                        .and_then(|v| v.read(cx).process.clone())
+                        .unwrap_or_default()
                 };
+                // Otty marks unsaved changes with a star.
+                let dirty = p.focused.file().is_some_and(|e| e.read(cx).is_dirty());
                 let mut summary = TabSummary {
                     title: tabs::named(
                         tab.name.as_ref(),
-                        tab.look
-                            .title
-                            .clone()
-                            .unwrap_or_else(|| view.display_title()),
+                        format!(
+                            "{}{}",
+                            tab.look.title.clone().unwrap_or_else(|| p.title(cx)),
+                            if dirty { "*" } else { "" }
+                        ),
                     ),
                     process,
                     badge: None,
-                    line: None,
+                    line: p
+                        .files()
+                        .any(|e| e.read(cx).is_dirty())
+                        .then(|| "Unsaved changes".to_owned()),
                     running: false,
                     progress: None,
                     system: Default::default(),
                 };
                 let caffeinate = tab.privileges.unwrap_or(self.config.badges).caffeinate;
                 let mut best = usize::MAX;
-                for pane in panes {
+                for pane in p.terminals() {
                     let pane = pane.read(cx);
                     summary.running |= pane.busy;
                     let s = &mut summary.system;
@@ -1871,27 +1922,6 @@ impl Workspace {
                     summary.badge = Some(mark);
                 }
                 summary
-            }
-            // Otty marks unsaved changes with a star.
-            Content::Editor(editor) => {
-                let editor = editor.read(cx);
-                let dirty = editor.is_dirty();
-                TabSummary {
-                    title: tabs::named(
-                        tab.name.as_ref(),
-                        format!(
-                            "{}{}",
-                            tab.look.title.clone().unwrap_or_else(|| editor.title()),
-                            if dirty { "*" } else { "" }
-                        ),
-                    ),
-                    process: String::new(),
-                    badge: None,
-                    line: dirty.then(|| "Unsaved changes".to_owned()),
-                    running: false,
-                    progress: None,
-                    system: Default::default(),
-                }
             }
             Content::Search(search) => {
                 let search = search.read(cx);
@@ -2308,11 +2338,9 @@ impl Workspace {
             .tabs
             .iter()
             .filter_map(|tab| {
-                let terms = tab.terms()?;
-                let procs = terms
-                    .root
-                    .leaves()
-                    .iter()
+                let procs = tab
+                    .panes()?
+                    .terminals()
                     .flat_map(|v| v.read(cx).session().processes())
                     .map(|p| (p.pid, p.name))
                     .collect();
@@ -3133,7 +3161,7 @@ impl Render for Workspace {
         let t = &self.theme;
         let c = &t.container;
         // A click into another pane moves focus without telling us.
-        if let Some(tab) = self.tabs.get_mut(self.active).and_then(Tab::terms_mut)
+        if let Some(tab) = self.tabs.get_mut(self.active).and_then(Tab::panes_mut)
             && let Some(view) = tab
                 .root
                 .leaves()
@@ -3600,8 +3628,7 @@ fn tab_title(tab: &Tab, cx: &App) -> String {
         return tabs::named(tab.name.as_ref(), title.clone());
     }
     let title = match &tab.content {
-        Content::Terminals(t) => t.focused.read(cx).display_title(),
-        Content::Editor(e) => e.read(cx).title(),
+        Content::Panes(p) => p.title(cx),
         Content::Search(s) => s.read(cx).title(),
     };
     tabs::named(tab.name.as_ref(), title)
@@ -3613,14 +3640,25 @@ fn tab_state(
     mut scrollback: Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
     cx: &App,
 ) -> Option<TabState> {
-    let tab = whole.terms()?;
+    let tab = whole.panes()?;
     fn save(
         pane: &Pane,
         scrollback: &mut Option<&mut dyn FnMut(Vec<u8>) -> Option<String>>,
         cx: &App,
     ) -> PaneState {
         match pane {
-            Pane::Leaf(view) => {
+            Pane::Leaf(PaneItem::File(editor)) => match editor.read(cx).path() {
+                Some(path) => PaneState::File {
+                    path: path.to_owned(),
+                },
+                None => PaneState::Leaf {
+                    cwd: editor.read(cx).folder(),
+                    scrollback: None,
+                    agent: None,
+                    queue: Vec::new(),
+                },
+            },
+            Pane::Leaf(PaneItem::Terminal(view)) => {
                 let view = view.read(cx);
                 let scrollback = scrollback.as_mut().and_then(|keep| {
                     let term = view.session().term.lock();

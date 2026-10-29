@@ -28,18 +28,20 @@ impl Workspace {
         let tab = self.tabs.get(ix)?;
         let summary = self.tab_summary(tab, cx);
         let (lines, folder) = match &tab.content {
-            Content::Terminals(t) => {
-                let view = t.focused.read(cx);
-                let lines = match summary.line {
-                    Some(line) => vec![line],
-                    None => output_tail(view.session(), view.busy, 2),
-                };
-                (lines, view.cwd.clone())
-            }
-            Content::Editor(e) => {
-                let e = e.read(cx);
-                (e.opening_lines(4), e.folder())
-            }
+            Content::Panes(t) => match &t.focused {
+                crate::panes::PaneItem::Terminal(view) => {
+                    let view = view.read(cx);
+                    let lines = match summary.line {
+                        Some(line) => vec![line],
+                        None => output_tail(view.session(), view.busy, 2),
+                    };
+                    (lines, view.cwd.clone())
+                }
+                crate::panes::PaneItem::File(e) => {
+                    let e = e.read(cx);
+                    (e.opening_lines(4), e.folder())
+                }
+            },
             Content::Search(s) => {
                 let s = s.read(cx);
                 (summary.line.into_iter().collect(), s.folder())

@@ -113,7 +113,7 @@ impl Workspace {
     /// and whether they differ from Settings.
     pub(crate) fn privileges_for_menus(&self) -> Option<(Vec<(&'static str, bool)>, bool)> {
         let tab = self.tabs.get(self.active)?;
-        tab.terms()?;
+        tab.has_terminal().then_some(())?;
         let current = tab.privileges.unwrap_or(self.config.badges);
         let list = Privilege::ALL
             .into_iter()

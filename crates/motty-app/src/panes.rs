@@ -1,4 +1,5 @@
-//! A tab's split panes: a binary tree of terminals, laid out by ratios.
+//! A tab's split panes: a binary tree of views (terminals, files, folders,
+//! web pages), laid out by ratios.
 //!
 //! Like Otty, panes split their space exactly in half (each keeps the full
 //! container padding), and the divider is a hairline drawn over the seam.
@@ -7,10 +8,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Axis, Bounds, Entity, Hsla, MouseButton, MouseMoveEvent, Pixels, Window,
-    canvas, div, prelude::*, px, relative,
+    AnyElement, App, Axis, Bounds, Entity, EntityId, FocusHandle, Focusable, Hsla, MouseButton,
+    MouseMoveEvent, Pixels, Window, canvas, div, prelude::*, px, relative,
 };
 
+use crate::editor::FileEditor;
 use crate::terminal_view::TerminalView;
 
 /// Panes never shrink below this along the split axis while dragging.
@@ -50,13 +52,75 @@ impl Direction {
     }
 }
 
-/// Leaves are terminal views; tests use plain values.
-pub enum Pane<T = Entity<TerminalView>> {
+/// What a pane shows.
+#[derive(Clone, PartialEq)]
+pub enum PaneItem {
+    Terminal(Entity<TerminalView>),
+    File(Entity<FileEditor>),
+}
+
+impl PaneItem {
+    pub fn terminal(&self) -> Option<&Entity<TerminalView>> {
+        match self {
+            PaneItem::Terminal(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    pub fn file(&self) -> Option<&Entity<FileEditor>> {
+        match self {
+            PaneItem::File(editor) => Some(editor),
+            _ => None,
+        }
+    }
+
+    pub fn entity_id(&self) -> EntityId {
+        match self {
+            PaneItem::Terminal(view) => view.entity_id(),
+            PaneItem::File(editor) => editor.entity_id(),
+        }
+    }
+
+    pub fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            PaneItem::Terminal(view) => view.focus_handle(cx),
+            PaneItem::File(editor) => editor.focus_handle(cx),
+        }
+    }
+
+    pub fn element(&self) -> AnyElement {
+        match self {
+            PaneItem::Terminal(view) => view.clone().into_any_element(),
+            PaneItem::File(editor) => editor.clone().into_any_element(),
+        }
+    }
+}
+
+impl From<Entity<TerminalView>> for PaneItem {
+    fn from(view: Entity<TerminalView>) -> Self {
+        PaneItem::Terminal(view)
+    }
+}
+
+impl From<Entity<FileEditor>> for PaneItem {
+    fn from(editor: Entity<FileEditor>) -> Self {
+        PaneItem::File(editor)
+    }
+}
+
+impl PartialEq<Entity<TerminalView>> for PaneItem {
+    fn eq(&self, view: &Entity<TerminalView>) -> bool {
+        self.terminal() == Some(view)
+    }
+}
+
+/// Leaves are pane items; tests use plain values.
+pub enum Pane<T = PaneItem> {
     Leaf(T),
     Split(Split<T>),
 }
 
-pub struct Split<T = Entity<TerminalView>> {
+pub struct Split<T = PaneItem> {
     pub id: usize,
     pub axis: Axis,
     /// The first child's share of the space.
@@ -73,7 +137,7 @@ type DragStart = dyn Fn(usize, &mut gpui::Window, &mut gpui::App);
 pub struct PaneStyle<'a> {
     pub divider: Hsla,
     pub divider_width: f32,
-    pub dimmed: &'a dyn Fn(&Entity<TerminalView>) -> bool,
+    pub dimmed: &'a dyn Fn(&PaneItem) -> bool,
     pub dim_opacity: f32,
     /// Called with a split's id when its divider is pressed.
     pub on_drag_start: Rc<DragStart>,
@@ -81,7 +145,7 @@ pub struct PaneStyle<'a> {
     pub on_hover: Option<Rc<PaneHover>>,
 }
 
-pub type PaneHover = dyn Fn(&Entity<TerminalView>, &MouseMoveEvent, &mut Window, &mut App);
+pub type PaneHover = dyn Fn(&PaneItem, &MouseMoveEvent, &mut Window, &mut App);
 
 impl<T: Clone + PartialEq> Pane<T> {
     pub fn leaves(&self) -> Vec<&T> {
@@ -282,7 +346,7 @@ impl Pane {
                     let view = view.clone();
                     d.on_mouse_move(move |event, window, cx| hover(&view, event, window, cx))
                 })
-                .child(view.clone())
+                .child(view.element())
                 .into_any_element(),
             Pane::Split(s) => {
                 let horizontal = s.axis == Axis::Horizontal;

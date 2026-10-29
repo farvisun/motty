@@ -602,14 +602,16 @@ impl Workspace {
                         });
                         continue;
                     }
-                    let Some(tab) = tab.terms() else { continue };
-                    let view = tab.focused.read(cx);
+                    let Some(view) = tab.panes().and_then(|p| p.terminal()) else {
+                        continue;
+                    };
+                    let detail = view.read(cx).cwd.as_deref().map(tilde).unwrap_or_default();
                     tabs.push(Item {
                         group: "Tabs",
                         kind: Kind::Tab,
-                        title: view.display_title(),
-                        detail: view.cwd.as_deref().map(tilde).unwrap_or_default(),
-                        target: Target::Tab(handle, tab.focused.clone()),
+                        title: view.read(cx).display_title(),
+                        detail,
+                        target: Target::Tab(handle, view.clone()),
                     });
                 }
             }
@@ -1653,9 +1655,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(ix) = self.tabs.iter().position(|t| t.as_editor() == Some(editor)) {
-            self.activate(ix, window, cx);
-        }
+        self.reveal_item(&editor.clone().into(), window, cx);
     }
 }
 

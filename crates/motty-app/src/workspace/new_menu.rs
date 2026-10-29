@@ -237,10 +237,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         self.add_tab(None, dirs::home_dir(), window, cx)?;
-        if let Some(tab) = self.tabs.get(self.active).and_then(|t| t.terms()) {
+        if let Some(view) = self.focused_pane() {
             let line = format!("ssh {}\r", shell_quote(host));
-            tab.focused
-                .update(cx, |view, cx| view.write_input(&line, cx));
+            view.update(cx, |view, cx| view.write_input(&line, cx));
         }
         Ok(())
     }

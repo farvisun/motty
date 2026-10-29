@@ -155,8 +155,8 @@ impl Workspace {
         for tab in &self.tabs {
             let b = tab.privileges.unwrap_or(defaults);
             let title = b.title_shell && programs;
-            let Some(terms) = tab.terms() else { continue };
-            for view in terms.root.leaves() {
+            let Some(panes) = tab.panes() else { continue };
+            for view in panes.terminals() {
                 let v = view.read(cx);
                 if (v.allow_title, v.allow_mouse) != (title, b.mouse_shell) {
                     view.update(cx, |v, cx| {
@@ -313,10 +313,10 @@ impl Workspace {
     /// Looking at a tab clears the marks of what happened while away; a
     /// spinner or a hand stays while it's true.
     pub(super) fn clear_seen(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(terms) = self.tabs.get(ix).and_then(|t| t.terms()) else {
+        let Some(panes) = self.tabs.get(ix).and_then(|t| t.panes()) else {
             return;
         };
-        for view in terms.root.leaves() {
+        for view in panes.terminals() {
             let stale = view
                 .read(cx)
                 .status

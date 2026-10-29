@@ -83,6 +83,8 @@ pub enum PaneState {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         queue: Vec<String>,
     },
+    /// A file pane (its unsaved edits are kept apart, see `editor`).
+    File { path: PathBuf },
     Split {
         /// Children stacked top and bottom (else side by side).
         vertical: bool,

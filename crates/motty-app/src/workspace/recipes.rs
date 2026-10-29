@@ -176,16 +176,13 @@ impl Workspace {
                     .filter_map(|tab| {
                         let state: TabState = tab_state(tab, None, cx)?;
                         let commands: Vec<Vec<String>> = tab
-                            .terms()?
+                            .panes()?
                             .root
                             .leaves()
                             .iter()
-                            .map(|v| {
-                                if d.include_commands {
-                                    v.read(cx).recent_commands()
-                                } else {
-                                    Vec::new()
-                                }
+                            .map(|item| match item.terminal() {
+                                Some(v) if d.include_commands => v.read(cx).recent_commands(),
+                                _ => Vec::new(),
                             })
                             .collect();
                         let title = tab.name.as_ref().map(|n| n.text.clone());
@@ -453,14 +450,22 @@ impl Workspace {
                     continue;
                 }
             };
-            let leaves: Vec<Entity<TerminalView>> = tab
-                .terms()
-                .map(|t| t.root.leaves().into_iter().cloned().collect())
+            let leaves: Vec<Option<Entity<TerminalView>>> = tab
+                .panes()
+                .map(|t| {
+                    t.root
+                        .leaves()
+                        .into_iter()
+                        .map(|i| i.terminal().cloned())
+                        .collect()
+                })
                 .unwrap_or_default();
             self.tabs.insert(ix, tab);
             ix += 1;
             for (view, commands) in leaves.iter().zip(commands) {
-                view.update(cx, |v, cx| v.replay(commands, replay, window, cx));
+                if let Some(view) = view {
+                    view.update(cx, |v, cx| v.replay(commands, replay, window, cx));
+                }
             }
         }
         if ix == first {

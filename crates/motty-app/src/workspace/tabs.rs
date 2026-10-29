@@ -151,7 +151,7 @@ enum Pick {
     OpenIn(String, PathBuf),
     Privilege(Privilege),
     DefaultPrivileges,
-    FocusPane(gpui::Entity<crate::terminal_view::TerminalView>),
+    FocusPane(crate::panes::PaneItem),
     RenameDivider,
     /// A row that only shows something.
     Nothing,
@@ -532,7 +532,7 @@ impl Workspace {
             ],
         );
         m.item(Item::new("Clear Badge").enabled(badge), Pick::ClearBadge);
-        if tab.terms().is_some() {
+        if tab.has_terminal() {
             self.privileges_menu(tab, &mut m);
         }
         m.separator();
@@ -586,8 +586,8 @@ impl Workspace {
                 Pick::Action(action),
             )
         };
-        let view = tab.terms().map(|t| t.focused.clone());
-        let cwd = view.as_ref().and_then(|v| v.read(cx).cwd.clone());
+        let view = tab.panes().and_then(|p| p.terminal().cloned());
+        let cwd = tab.panes().and_then(|p| p.folder(cx));
 
         let mut m = Menu::new();
         m.entries.push(Entry::Name(NameField {
@@ -644,7 +644,7 @@ impl Workspace {
             }
             m.separator();
         }
-        if tab.terms().is_some() {
+        if tab.has_terminal() {
             self.privileges_menu(tab, &mut m);
             m.separator();
             if self.focused_session(cx).is_some() {
@@ -656,7 +656,7 @@ impl Workspace {
                 m.separator();
             }
             // A split tab lists its panes, the focused one checked.
-            if let Some(terms) = tab.terms()
+            if let Some(terms) = tab.panes()
                 && terms.root.leaves().len() > 1
             {
                 let panes = terms
@@ -664,9 +664,14 @@ impl Workspace {
                     .leaves()
                     .into_iter()
                     .map(|pane| {
-                        let v = pane.read(cx);
-                        let program = v.process.clone().unwrap_or_else(|| "shell".into());
-                        let label = format!("{program} — {}", v.display_title());
+                        let label = match pane {
+                            crate::panes::PaneItem::Terminal(v) => {
+                                let v = v.read(cx);
+                                let program = v.process.clone().unwrap_or_else(|| "shell".into());
+                                format!("{program} — {}", v.display_title())
+                            }
+                            crate::panes::PaneItem::File(e) => e.read(cx).title(),
+                        };
                         (
                             Item::new(label).checked(*pane == terms.focused),
                             Pick::FocusPane(pane.clone()),
@@ -1032,8 +1037,8 @@ impl Workspace {
             return;
         };
         tab.mark = None;
-        if let Some(terms) = tab.terms() {
-            for view in terms.root.leaves() {
+        if let Some(panes) = tab.panes() {
+            for view in panes.terminals() {
                 view.update(cx, |v, _| {
                     if let Some(s) = &mut v.status {
                         s.badge = None;
@@ -1064,29 +1069,31 @@ impl Workspace {
         let tab = &self.tabs[ix];
         let title = tab_title(tab, cx);
         let detail = match &tab.content {
-            Content::Terminals(terms) => terms
+            Content::Panes(terms) => terms
                 .root
                 .leaves()
                 .iter()
-                .map(|v| {
-                    let v = v.read(cx);
-                    format!(
-                        "Pane {} · {} · {}",
-                        v.id,
-                        v.process.as_deref().unwrap_or("shell"),
-                        v.cwd
-                            .as_deref()
-                            .map(|c| c.display().to_string())
-                            .unwrap_or_default()
-                    )
+                .map(|item| match item {
+                    crate::panes::PaneItem::Terminal(v) => {
+                        let v = v.read(cx);
+                        format!(
+                            "Pane {} · {} · {}",
+                            v.id,
+                            v.process.as_deref().unwrap_or("shell"),
+                            v.cwd
+                                .as_deref()
+                                .map(|c| c.display().to_string())
+                                .unwrap_or_default()
+                        )
+                    }
+                    crate::panes::PaneItem::File(e) => e
+                        .read(cx)
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "Untitled".into()),
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            Content::Editor(e) => e
-                .read(cx)
-                .path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "Untitled".into()),
             Content::Search(s) => s
                 .read(cx)
                 .folder()
@@ -1094,14 +1101,12 @@ impl Workspace {
                 .unwrap_or_default(),
         };
         let ids = match &tab.content {
-            Content::Terminals(terms) => terms
-                .root
-                .leaves()
-                .iter()
+            Content::Panes(terms) => terms
+                .terminals()
                 .map(|v| v.read(cx).id.to_string())
                 .collect::<Vec<_>>()
                 .join(" "),
-            Content::Editor(_) | Content::Search(_) => String::new(),
+            Content::Search(_) => String::new(),
         };
         let answer = window.prompt(
             gpui::PromptLevel::Info,
@@ -1148,13 +1153,10 @@ impl Workspace {
     /// picks them up.
     fn unwatch(&mut self, tab: &Tab) {
         match &tab.content {
-            Content::Terminals(t) => {
-                for view in t.root.leaves() {
-                    self.pane_subscriptions.remove(&view.entity_id());
+            Content::Panes(t) => {
+                for item in t.root.leaves() {
+                    self.pane_subscriptions.remove(&item.entity_id());
                 }
-            }
-            Content::Editor(e) => {
-                self.pane_subscriptions.remove(&e.entity_id());
             }
             Content::Search(s) => {
                 self.pane_subscriptions.remove(&s.entity_id());
@@ -1198,13 +1200,17 @@ impl Workspace {
     pub(crate) fn adopt(&mut self, moved: MovedTab, window: &mut Window, cx: &mut Context<Self>) {
         let tab = moved.0;
         match &tab.content {
-            Content::Terminals(t) => {
-                for view in t.root.leaves() {
-                    view.update(cx, |v, cx| v.attach_window(window, cx));
-                    self.watch_terminal(view, window, cx);
+            Content::Panes(t) => {
+                for item in t.root.leaves() {
+                    match item {
+                        crate::panes::PaneItem::Terminal(view) => {
+                            view.update(cx, |v, cx| v.attach_window(window, cx));
+                            self.watch_terminal(view, window, cx);
+                        }
+                        crate::panes::PaneItem::File(e) => self.watch_editor(e, cx),
+                    }
                 }
             }
-            Content::Editor(e) => self.watch_editor(e, cx),
             Content::Search(s) => self.watch_search(s, window, cx),
         }
         self.tabs.push(tab);
@@ -1271,8 +1277,7 @@ impl Workspace {
 
     fn tab_folder(&self, tab: &Tab, cx: &App) -> Option<PathBuf> {
         match &tab.content {
-            Content::Terminals(t) => t.focused.read(cx).cwd.clone(),
-            Content::Editor(e) => e.read(cx).folder(),
+            Content::Panes(t) => t.folder(cx),
             Content::Search(s) => s.read(cx).folder(),
         }
     }

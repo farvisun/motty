@@ -164,9 +164,9 @@ impl Workspace {
     ) -> Result<(Vec<TabHit>, bool), String> {
         let mut hits = Vec::new();
         for (group, tab) in self.tabs.iter().enumerate() {
-            let Some(terms) = tab.terms() else { continue };
+            let Some(panes) = tab.panes() else { continue };
             let title = tab_title(tab, cx);
-            for pane in terms.root.leaves() {
+            for pane in panes.terminals() {
                 let term = pane.read(cx).session().term.lock();
                 let found = search::find_all(&*term, query, options, PER_PANE)?;
                 let mut last_line = None;

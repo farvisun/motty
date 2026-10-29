@@ -159,13 +159,13 @@ impl Workspace {
     /// its output; an editor tab's selected lines.
     fn chat_source(&self, cx: &App) -> Option<(Option<Entity<TerminalView>>, Chip)> {
         match &self.tabs.get(self.active)?.content {
-            super::Content::Terminals(t) => {
-                let chip = t.focused.read(cx).chat_context()?;
-                Some((Some(t.focused.clone()), chip))
-            }
             super::Content::Search(_) => None,
-            super::Content::Editor(e) => {
-                let editor = e.read(cx);
+            super::Content::Panes(t) => {
+                if let Some(view) = t.terminal() {
+                    let chip = view.read(cx).chat_context()?;
+                    return Some((Some(view.clone()), chip));
+                }
+                let editor = t.focused.file()?.read(cx);
                 let text = editor.selected_text()?;
                 Some((
                     None,
@@ -238,7 +238,7 @@ impl Workspace {
             return;
         };
         let cwd = self.active_folder(cx);
-        let place = if self.active_terms().is_some() {
+        let place = if self.active_panes().is_some() {
             Place::Split(Direction::Right)
         } else {
             Place::Tab

@@ -37,8 +37,8 @@ fn facts(tab: &Tab, ix: usize, home: Option<std::path::PathBuf>, cx: &App) -> Fa
         ..Default::default()
     };
     match &tab.content {
-        Content::Terminals(t) => {
-            let v = t.focused.read(cx);
+        Content::Panes(t) if t.terminal().is_some() => {
+            let v = t.terminal().expect("checked").read(cx);
             f.cwd.clone_from(&v.cwd);
             f.command.clone_from(&v.command);
             f.branch.clone_from(&v.branch);
@@ -58,8 +58,8 @@ fn facts(tab: &Tab, ix: usize, home: Option<std::path::PathBuf>, cx: &App) -> Fa
                 }
             }
         }
-        Content::Editor(e) => {
-            if let Some(path) = e.read(cx).path() {
+        Content::Panes(t) => {
+            if let Some(path) = t.focused.file().and_then(|e| e.read(cx).path()) {
                 f.file = path.file_name().map(|n| n.to_string_lossy().into_owned());
                 f.cwd = path.parent().map(|p| p.to_path_buf());
             }

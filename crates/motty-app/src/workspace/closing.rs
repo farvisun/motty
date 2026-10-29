@@ -5,11 +5,12 @@ use gpui::{Context, Entity, EntityId, PromptLevel, Window};
 use motty_theme::ConfirmClose;
 
 use super::{Content, Tab, Workspace};
+use crate::panes::PaneItem;
 use crate::terminal_view::TerminalView;
 
 /// What a close would take.
 pub(super) enum Closing {
-    Pane(Entity<TerminalView>),
+    Pane(PaneItem),
     Tab(usize),
     Window,
 }
@@ -52,11 +53,10 @@ impl Running {
     }
 }
 
-/// The tab's identity across reorders: its first pane or its editor.
+/// The tab's identity across reorders: its first pane or its results.
 pub(super) fn tab_key(tab: &Tab) -> EntityId {
     match &tab.content {
-        Content::Terminals(t) => t.root.leaves()[0].entity_id(),
-        Content::Editor(e) => e.entity_id(),
+        Content::Panes(t) => t.root.leaves()[0].entity_id(),
         Content::Search(s) => s.entity_id(),
     }
 }
@@ -66,18 +66,18 @@ impl Workspace {
     /// programs, and coding agents waiting at their prompt.
     fn running(&self, closing: &Closing, cx: &gpui::App) -> Running {
         let panes: Vec<&Entity<TerminalView>> = match closing {
-            Closing::Pane(view) => vec![view],
+            Closing::Pane(item) => item.terminal().into_iter().collect(),
             Closing::Tab(ix) => self
                 .tabs
                 .get(*ix)
-                .and_then(Tab::terms)
-                .map(|t| t.root.leaves())
+                .and_then(Tab::panes)
+                .map(|t| t.terminals().collect())
                 .unwrap_or_default(),
             Closing::Window => self
                 .tabs
                 .iter()
-                .filter_map(Tab::terms)
-                .flat_map(|t| t.root.leaves())
+                .filter_map(Tab::panes)
+                .flat_map(|t| t.terminals())
                 .collect(),
         };
         let mut running = Running::default();
@@ -113,10 +113,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // An unsaved file asks on its own.
-        if let Closing::Tab(ix) = closing
-            && self.tabs.get(ix).is_some_and(|t| t.terms().is_none())
-        {
-            return self.close_tab_at(ix, window, cx);
+        match &closing {
+            Closing::Tab(ix)
+                if self
+                    .tabs
+                    .get(*ix)
+                    .is_some_and(|t| t.dirty_editor(cx).is_some()) =>
+            {
+                return self.close_tab_at(*ix, window, cx);
+            }
+            Closing::Pane(PaneItem::File(editor)) if editor.read(cx).is_dirty() => {
+                return self.confirm_close_file_pane(editor.clone(), window, cx);
+            }
+            _ => {}
         }
         let last_tab = matches!(closing, Closing::Tab(_)) && self.tabs.len() == 1;
         let (rule, what) = match closing {
@@ -196,9 +205,9 @@ impl Workspace {
 
     fn close_now(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) {
         match closing {
-            Closing::Pane(view) => {
-                if self.tab_of(&view).is_some() {
-                    self.close_pane(&view, window, cx);
+            Closing::Pane(item) => {
+                if self.tab_of(&item).is_some() {
+                    self.close_pane(&item, window, cx);
                 }
             }
             Closing::Tab(ix) => self.close_tab_at(ix, window, cx),
@@ -228,7 +237,7 @@ impl Workspace {
     /// its last tab.
     pub(super) fn close_cascade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let closing = match self.tabs.get(self.active).map(|t| &t.content) {
-            Some(Content::Terminals(t)) if t.root.leaves().len() > 1 => {
+            Some(Content::Panes(t)) if t.root.leaves().len() > 1 => {
                 Closing::Pane(t.focused.clone())
             }
             Some(_) => Closing::Tab(self.active),
