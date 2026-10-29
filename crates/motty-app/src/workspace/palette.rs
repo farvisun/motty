@@ -37,16 +37,16 @@ pub(super) struct Palette {
 
 struct Command {
     group: &'static str,
-    title: &'static str,
+    title: SharedString,
     action: Box<dyn Action>,
     checked: bool,
 }
 
 impl Command {
-    fn new(group: &'static str, title: &'static str, action: impl Action) -> Self {
+    fn new(group: &'static str, title: impl Into<SharedString>, action: impl Action) -> Self {
         Self {
             group,
-            title,
+            title: title.into(),
             action: Box::new(action),
             checked: false,
         }
@@ -58,13 +58,10 @@ impl Command {
     }
 }
 
-/// Everything the palette offers, in display order.
-fn commands(
-    sidebar_visible: bool,
-    details_visible: bool,
-    inbox: bool,
-    target: Option<&TerminalView>,
-) -> Vec<Command> {
+/// Everything the palette offers, in display order. `target` is the
+/// focused terminal pane; without one (an editor tab) its commands are left
+/// out.
+fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
     let mut list = Vec::new();
     if target.is_some_and(|t| t.cwd.is_some()) {
         list.extend([
@@ -73,10 +70,10 @@ fn commands(
         ]);
     }
     list.extend([
-        Command::new("View", "Toggle Tabs Panel", ToggleTabsPanel).checked(sidebar_visible),
-        Command::new("View", "Toggle Inbox", ToggleInbox).checked(inbox),
-        Command::new("Shell", "New File Editor", NewFileEditor),
-        Command::new("View", "Toggle Details Panel", ToggleDetailsPanel).checked(details_visible),
+        Command::new("View", "Toggle Tabs Panel", ToggleTabsPanel).checked(ws.sidebar_visible),
+        Command::new("View", "Toggle Inbox", ToggleInbox).checked(ws.inbox),
+        Command::new("View", "Toggle Details Panel", ToggleDetailsPanel)
+            .checked(ws.details.visible),
         Command::new("View", "Details: Info", DetailsInfo),
         Command::new("View", "Details: Outline", DetailsOutline),
         Command::new("View", "Details: Git", DetailsGit),
@@ -86,23 +83,45 @@ fn commands(
         Command::new("View", "Decrease Font Size", DecreaseFontSize),
         Command::new("View", "Reset Font Size", ResetFontSize),
         Command::new("Go", "Open Quickly", OpenQuickly),
-        Command::new("Go", "Jump To", JumpTo),
         Command::new("Go", "Open Files Quickly", OpenFilesQuickly),
-        Command::new("Window", "New Tab", NewTab),
-        Command::new("Window", "Close Tab", CloseTab),
-        Command::new("Window", "Reopen Closed Tab", ReopenClosedTab),
-        Command::new("Window", "Next Tab", NextTab),
-        Command::new("Window", "Previous Tab", PreviousTab),
+        Command::new("Go", "Find in All Tabs", GlobalSearch),
+        Command::new("Go", "Search Agent Conversations", SearchAgentConversations),
+        Command::new("Go", "Show Next Unread Tab", ShowNextUnread),
+        Command::new("File", "New File Editor", NewFileEditor),
+        Command::new("File", "Open File…", OpenFile),
+        Command::new("File", "Open Config Folder", OpenConfigFolder),
+        Command::new("Tab", "New Tab", NewTab),
+        Command::new("Tab", "Duplicate Tab", DuplicateTab),
+        Command::new("Tab", "Close Tab", CloseTab),
+        Command::new("Tab", "Reopen Closed Tab", ReopenClosedTab),
+        Command::new("Tab", "Next Tab", NextTab),
+        Command::new("Tab", "Previous Tab", PreviousTab),
+        Command::new("Tab", "Rename Tab", RenameTab),
+        Command::new("Tab", "Set Tab Prefix", SetTabPrefix),
+        Command::new("Tab", "Move Tab Up", MoveTabUp),
+        Command::new("Tab", "Move Tab Down", MoveTabDown),
+        Command::new("Tab", "Move Tab to New Window", MoveTabToNewWindow),
+        Command::new("Tab", "Mark Tab: Unread", MarkTabUnread),
+        Command::new("Tab", "Mark Tab: Processing", MarkTabProcessing),
+        Command::new("Tab", "Mark Tab: Failed", MarkTabFailed),
+        Command::new("Tab", "Clear Badge", ClearBadge),
         Command::new("Window", "New Window", NewWindow),
         Command::new("Window", "Close Window", CloseWindow),
+        Command::new("Window", "Close All", CloseAll),
         Command::new("Window", "Minimize", Minimize),
+        Command::new("Window", "Minimize All", MinimizeAll),
+        Command::new("Window", "Zoom", ZoomWindow),
+        Command::new("Window", "Pin Window", PinWindow).checked(ws.pinned),
+        Command::new("Window", "Merge All Windows", MergeAllWindows),
     ]);
     if let Some(target) = target {
         terminal_commands(target, &mut list);
     }
     list.extend([
+        Command::new("Edit", "Secure Keyboard Entry", ToggleSecureKeyboardEntry),
         Command::new("Settings", "Settings…", OpenSettings),
         Command::new("Settings", "Open Config File", OpenConfigFile),
+        Command::new("Settings", "Reload Config", ReloadConfig),
         Command::new("Motty", "Welcome Guide", ShowWelcome),
         Command::new("Motty", "Quit Motty", Quit),
     ]);
@@ -113,6 +132,8 @@ fn commands(
 fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
     let mode = target.mode();
     list.extend([
+        Command::new("Go", "Jump To", JumpTo),
+        Command::new("File", "Export Text…", ExportText),
         Command::new("Pane", "Split Right", SplitRight),
         Command::new("Pane", "Split Left", SplitLeft),
         Command::new("Pane", "Split Down", SplitDown),
@@ -122,14 +143,38 @@ fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
         Command::new("Pane", "Focus Next Pane", FocusNextPane),
         Command::new("Pane", "Focus Previous Pane", FocusPreviousPane),
         Command::new("Terminal", "Find", Find),
+        Command::new("Terminal", "Use Selection for Find", UseSelectionForFind),
         Command::new("Terminal", "Clear Screen", Clear),
+        Command::new("Terminal", "Clear Scrollback Above", ClearScrollbackAbove),
+        Command::new("Terminal", "Reset Terminal", ResetTerminal),
+        Command::new("Terminal", "Reload Terminal View", ReloadTerminalView),
+    ]);
+    // A program other than the shell is in the foreground.
+    if target.busy
+        && let Some(program) = &target.process
+    {
+        list.push(Command::new(
+            "Terminal",
+            format!("Quit {program}"),
+            QuitProgram,
+        ));
+    }
+    list.extend([
         Command::new("Terminal", "Copy", Copy),
+        Command::new("Terminal", "Copy with Style", CopyWithStyle),
+        Command::new("Terminal", "Copy as ANSI", CopyAsAnsi),
+        Command::new("Terminal", "Copy Screen", CopyScreen),
         Command::new("Terminal", "Paste", Paste),
+        Command::new("Terminal", "Paste Escaped", PasteEscaped),
+        Command::new("Terminal", "Paste Bracketed", PasteBracketed),
+        Command::new("Terminal", "Paste Selection", PasteSelection),
+        Command::new("Terminal", "Insert File Path…", InsertFilePath),
         Command::new("Terminal", "Select All", SelectAll),
         Command::new("Terminal", "Scroll to Top", ScrollToTop),
         Command::new("Terminal", "Scroll to Bottom", ScrollToBottom),
         Command::new("Terminal", "Vi Mode", ToggleViMode)
             .checked(matches!(mode, Some(PaneMode::Vi { .. }))),
+        Command::new("Terminal", "Mark Mode", MarkMode),
         Command::new("Terminal", "Read-Only Mode", ToggleReadOnly)
             .checked(mode == Some(PaneMode::ReadOnly)),
         Command::new("Terminal", "Hints: Open Link", HintOpen),
@@ -150,32 +195,16 @@ fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
             ViewSessionHistory,
         ));
         if crate::agents::sessions::fork_command(agent, id).is_some() {
-            let branch = crate::agents::sessions::fork_label(agent) == "Branch";
-            for (title_branch, title_fork, action) in [
-                (
-                    "Branch in New Tab",
-                    "Fork in New Tab",
-                    Box::new(ForkSessionInNewTab) as Box<dyn Action>,
-                ),
-                (
-                    "Branch in New Window",
-                    "Fork in New Window",
-                    Box::new(ForkSessionInNewWindow),
-                ),
-                (
-                    "Branch in Split Right",
-                    "Fork in Split Right",
-                    Box::new(ForkSessionRight),
-                ),
-                (
-                    "Branch in Split Down",
-                    "Fork in Split Down",
-                    Box::new(ForkSessionDown),
-                ),
+            let label = crate::agents::sessions::fork_label(agent);
+            for (place, action) in [
+                ("New Tab", Box::new(ForkSessionInNewTab) as Box<dyn Action>),
+                ("New Window", Box::new(ForkSessionInNewWindow)),
+                ("Split Right", Box::new(ForkSessionRight)),
+                ("Split Down", Box::new(ForkSessionDown)),
             ] {
                 list.push(Command {
                     group: "Agent",
-                    title: if branch { title_branch } else { title_fork },
+                    title: format!("{label} in {place}").into(),
                     action,
                     checked: false,
                 });
@@ -206,7 +235,7 @@ fn filter(commands: Vec<Command>, query: &str) -> Vec<Command> {
     let mut scored: Vec<(i32, Command)> = commands
         .into_iter()
         .filter_map(|c| {
-            let title = score(query, c.title);
+            let title = score(query, &c.title);
             let full = score(query, &format!("{}: {}", c.group, c.title)).map(|s| s - 2);
             Some((title.max(full)?, c))
         })
@@ -290,12 +319,7 @@ impl Workspace {
             return Vec::new();
         };
         filter(
-            commands(
-                self.sidebar_visible,
-                self.details.visible,
-                self.inbox,
-                palette.target.as_ref().map(|t| t.read(cx)),
-            ),
+            commands(self, palette.target.as_ref().map(|t| t.read(cx))),
             &palette.query,
         )
     }
@@ -459,7 +483,7 @@ impl Workspace {
                             .min_w_0()
                             .truncate()
                             .text_color(c.text)
-                            .child(SharedString::from(command.title)),
+                            .child(command.title.clone()),
                     )
                     .child(div().flex_none().pr(px(13.)).flex().gap(px(5.)).children(
                         caps.into_iter().map(|cap| {

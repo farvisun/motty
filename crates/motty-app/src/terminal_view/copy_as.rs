@@ -77,11 +77,40 @@ impl TerminalView {
                 this.toggle_vi_mode(cx);
             }
         }))
+        .on_action(cx.listener(|this, _: &ResetTerminal, _, cx| {
+            use motty_term::alacritty_terminal::vte::ansi::Handler;
+            this.session.term.lock().reset_state();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &QuitProgram, _, cx| this.quit_program(cx)))
         .on_action(cx.listener(|this, _: &ReloadTerminalView, window, cx| {
             this.session.term.lock().scroll_display(Scroll::Bottom);
             window.refresh();
             cx.notify();
         }))
+    }
+
+    /// Quit ⟨program⟩: SIGTERM to the foreground process group, then
+    /// SIGKILL if it's still there two seconds later. Never the shell.
+    fn quit_program(&mut self, cx: &mut Context<Self>) {
+        let shell = self.session.pid() as i32;
+        let Some(pgid) = self.session.foreground_pid().filter(|&p| p != shell) else {
+            return;
+        };
+        // SAFETY: kill only sends a signal to a process group.
+        unsafe { libc::kill(-pgid, libc::SIGTERM) };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let _ = this.update(cx, |this, _| {
+                if this.session.foreground_pid() == Some(pgid) {
+                    // SAFETY: as above.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                }
+            });
+        })
+        .detach();
     }
 
     /// The rows `range` covers, `None` when there's no selection.

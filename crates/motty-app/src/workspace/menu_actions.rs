@@ -7,6 +7,7 @@ use gpui::{Context, InteractiveElement};
 use super::Workspace;
 use super::tabs::Privilege;
 use crate::actions::*;
+use crate::agents::Badge;
 
 impl Workspace {
     pub(super) fn register_menu_actions<E: InteractiveElement>(
@@ -84,11 +85,26 @@ impl Workspace {
             }
             this.close_asking(super::closing::Closing::Window, window, cx)
         }))
+        .on_action(cx.listener(|_, _: &ReloadConfig, _, cx| super::reload_all(cx)))
+        .on_action(
+            cx.listener(|this, _: &MarkTabUnread, _, cx| this.mark_active(Badge::Finished, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &MarkTabProcessing, _, cx| this.mark_active(Badge::Running, cx)),
+        )
+        .on_action(cx.listener(|this, _: &MarkTabFailed, _, cx| this.mark_active(Badge::Error, cx)))
         .on_action(
             cx.listener(|this, _: &SearchAgentConversations, window, cx| {
                 this.show_open_quickly(super::open_quickly::Filter::Agents, window, cx)
             }),
         )
+    }
+
+    fn mark_active(&mut self, badge: Badge, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.mark = Some(badge);
+            cx.notify();
+        }
     }
 
     /// The active tab's Notifications & Privileges switches, in menu order,

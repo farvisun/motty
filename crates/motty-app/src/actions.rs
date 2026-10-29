@@ -151,6 +151,12 @@ actions!(
         UseDefaultPrivileges,
         SearchAgentConversations,
         ClearRecentFiles,
+        ReloadConfig,
+        ResetTerminal,
+        QuitProgram,
+        MarkTabUnread,
+        MarkTabProcessing,
+        MarkTabFailed,
     ]
 );
 
