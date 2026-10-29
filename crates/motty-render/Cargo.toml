@@ -9,6 +9,11 @@ gpui.workspace = true
 motty-term.workspace = true
 motty-theme.workspace = true
 unicode-bidi = "0.3.18"
+# Inline images: building gpui's `RenderImage` frames.
+image = { version = "0.25", default-features = false }
+
+[dev-dependencies]
+base64 = "0.22"
 
 # CoreText itself, to check right-to-left shaping without a window.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

@@ -21,12 +21,14 @@ use motty_term::alacritty_terminal::sync::FairMutex;
 use motty_term::alacritty_terminal::term::TermMode;
 use motty_term::alacritty_terminal::term::cell::Flags;
 use motty_term::alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
+use motty_term::graphics::Graphics;
 use motty_term::{GridSize, Terminal};
 use motty_theme::{FaceMode, FontBlending, Rgba};
 
 use crate::bidi::{self, BidiCell, LineOrder, VisualMap};
 use crate::box_drawing;
 use crate::contrast::Contrast;
+use crate::images::{self, Images, Layer};
 use crate::motion::FrameMotion;
 use crate::style::{TerminalStyle, hsla};
 
@@ -172,6 +174,8 @@ pub struct TerminalElement {
     blink_off: bool,
     /// Where rows were reordered for right-to-left text, for hit-testing.
     visual_map: Option<Rc<RefCell<VisualMap>>>,
+    /// Inline images (sixel, iTerm2, kitty), drawn by [`images`].
+    graphics: Option<Arc<std::sync::Mutex<Graphics>>>,
 }
 
 impl TerminalElement {
@@ -199,6 +203,7 @@ impl TerminalElement {
             motion: FrameMotion::default(),
             blink_off: false,
             visual_map: None,
+            graphics: None,
         }
     }
 
@@ -218,6 +223,12 @@ impl TerminalElement {
     /// position can be turned back into a grid column.
     pub fn visual_map(mut self, map: Rc<RefCell<VisualMap>>) -> Self {
         self.visual_map = Some(map);
+        self
+    }
+
+    /// The session's inline images, to draw with the text.
+    pub fn graphics(mut self, graphics: Arc<std::sync::Mutex<Graphics>>) -> Self {
+        self.graphics = Some(graphics);
         self
     }
 
@@ -296,6 +307,7 @@ pub struct Prepaint {
     /// While scrolling between rows, the rows' area, so a row half out of
     /// it doesn't draw over the padding.
     clip: Option<Bounds<Pixels>>,
+    images: Images,
 }
 
 #[derive(Clone)]
@@ -324,6 +336,7 @@ struct Snapshot {
     cursor_cell: Option<(usize, usize)>,
     /// Hint labels on screen: row, column, width in cells.
     labels: Vec<(usize, usize, usize)>,
+    images: Images,
 }
 
 impl IntoElement for TerminalElement {
@@ -400,7 +413,7 @@ impl gpui::Element for TerminalElement {
         {
             on_resize(grid, window, cx);
         }
-        let snapshot = self.snapshot(&style);
+        let mut snapshot = self.snapshot(&style);
         let lh = metrics.line_height;
         // The snapshot's rows start `shift` of a row above the top edge;
         // the grid's rows (for hit-testing) sit `scroll` rows further down.
@@ -441,6 +454,19 @@ impl gpui::Element for TerminalElement {
                 prepaint.cursor_text = None;
             }
         }
+        // Images go where the grid's cells do, clipped to the text area.
+        prepaint.images = std::mem::take(&mut snapshot.images);
+        prepaint.images.set_geometry(
+            point(origin.x, origin.y + lh * self.motion.scroll),
+            (metrics.cell_width, metrics.line_height),
+            Bounds::new(
+                origin,
+                size(
+                    metrics.cell_width * cols as f32,
+                    metrics.line_height * rows as f32,
+                ),
+            ),
+        );
         for &(row, col, width) in &snapshot.labels {
             let col = visual(row, col);
             prepaint.glyph_quads.push(outline(
@@ -502,9 +528,11 @@ impl gpui::Element for TerminalElement {
     ) {
         let mask = prepaint.clip.map_or(bounds, |clip| clip.intersect(&bounds));
         window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+            images::paint(&prepaint.images, Layer::BelowBackground, window, cx);
             for quad in prepaint.backgrounds.drain(..) {
                 window.paint_quad(quad);
             }
+            images::paint(&prepaint.images, Layer::BelowText, window, cx);
             for seg in &prepaint.segments {
                 seg.paint(prepaint.line_height, window, cx);
             }
@@ -514,6 +542,7 @@ impl gpui::Element for TerminalElement {
             for (path, color) in prepaint.glyph_paths.drain(..) {
                 window.paint_path(path, color);
             }
+            images::paint(&prepaint.images, Layer::AboveText, window, cx);
             if let Some(seg) = &prepaint.ghost {
                 let _ = seg.line.paint(
                     seg.origin,
@@ -691,6 +720,21 @@ impl TerminalElement {
             });
         }
 
+        // Images, read with the terminal still locked (terminal, then
+        // graphics: the PTY thread's order). Placeholder cells show the
+        // image, not their character.
+        let images = self.graphics.as_ref().map_or_else(Images::default, |g| {
+            let graphics = g.lock().unwrap_or_else(|e| e.into_inner());
+            images::collect(&term, &graphics, display_offset as usize, rows_n, cols_n)
+        });
+        let grid_row0 = (-(display_offset + first)).max(0) as usize;
+        for &(row, col) in &images.placeholders {
+            if let Some(cell) = rows.get_mut(row + grid_row0).and_then(|r| r.get_mut(col)) {
+                cell.c = ' ';
+                cell.zerowidth = None;
+            }
+        }
+
         let cursor_point = content.cursor.point;
         let cursor_row = cursor_point.line.0 - first;
         let vi = content.mode.contains(TermMode::VI);
@@ -724,7 +768,6 @@ impl TerminalElement {
             .iter()
             .map(|cells| reorder.then(|| row_order(cells)).flatten())
             .collect();
-        let grid_row0 = (-(display_offset + first)).max(0) as usize;
         Snapshot {
             rows,
             shift,
@@ -734,6 +777,7 @@ impl TerminalElement {
             cursor,
             cursor_cell,
             labels,
+            images,
         }
     }
 }
@@ -1317,6 +1361,7 @@ fn build(
         ghost: None,
         line_height: lh,
         clip: None,
+        images: Images::default(),
     }
 }
 
