@@ -51,6 +51,9 @@ pub(super) enum Filter {
     Files,
 }
 
+/// A session that mentions the searched words, and the line that does.
+type Mention = (Session, String);
+
 /// Each filter's chip label and its ⌘ key.
 const FILTERS: [(Filter, &str, &str); 8] = [
     (Filter::All, "All", "0"),
@@ -81,6 +84,10 @@ pub(super) struct OpenQuickly {
     _list_sessions: Task<()>,
     /// ⌘ is held: rows show their ⌘1–⌘9.
     quick_select: bool,
+    /// Search "…" in agent conversations: the words, and the sessions that
+    /// mention them all with the line that matched (None while looking).
+    conversations: Option<(String, Option<Vec<Mention>>)>,
+    _search_conversations: Option<Task<()>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -95,6 +102,8 @@ enum Kind {
     File,
     Path,
     Session,
+    /// The Search "…" in agent conversations row.
+    SearchAgents,
 }
 
 impl Kind {
@@ -110,6 +119,7 @@ impl Kind {
             Kind::File => "File",
             Kind::Path => "Path",
             Kind::Session => "Agent",
+            Kind::SearchAgents => "Search",
         }
     }
 
@@ -123,6 +133,7 @@ impl Kind {
             Kind::Command => "Jump to",
             Kind::Link | Kind::File | Kind::Path => "Open",
             Kind::Session => "Resume",
+            Kind::SearchAgents => "Search",
         }
     }
 }
@@ -148,6 +159,8 @@ enum Act {
 enum Target {
     Window(AnyWindowHandle),
     Tab(AnyWindowHandle, Entity<TerminalView>),
+    /// A file editor tab.
+    Editor(AnyWindowHandle, Entity<crate::editor::FileEditor>),
     Closed(u64),
     Folder(PathBuf),
     Ssh(String),
@@ -156,6 +169,8 @@ enum Target {
     Link(LinkTarget),
     File(PathBuf),
     Session(Box<Session>),
+    /// Look for the words in what was said in agent sessions.
+    SearchAgents(String),
 }
 
 struct Item {
@@ -312,7 +327,7 @@ fn icon_for(kind: Kind, color: Hsla) -> gpui::AnyElement {
     let w = 1.1;
     match kind {
         // A speech bubble.
-        Kind::Session => icon(14., 14., move |o, window| {
+        Kind::Session | Kind::SearchAgents => icon(14., 14., move |o, window| {
             stroke(o, color, window, w, |p, at| {
                 p.move_to(at(2., 2.5));
                 p.line_to(at(12., 2.5));
@@ -482,6 +497,8 @@ impl Workspace {
             sessions: None,
             _list_sessions: sessions,
             quick_select: false,
+            conversations: None,
+            _search_conversations: None,
         });
         cx.notify();
     }
@@ -553,7 +570,22 @@ impl Workspace {
                     ),
                     target: Target::Window(handle),
                 });
-                for tab in ws.tabs.iter().filter_map(|t| t.terms()) {
+                for tab in &ws.tabs {
+                    if let Some(editor) = tab.as_editor() {
+                        let path = editor.read(cx).path().map(Path::to_path_buf);
+                        tabs.push(Item {
+                            group: "Tabs",
+                            kind: Kind::File,
+                            title: path.as_deref().and_then(Path::file_name).map_or_else(
+                                || "Untitled".into(),
+                                |n| n.to_string_lossy().into_owned(),
+                            ),
+                            detail: path.as_deref().map(tilde).unwrap_or_default(),
+                            target: Target::Editor(handle, editor.clone()),
+                        });
+                        continue;
+                    }
+                    let Some(tab) = tab.terms() else { continue };
                     let view = tab.focused.read(cx);
                     tabs.push(Item {
                         group: "Tabs",
@@ -589,7 +621,33 @@ impl Workspace {
             );
         }
 
+        // The conversations search's results take the Agents list's place.
         if wants(Filter::Agents)
+            && let Some((words, found)) = &oq.conversations
+        {
+            groups.push(
+                found
+                    .iter()
+                    .flatten()
+                    .map(|(s, line)| Item {
+                        group: "Conversations",
+                        kind: Kind::Session,
+                        title: s.title.clone(),
+                        detail: format!("{} · {line}", agents::label_for(s.agent)),
+                        target: Target::Session(Box::new(s.clone())),
+                    })
+                    .collect(),
+            );
+            if found.is_none() {
+                groups.push(vec![Item {
+                    group: "Conversations",
+                    kind: Kind::SearchAgents,
+                    title: format!("Searching for “{words}”…"),
+                    detail: String::new(),
+                    target: Target::SearchAgents(words.clone()),
+                }]);
+            }
+        } else if wants(Filter::Agents)
             && let Some(sessions) = &oq.sessions
         {
             groups.push(
@@ -746,7 +804,51 @@ impl Workspace {
             };
             out.extend(scored.into_iter().take(limit).map(|(_, i)| i));
         }
+        // Below the sessions (in All, so above Files): search what was
+        // said in them.
+        if wants(Filter::Agents) && !query.is_empty() && oq.conversations.is_none() {
+            let row = Item {
+                group: "Agents",
+                kind: Kind::SearchAgents,
+                title: format!("Search “{query}” in agent conversations"),
+                detail: String::new(),
+                target: Target::SearchAgents(query.to_owned()),
+            };
+            let at = out
+                .iter()
+                .rposition(|i| i.group == "Agents")
+                .map(|i| i + 1)
+                .or_else(|| out.iter().position(|i| i.group == "Files"))
+                .unwrap_or(out.len());
+            out.insert(at, row);
+        }
         out
+    }
+
+    /// Searches the agent sessions' conversations for every word of
+    /// `query`, and shows the sessions that have them all.
+    fn search_conversations(&mut self, query: String, cx: &mut Context<Self>) {
+        let Some(oq) = self.open_quickly.as_mut() else {
+            return;
+        };
+        let sessions = oq.sessions.clone().unwrap_or_default();
+        oq.filter = Filter::Agents;
+        oq.selected = 0;
+        oq.conversations = Some((query.clone(), None));
+        oq._search_conversations = Some(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async move { conversation_matches(&sessions, &query) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(oq) = this.open_quickly.as_mut()
+                    && let Some((_, slot)) = &mut oq.conversations
+                {
+                    *slot = Some(found);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
     }
 
     fn move_open_quickly_selection(
@@ -786,6 +888,9 @@ impl Workspace {
         let Some(target) = self.open_quickly.as_ref().map(|oq| oq.target.clone()) else {
             return;
         };
+        if let Target::SearchAgents(query) = item.target {
+            return self.search_conversations(query, cx);
+        }
         self.close_open_quickly(window, cx);
         let this = window.window_handle();
         match item.target {
@@ -793,6 +898,17 @@ impl Workspace {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
             }
             Target::Tab(handle, view) if handle == this => self.reveal_pane(&view, window, cx),
+            Target::Editor(handle, editor) if handle == this => {
+                self.reveal_editor(&editor, window, cx)
+            }
+            Target::Editor(handle, editor) => {
+                if let Some(ws) = handle.downcast::<Workspace>() {
+                    let _ = ws.update(cx, |ws, window, cx| {
+                        ws.reveal_editor(&editor, window, cx);
+                        window.activate_window();
+                    });
+                }
+            }
             Target::Tab(handle, view) => {
                 if let Some(ws) = handle.downcast::<Workspace>() {
                     let _ = ws.update(cx, |ws, window, cx| {
@@ -840,6 +956,8 @@ impl Workspace {
                     target.update(cx, |view, cx| view.reveal_row(row, cx))
                 }
             }
+            // Handled before the panel closes.
+            Target::SearchAgents(_) => {}
             Target::Session(s) => self.resume_session(
                 &ResumeSession {
                     agent: s.agent.to_owned(),
@@ -872,6 +990,15 @@ impl Workspace {
         };
         let actions: Vec<(&'static str, Act)> = match item.target {
             Target::Session(session) => return self.session_actions(*session, window, cx),
+            Target::SearchAgents(_) => vec![("Search", Act::Run)],
+            Target::Editor(_, editor) => {
+                let mut v = vec![("Switch to Tab", Act::Run)];
+                if let Some(path) = editor.read(cx).path().map(Path::to_path_buf) {
+                    v.push(("Reveal in Finder", Act::Reveal(path.clone())));
+                    v.push(("Copy Path", Act::Copy(path.display().to_string())));
+                }
+                v
+            }
             Target::Tab(handle, view) => {
                 let cwd = view.read(cx).cwd.clone();
                 let mut v = vec![
@@ -1199,6 +1326,8 @@ impl Workspace {
                 if let Some(oq) = self.open_quickly.as_mut()
                     && edit_query(&mut oq.query, ks)
                 {
+                    oq.conversations = None;
+                    oq._search_conversations = None;
                     oq.selected = 0;
                     oq.scroll.scroll_to_item(0);
                     cx.notify();
@@ -1457,6 +1586,68 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Brings forward the tab editing `editor`.
+    fn reveal_editor(
+        &mut self,
+        editor: &Entity<crate::editor::FileEditor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ix) = self.tabs.iter().position(|t| t.as_editor() == Some(editor)) {
+            self.activate(ix, window, cx);
+        }
+    }
+}
+
+/// The sessions whose conversation (prompts and replies, not tool calls or
+/// their output) has every word of `query`, newest first, each with the
+/// line that has the most of them.
+fn conversation_matches(sessions: &[Session], query: &str) -> Vec<Mention> {
+    use crate::agents::sessions::{Role, transcript};
+    const MAX: usize = 100;
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for session in sessions {
+        let mut seen = vec![false; words.len()];
+        let mut best: Option<(usize, String)> = None;
+        for message in transcript(session) {
+            if message.role == Role::Tool || message.text.starts_with('⏺') {
+                continue;
+            }
+            for line in message.text.lines() {
+                let lower = line.to_lowercase();
+                let hits = words
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, w)| {
+                        let hit = lower.contains(w.as_str());
+                        if hit {
+                            seen[*i] = true;
+                        }
+                        hit
+                    })
+                    .count();
+                if hits > 0 && best.as_ref().is_none_or(|(n, _)| hits > *n) {
+                    best = Some((hits, line.trim().chars().take(160).collect()));
+                }
+            }
+        }
+        if seen.iter().all(|&s| s)
+            && let Some((_, line)) = best
+        {
+            out.push((session.clone(), line));
+            if out.len() == MAX {
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1464,6 +1655,39 @@ mod tests {
     #[test]
     fn quotes_for_the_shell() {
         assert_eq!(shell_quote("/a b/it's"), r"'/a b/it'\''s'");
+    }
+
+    #[test]
+    fn searches_what_was_said_not_tool_output() {
+        let dir = std::env::temp_dir().join(format!("motty-oq-talk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","message":{"content":"Fix the flaky login test"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":"The login test races the cookie jar."}}"#,
+                "\n",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"zebra"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let session = Session {
+            agent: "claude",
+            id: "s".into(),
+            path: path.clone(),
+            cwd: None,
+            title: "t".into(),
+            modified: SystemTime::now(),
+        };
+        let found = conversation_matches(std::slice::from_ref(&session), "LOGIN cookie");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, "The login test races the cookie jar.");
+        assert!(conversation_matches(std::slice::from_ref(&session), "zebra").is_empty());
+        assert!(conversation_matches(&[session], "login giraffe").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
