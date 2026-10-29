@@ -5,7 +5,9 @@
 
 mod agent;
 mod config_cmd;
+mod export;
 mod fonts;
+mod import;
 mod mcp;
 mod themes;
 
@@ -196,6 +198,11 @@ enum Command {
         #[command(subcommand)]
         command: fonts::FontCommand,
     },
+    /// Import another terminal's config (ghostty, kitty, alacritty),
+    /// zoxide's folders, a theme or a font.
+    Import(import::ImportArgs),
+    /// Write your config for another terminal (ghostty, kitty, alacritty).
+    Export(export::ExportArgs),
     /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
     /// `claude mcp add motty -- motty mcp`.
     Mcp,
@@ -288,6 +295,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config { command } => return config_cmd::run(command, cli.json),
         Command::Theme { command } => return themes::run(command, cli.json),
         Command::Font { command } => return fonts::run(command, cli.json),
+        Command::Import(args) => return import::run(args, cli.json),
+        Command::Export(args) => return export::run(args, cli.json),
         _ => {}
     }
     let mut client = Client::connect()?;
@@ -549,7 +558,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         | Command::Skill { .. }
         | Command::Config { .. }
         | Command::Theme { .. }
-        | Command::Font { .. } => {
+        | Command::Font { .. }
+        | Command::Import(_)
+        | Command::Export(_) => {
             unreachable!("handled above")
         }
     }
