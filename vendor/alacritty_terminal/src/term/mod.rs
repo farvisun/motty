@@ -77,6 +77,13 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
+        /// KAM (`CSI 2 h`): the program locked the keyboard.
+        const KEYBOARD_LOCKED         = 1 << 23;
+        /// XTMODKEYS modifyOtherKeys level 1 (`CSI > 4 ; 1 m`).
+        const MODIFY_OTHER_KEYS_1     = 1 << 24;
+        /// XTMODKEYS modifyOtherKeys level 2 (`CSI > 4 ; 2 m`).
+        const MODIFY_OTHER_KEYS_2     = 1 << 25;
+        const MODIFY_OTHER_KEYS       = Self::MODIFY_OTHER_KEYS_1.bits() | Self::MODIFY_OTHER_KEYS_2.bits();
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -710,6 +717,19 @@ impl<T> Term<T> {
         &self.mode
     }
 
+    /// The title the program set, if any.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Back to classic key encodings: no kitty keyboard flags on either
+    /// screen, modifyOtherKeys off.
+    pub fn reset_key_encodings(&mut self) {
+        self.keyboard_mode_stack.clear();
+        self.inactive_keyboard_mode_stack.clear();
+        self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::MODIFY_OTHER_KEYS);
+    }
+
     /// Swap primary and alternate screen buffer.
     pub fn swap_alt(&mut self) {
         if !self.mode.contains(TermMode::ALT_SCREEN) {
@@ -1293,7 +1313,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Pushing `{mode:?}` keyboard mode into the stack");
 
         if self.keyboard_mode_stack.len() >= KEYBOARD_MODE_STACK_MAX_DEPTH {
-            let removed = self.title_stack.remove(0);
+            let removed = self.keyboard_mode_stack.remove(0);
             trace!(
                 "Removing '{removed:?}' from bottom of keyboard mode stack that exceeds its \
                  maximum depth"
@@ -1326,6 +1346,31 @@ impl<T: EventListener> Handler for Term<T> {
         }
 
         self.set_keyboard_mode(mode.into(), apply);
+    }
+
+    #[inline]
+    fn set_modify_other_keys(&mut self, mode: ansi::ModifyOtherKeys) {
+        trace!("Setting modifyOtherKeys to {mode:?}");
+        self.mode.remove(TermMode::MODIFY_OTHER_KEYS);
+        match mode {
+            ansi::ModifyOtherKeys::Reset => {},
+            ansi::ModifyOtherKeys::EnableExceptWellDefined => {
+                self.mode.insert(TermMode::MODIFY_OTHER_KEYS_1)
+            },
+            ansi::ModifyOtherKeys::EnableAll => self.mode.insert(TermMode::MODIFY_OTHER_KEYS_2),
+        }
+    }
+
+    #[inline]
+    fn report_modify_other_keys(&mut self) {
+        let level = if self.mode.contains(TermMode::MODIFY_OTHER_KEYS_2) {
+            2
+        } else if self.mode.contains(TermMode::MODIFY_OTHER_KEYS_1) {
+            1
+        } else {
+            0
+        };
+        self.event_proxy.send_event(Event::PtyWrite(format!("\x1b[>4;{level}m")));
     }
 
     #[inline]
@@ -2098,6 +2143,10 @@ impl<T: EventListener> Handler for Term<T> {
     fn set_mode(&mut self, mode: ansi::Mode) {
         let mode = match mode {
             ansi::Mode::Named(mode) => mode,
+            ansi::Mode::Unknown(2) => {
+                self.mode.insert(TermMode::KEYBOARD_LOCKED);
+                return;
+            },
             ansi::Mode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_mode");
                 return;
@@ -2115,6 +2164,10 @@ impl<T: EventListener> Handler for Term<T> {
     fn unset_mode(&mut self, mode: ansi::Mode) {
         let mode = match mode {
             ansi::Mode::Named(mode) => mode,
+            ansi::Mode::Unknown(2) => {
+                self.mode.remove(TermMode::KEYBOARD_LOCKED);
+                return;
+            },
             ansi::Mode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_mode");
                 return;
@@ -2141,6 +2194,7 @@ impl<T: EventListener> Handler for Term<T> {
                     self.mode.contains(TermMode::LINE_FEED_NEW_LINE).into()
                 },
             },
+            ansi::Mode::Unknown(2) => self.mode.contains(TermMode::KEYBOARD_LOCKED).into(),
             ansi::Mode::Unknown(_) => ModeState::NotSupported,
         };
 
