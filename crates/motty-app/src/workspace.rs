@@ -620,7 +620,16 @@ impl Workspace {
                 queue,
             } => {
                 let cwd = cwd.clone().filter(|d| d.is_dir());
-                let preload = saved.as_deref().and_then(scrollback);
+                let mut preload = saved.as_deref().and_then(scrollback);
+                // `session-restore-banner`: when it closed, and now.
+                if self.config.restore_banner
+                    && let Some(bytes) = &mut preload
+                {
+                    let closed = saved
+                        .as_deref()
+                        .and_then(crate::recovery::scrollback_saved_at);
+                    bytes.extend(restore_banner(closed, std::time::SystemTime::now()));
+                }
                 let view = self.new_terminal_with(None, cwd, preload, rect, window, cx)?;
                 // Privilege: Resume Session on Recovery.
                 let resume = agent.as_ref().filter(|_| self.config.badges.resume_session);
@@ -2252,6 +2261,51 @@ fn days_ago(time: std::time::SystemTime, _now: std::time::SystemTime) -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     (secs + local_offset_secs()) / 86_400
+}
+
+/// Dim "Closed at" / "Restored at" lines for the end of restored
+/// scrollback.
+fn restore_banner(
+    closed: Option<std::time::SystemTime>,
+    restored: std::time::SystemTime,
+) -> Vec<u8> {
+    let mut out = String::from("\r\n");
+    if let Some(closed) = closed {
+        out.push_str(&format!(
+            "\x1b[2m── Closed at {} ──\x1b[0m\r\n",
+            banner_time(closed)
+        ));
+    }
+    out.push_str(&format!(
+        "\x1b[2m── Restored at {} ──\x1b[0m\r\n",
+        banner_time(restored)
+    ));
+    out.into_bytes()
+}
+
+/// `Wed Oct 29 14:32`, local time.
+fn banner_time(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as libc::time_t);
+    // SAFETY: localtime_r writes into the struct we pass.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&secs, &mut tm);
+        tm
+    };
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!(
+        "{} {} {} {:02}:{:02}",
+        DAYS[tm.tm_wday.clamp(0, 6) as usize],
+        MONTHS[tm.tm_mon.clamp(0, 11) as usize],
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min
+    )
 }
 
 /// The local time zone's offset from UTC.

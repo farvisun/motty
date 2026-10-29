@@ -862,6 +862,17 @@ impl SettingsWindow {
         rows.push(row(
             General,
             "General",
+            "Restore Banners",
+            Some("“Closed at” and “Restored at” under a restored pane's scrollback"),
+            Control::Toggle {
+                key: "session-restore-banner",
+                on: c.restore_banner,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            General,
+            "General",
             "Quit When Last Window Closes",
             Some("Otherwise Motty stays in the Dock; click it for a new window"),
             Control::Toggle {

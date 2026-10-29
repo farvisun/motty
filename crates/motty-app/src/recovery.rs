@@ -225,6 +225,16 @@ pub fn read_scrollback(name: &str) -> Option<Vec<u8>> {
     std::fs::read(scrollback_dir().join(name)).ok()
 }
 
+/// When a pane's scrollback was saved: the session closed then.
+pub fn scrollback_saved_at(name: &str) -> Option<std::time::SystemTime> {
+    if name.contains('/') || name.contains("..") {
+        return None;
+    }
+    std::fs::metadata(scrollback_dir().join(name))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 /// How many lines of scrollback a pane saves.
 pub fn scrollback_lines() -> usize {
     SCROLLBACK_LINES

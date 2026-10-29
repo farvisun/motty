@@ -43,6 +43,9 @@ pub struct Config {
     pub confirm_close_window: ConfirmClose,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
+    /// `session-restore-banner`: "Closed at" / "Restored at" lines under a
+    /// restored pane's scrollback.
+    pub restore_banner: bool,
     /// `confirm-close-ignore-idle-agents`: an agent waiting at its prompt
     /// doesn't count as running when closing.
     pub close_ignores_idle_agents: bool,
@@ -560,6 +563,7 @@ impl Config {
             shell_integration: true,
             link_detection: true,
             restore_session: true,
+            restore_banner: true,
             editor_line_numbers: true,
             clipboard_write: Access::Allow,
             ..Default::default()
@@ -753,6 +757,7 @@ impl Config {
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
                 }
+                "session-restore-banner" => out.restore_banner = value.as_bool().unwrap_or(true),
                 "confirm-close-ignore-idle-agents" => {
                     out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
                 }
