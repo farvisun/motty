@@ -15,3 +15,7 @@ Copied from the crates.io release (Apache-2.0, see LICENSE-APACHE); the
   and modifyOtherKeys, so a program that exits without cleaning up doesn't
   leave them to the shell; `Term::title` reads the title for XTWINOPS 21t.
 - Fix: a full kitty keyboard mode stack evicted from the title stack.
+- `Grid::remove_history_lines`: drops a run of history rows, moving the
+  older ones down (and `lines_pushed` with them, so their names hold). The
+  repaint de-duplication (`motty-term/src/repaint.rs`) uses it to drop the
+  stale copies full-screen repaints leave in scrollback.

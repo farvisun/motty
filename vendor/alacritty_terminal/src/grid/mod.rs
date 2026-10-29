@@ -163,6 +163,30 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.lines_pushed
     }
 
+    /// Motty: removes `count` history rows from `start` down, closing the gap
+    /// by moving the older rows down. Older rows keep their
+    /// `lines_pushed + line` names, and a view above the removed rows stays
+    /// on what it showed. Does nothing unless all of them are history.
+    pub fn remove_history_lines(&mut self, start: Line, count: usize) {
+        let top = self.topmost_line();
+        if count == 0 || start < top || start.0 + count as i32 > 0 {
+            return;
+        }
+        // Bubble the removed rows up to the top of history, then drop them.
+        let mut line = Line(start.0 - 1);
+        while line >= top {
+            self.raw.swap(line, Line(line.0 + count as i32));
+            line = Line(line.0 - 1);
+        }
+        self.raw.shrink_lines(count);
+        self.lines_pushed = self.lines_pushed.saturating_sub(count as u64);
+        let below = (-start.0) as usize - count;
+        if self.display_offset > below {
+            self.display_offset = max(self.display_offset.saturating_sub(count), below);
+        }
+        self.display_offset = min(self.display_offset, self.history_size());
+    }
+
     /// Update the size of the scrollback history.
     pub fn update_history(&mut self, history_size: usize) {
         let current_history_size = self.history_size();

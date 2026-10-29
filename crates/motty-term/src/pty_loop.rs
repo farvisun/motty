@@ -20,6 +20,7 @@ use polling::{Event as PollEvent, Events, PollMode, Poller};
 use alacritty_terminal::term::TermMode;
 
 use crate::graphemes::{Cluster, Graphemes};
+use crate::repaint::Repaint;
 use crate::shell::{OscSniffer, ShellOsc, ShellState};
 use crate::{EventProxy, SessionEvent, Terminal};
 
@@ -66,6 +67,7 @@ pub struct PtyLoop {
     /// Runs beside `parser` to catch the shell-integration OSCs it drops.
     osc_parser: alacritty_terminal::vte::Parser,
     sniffer: OscSniffer,
+    repaint: Repaint,
     shell: Arc<std::sync::Mutex<ShellState>>,
     /// Input waiting for the PTY to accept it, and how much of the front
     /// chunk was written.
@@ -82,6 +84,7 @@ impl PtyLoop {
         proxy: EventProxy,
         shell: Arc<std::sync::Mutex<ShellState>>,
         window: WindowSize,
+        repaint: Repaint,
     ) -> std::io::Result<(Self, LoopSender)> {
         let poller = Arc::new(Poller::new()?);
         let (tx, rx) = mpsc::channel();
@@ -100,6 +103,7 @@ impl PtyLoop {
             pointer: None,
             osc_parser: alacritty_terminal::vte::Parser::new(),
             sniffer: OscSniffer::default(),
+            repaint,
             shell,
             pending: VecDeque::new(),
             written: 0,
@@ -227,6 +231,7 @@ impl PtyLoop {
                     term: &mut **term,
                     cluster: &mut self.cluster,
                     pointer: &mut self.pointer,
+                    repaint: &mut self.repaint,
                 };
                 self.parser.advance(&mut handler, &buf[pos..end]);
                 pos = end;
@@ -249,6 +254,9 @@ impl PtyLoop {
             if processed >= MAX_LOCKED_READ {
                 break;
             }
+        }
+        if let Some(term) = terminal.as_mut() {
+            self.repaint.settle(term);
         }
         drop(terminal);
         // Output held back by a synchronized update shows when it ends.

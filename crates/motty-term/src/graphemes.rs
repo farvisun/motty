@@ -17,6 +17,8 @@ use alacritty_terminal::vte::ansi::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::repaint::Repaint;
+
 /// The grapheme cluster most recently written at the cursor; anything but
 /// more text ends it.
 #[derive(Default)]
@@ -33,6 +35,8 @@ pub struct Graphemes<'a, T: EventListener> {
     pub cluster: &'a mut Cluster,
     /// The pointer shape a program asked for (OSC 22), until taken.
     pub pointer: &'a mut Option<CursorIcon>,
+    /// In-place redraws, and repaints that leave copies in scrollback.
+    pub repaint: &'a mut Repaint,
 }
 
 impl<T: EventListener> Graphemes<'_, T> {
@@ -62,6 +66,7 @@ impl<T: EventListener> Graphemes<'_, T> {
 
 impl<T: EventListener> Handler for Graphemes<'_, T> {
     fn input(&mut self, c: char) {
+        self.repaint.text();
         if c.is_ascii() {
             self.cluster.0.clear();
             self.cluster.0.push(c);
@@ -101,11 +106,19 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn goto(&mut self, a0: i32, a1: usize) {
         self.cluster.clear();
+        let from = self.term.grid().cursor.point.line;
         self.term.goto(a0, a1);
+        if self.term.grid().cursor.point.line < from {
+            self.repaint.redraw();
+        }
     }
     fn goto_line(&mut self, a0: i32) {
         self.cluster.clear();
+        let from = self.term.grid().cursor.point.line;
         self.term.goto_line(a0);
+        if self.term.grid().cursor.point.line < from {
+            self.repaint.redraw();
+        }
     }
     fn goto_col(&mut self, a0: usize) {
         self.cluster.clear();
@@ -117,7 +130,9 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn move_up(&mut self, a0: usize) {
         self.cluster.clear();
+        let from = self.term.grid().cursor.point.line.0;
         self.term.move_up(a0);
+        self.repaint.moved_up(self.term, from, a0);
     }
     fn move_down(&mut self, a0: usize) {
         self.cluster.clear();
@@ -145,7 +160,9 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn move_up_and_cr(&mut self, a0: usize) {
         self.cluster.clear();
+        let from = self.term.grid().cursor.point.line.0;
         self.term.move_up_and_cr(a0);
+        self.repaint.moved_up(self.term, from, a0);
     }
     fn put_tab(&mut self, a0: u16) {
         self.cluster.clear();
@@ -161,6 +178,7 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn linefeed(&mut self) {
         self.cluster.clear();
+        self.repaint.text();
         self.term.linefeed();
     }
     fn bell(&mut self) {
@@ -173,6 +191,7 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn newline(&mut self) {
         self.cluster.clear();
+        self.repaint.text();
         self.term.newline();
     }
     fn set_horizontal_tabstop(&mut self) {
@@ -181,18 +200,22 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn scroll_up(&mut self, a0: usize) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.scroll_up(a0);
     }
     fn scroll_down(&mut self, a0: usize) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.scroll_down(a0);
     }
     fn insert_blank_lines(&mut self, a0: usize) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.insert_blank_lines(a0);
     }
     fn delete_lines(&mut self, a0: usize) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.delete_lines(a0);
     }
     fn erase_chars(&mut self, a0: usize) {
@@ -225,6 +248,13 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn clear_screen(&mut self, a0: ClearMode) {
         self.cluster.clear();
+        // Clearing below the cursor is part of a repaint; the rest moves
+        // or drops rows.
+        if matches!(a0, ClearMode::Below) {
+            self.repaint.redraw();
+        } else {
+            self.repaint.reset();
+        }
         self.term.clear_screen(a0);
     }
     fn clear_tabs(&mut self, a0: TabulationClearMode) {
@@ -237,10 +267,12 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn reset_state(&mut self) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.reset_state();
     }
     fn reverse_index(&mut self) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.reverse_index();
     }
     fn terminal_attribute(&mut self, a0: Attr) {
@@ -273,6 +305,7 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn set_scrolling_region(&mut self, a0: usize, a1: Option<usize>) {
         self.cluster.clear();
+        self.repaint.reset();
         self.term.set_scrolling_region(a0, a1);
     }
     fn set_keypad_application_mode(&mut self) {
@@ -393,6 +426,7 @@ mod tests {
                 term: &mut term,
                 cluster: &mut cluster,
                 pointer: &mut None,
+                repaint: &mut Repaint::default(),
             },
             text.as_bytes(),
         );
@@ -419,6 +453,7 @@ mod tests {
                 term: &mut term,
                 cluster: &mut Cluster::default(),
                 pointer: &mut pointer,
+                repaint: &mut Repaint::default(),
             },
             b"\x1b]22;pointer\x07ab",
         );

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -26,6 +26,7 @@ mod kitty_keys;
 pub mod links;
 mod modify_other_keys;
 mod pty_loop;
+pub mod repaint;
 pub mod search;
 pub mod shell;
 pub mod snapshot;
@@ -226,6 +227,10 @@ pub struct Session {
     master_fd: RawFd,
     shell: Arc<std::sync::Mutex<shell::ShellState>>,
     vt: Arc<std::sync::Mutex<vt::VtOptions>>,
+    /// Bumped by the PTY thread whenever the program redraws in place.
+    redraws: Arc<AtomicU64>,
+    /// `dedup-repaint-scrollback`.
+    dedup_repaints: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -280,8 +285,16 @@ impl Session {
         }
         let term = Arc::new(FairMutex::new(terminal));
         let shell = Arc::new(std::sync::Mutex::new(shell::ShellState::default()));
-        let (pty_loop, pty_tx) =
-            PtyLoop::new(pty, term.clone(), proxy, shell.clone(), size.window_size())?;
+        let repaint = repaint::Repaint::default();
+        let (redraws, dedup_repaints) = (repaint.redraws(), repaint.enabled());
+        let (pty_loop, pty_tx) = PtyLoop::new(
+            pty,
+            term.clone(),
+            proxy,
+            shell.clone(),
+            size.window_size(),
+            repaint,
+        )?;
         let _ = pty_tx_cell.set(pty_tx.clone());
         pty_loop.spawn();
 
@@ -295,6 +308,8 @@ impl Session {
                 master_fd,
                 shell,
                 vt,
+                redraws,
+                dedup_repaints,
             },
             rx,
         ))
@@ -319,6 +334,19 @@ impl Session {
         let mode = *self.term.lock().mode();
         let vt = self.vt.lock().unwrap_or_else(|e| e.into_inner());
         (!vt.keyboard_locked(mode)).then(|| vt.key_mode(mode))
+    }
+
+    /// How many times the program has redrawn in place (moved the cursor
+    /// up, inserted or deleted lines, cleared the screen) so far: output
+    /// between two readings that changed it wasn't plain scrolling.
+    pub fn redraws(&self) -> u64 {
+        self.redraws.load(Ordering::Relaxed)
+    }
+
+    /// `dedup-repaint-scrollback`: drop the stale copies of repaints taller
+    /// than the window (see [`repaint`]).
+    pub fn set_dedup_repaints(&self, on: bool) {
+        self.dedup_repaints.store(on, Ordering::Relaxed);
     }
 
     /// Re-arms content wakeups. Call before reading the terminal for a frame,
