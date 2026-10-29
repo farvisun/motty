@@ -163,6 +163,7 @@ impl Workspace {
                 let chip = t.focused.read(cx).chat_context()?;
                 Some((Some(t.focused.clone()), chip))
             }
+            super::Content::Search(_) => None,
             super::Content::Editor(e) => {
                 let editor = e.read(cx);
                 let text = editor.selected_text()?;

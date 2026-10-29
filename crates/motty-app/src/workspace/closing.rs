@@ -53,10 +53,11 @@ impl Running {
 }
 
 /// The tab's identity across reorders: its first pane or its editor.
-fn tab_key(tab: &Tab) -> EntityId {
+pub(super) fn tab_key(tab: &Tab) -> EntityId {
     match &tab.content {
         Content::Terminals(t) => t.root.leaves()[0].entity_id(),
         Content::Editor(e) => e.entity_id(),
+        Content::Search(s) => s.entity_id(),
     }
 }
 
@@ -113,7 +114,7 @@ impl Workspace {
     ) {
         // An unsaved file asks on its own.
         if let Closing::Tab(ix) = closing
-            && self.tabs.get(ix).is_some_and(|t| t.as_editor().is_some())
+            && self.tabs.get(ix).is_some_and(|t| t.terms().is_none())
         {
             return self.close_tab_at(ix, window, cx);
         }

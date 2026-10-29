@@ -3,6 +3,7 @@ mod agents;
 mod dock;
 mod dock_click;
 mod editor;
+mod file_search;
 mod folders;
 mod fonts;
 mod history;

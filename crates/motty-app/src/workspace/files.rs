@@ -59,9 +59,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editor) = self.tabs.get(ix).and_then(Tab::as_editor).cloned() else {
+        let Some(tab) = self.tabs.get(ix) else { return };
+        let Some(editor) = tab.dirty_editor(cx) else {
             return;
         };
+        let key = super::closing::tab_key(tab);
         self.activate(ix, window, cx);
         let message = format!(
             "Do you want to save the changes you made to {}?",
@@ -82,7 +84,7 @@ impl Workspace {
                 let Some(ix) = this
                     .tabs
                     .iter()
-                    .position(|t| t.as_editor() == Some(&editor))
+                    .position(|t| super::closing::tab_key(t) == key)
                 else {
                     return;
                 };

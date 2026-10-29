@@ -79,6 +79,7 @@ actions!(
         FindNext,
         FindPrevious,
         GlobalSearch,
+        SearchInFiles,
         ToggleViMode,
         ToggleViKeyHints,
         ToggleReadOnly,

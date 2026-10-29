@@ -97,6 +97,10 @@ pub struct FileEditor {
     buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
     /// `editor-show-line-numbers`.
     line_numbers: bool,
+    /// A preview (Search in Files): read-only until its lock is opened.
+    lockable: bool,
+    /// The next reveal centers the cursor's line.
+    center: bool,
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
@@ -133,6 +137,8 @@ impl FileEditor {
             name: None,
             buttons: Vec::new(),
             line_numbers: true,
+            lockable: false,
+            center: false,
         };
         if let Some(path) = path {
             editor.load(path);
@@ -209,6 +215,29 @@ impl FileEditor {
             .as_ref()
             .and_then(|p| p.parent())
             .map(Path::to_path_buf)
+    }
+
+    /// Locks the file for reading, with a lock on the toolbar to edit it;
+    /// a file too big to edit, or unreadable, stays locked.
+    pub fn set_lockable(&mut self) {
+        self.lockable = !self.read_only;
+        self.read_only = true;
+    }
+
+    /// Selects columns `cols` of `line` and centers it in view.
+    pub fn show_match(
+        &mut self,
+        line: usize,
+        cols: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.buffer.clamp(Pos::new(line, cols.start));
+        self.anchor = Some(start);
+        self.cursor = self.buffer.clamp(Pos::new(line, cols.end));
+        self.goal_x = None;
+        self.reveal = true;
+        self.center = true;
+        cx.notify();
     }
 
     /// `editor-show-line-numbers`.
@@ -800,9 +829,39 @@ impl Render for FileEditor {
                     .gap(px(8.))
                     .text_size(px(12.))
                     .text_color(ink(0.5))
-                    .when(self.read_only && self.name.is_none(), |d| {
-                        d.child("Read Only")
+                    .when(self.lockable, |d| {
+                        let locked = self.read_only;
+                        d.child(
+                            div()
+                                .id("editor-lock")
+                                .h(px(24.))
+                                .px(px(6.))
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .rounded(px(6.))
+                                .hover(move |s| s.bg(ink(0.07)))
+                                .child(
+                                    gpui::svg()
+                                        .path(if locked {
+                                            "icons/lock.svg"
+                                        } else {
+                                            "icons/lock-open.svg"
+                                        })
+                                        .size(px(13.))
+                                        .text_color(ink(0.6)),
+                                )
+                                .child(if locked { "Read Only" } else { "Editing" })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.read_only = !this.read_only;
+                                    cx.notify();
+                                })),
+                        )
                     })
+                    .when(
+                        self.read_only && !self.lockable && self.name.is_none(),
+                        |d| d.child("Read Only"),
+                    )
                     .children(self.error.clone()),
             )
             .child(
@@ -841,6 +900,7 @@ impl Render for FileEditor {
 
         let focused = self.focus.is_focused(window);
         let reveal = std::mem::take(&mut self.reveal);
+        let center = reveal && std::mem::take(&mut self.center);
         let paint_state = PaintState {
             lines: self.buffer.clone(),
             cursor: self.cursor,
@@ -848,6 +908,7 @@ impl Render for FileEditor {
             marked: self.marked.clone(),
             scroll: self.scroll,
             reveal,
+            center,
             focused,
             style: style.clone(),
             fg: hsla(fg),
@@ -924,6 +985,7 @@ struct PaintState {
     marked: Option<String>,
     scroll: Point<Pixels>,
     reveal: bool,
+    center: bool,
     focused: bool,
     style: Rc<TerminalStyle>,
     fg: Hsla,
@@ -966,7 +1028,11 @@ fn paint_text(
     let mut moved = false;
     if s.reveal {
         let top = lh * s.cursor.line as f32;
-        if top < scroll.y {
+        let height = text_bounds.size.height;
+        if s.center && (top < scroll.y || top + lh > scroll.y + height) {
+            scroll.y = (top - (height - lh) / 2.).max(px(0.));
+            moved = true;
+        } else if top < scroll.y {
             scroll.y = top;
             moved = true;
         } else if top + lh > scroll.y + text_bounds.size.height {

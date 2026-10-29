@@ -39,6 +39,7 @@ pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
 mod open_quickly;
 mod palette;
+mod search_view;
 mod status;
 mod tabs;
 mod welcome;
@@ -136,6 +137,8 @@ pub(crate) struct Tab {
 enum Content {
     Terminals(Terminals),
     Editor(Entity<FileEditor>),
+    /// Find in All Tabs or Search in Files results.
+    Search(Entity<search_view::SearchView>),
 }
 
 struct Terminals {
@@ -166,8 +169,12 @@ impl Tab {
     }
 
     fn editor(editor: Entity<FileEditor>) -> Self {
+        Self::holding(Content::Editor(editor))
+    }
+
+    fn holding(content: Content) -> Self {
         Self {
-            content: Content::Editor(editor),
+            content,
             divider: false,
             divider_label: String::new(),
             updated: std::time::SystemTime::now(),
@@ -183,20 +190,29 @@ impl Tab {
     fn terms(&self) -> Option<&Terminals> {
         match &self.content {
             Content::Terminals(t) => Some(t),
-            Content::Editor(_) => None,
+            _ => None,
         }
     }
 
     fn terms_mut(&mut self) -> Option<&mut Terminals> {
         match &mut self.content {
             Content::Terminals(t) => Some(t),
-            Content::Editor(_) => None,
+            _ => None,
         }
     }
 
     fn as_editor(&self) -> Option<&Entity<FileEditor>> {
         match &self.content {
             Content::Editor(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// An editor with unsaved changes: the tab's, or its search preview's.
+    fn dirty_editor(&self, cx: &App) -> Option<Entity<FileEditor>> {
+        match &self.content {
+            Content::Editor(e) => Some(e.clone()).filter(|e| e.read(cx).is_dirty()),
+            Content::Search(s) => s.read(cx).dirty_preview(cx),
             Content::Terminals(_) => None,
         }
     }
@@ -869,16 +885,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let terminal = self.new_terminal(command, cwd, [0., 0., 1., 1.], window, cx)?;
-        // `new-tab-position`: after the active tab, or at the end.
-        let ix = match self.config.new_tab_position {
+        let ix = self.new_tab_index();
+        self.tabs.insert(ix, Tab::new(terminal));
+        self.activate(ix, window, cx);
+        Ok(())
+    }
+
+    /// `new-tab-position`: after the active tab, or at the end.
+    fn new_tab_index(&self) -> usize {
+        match self.config.new_tab_position {
             motty_theme::NewTabPosition::AfterCurrent if !self.tabs.is_empty() => {
                 (self.active + 1).min(self.tabs.len())
             }
             _ => self.tabs.len(),
-        };
-        self.tabs.insert(ix, Tab::new(terminal));
-        self.activate(ix, window, cx);
-        Ok(())
+        }
     }
 
     /// Where a new tab or split starts, as the `*-working-directory` keys
@@ -1002,6 +1022,7 @@ impl Workspace {
         match &self.tabs.get(self.active)?.content {
             Content::Terminals(t) => t.focused.read(cx).cwd.clone(),
             Content::Editor(e) => e.read(cx).folder(),
+            Content::Search(s) => s.read(cx).folder(),
         }
     }
 
@@ -1010,6 +1031,7 @@ impl Workspace {
         Some(match &self.tabs.get(self.active)?.content {
             Content::Terminals(t) => t.focused.focus_handle(cx),
             Content::Editor(e) => e.focus_handle(cx),
+            Content::Search(s) => s.focus_handle(cx),
         })
     }
 
@@ -1191,8 +1213,8 @@ impl Workspace {
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
-        if let Content::Editor(editor) = &tab.content {
-            if editor.read(cx).is_dirty() {
+        if tab.terms().is_none() {
+            if tab.dirty_editor(cx).is_some() {
                 return self.confirm_close_editor(ix, window, cx);
             }
             self.remove_tab(ix, window, cx);
@@ -1242,6 +1264,9 @@ impl Workspace {
             }
             Content::Editor(e) => {
                 self.pane_subscriptions.remove(&e.entity_id());
+            }
+            Content::Search(s) => {
+                self.pane_subscriptions.remove(&s.entity_id());
             }
         }
         if self.tabs.is_empty() {
@@ -1424,6 +1449,9 @@ impl Workspace {
                     e.set_style(style.clone(), cx);
                     e.set_line_numbers(self.config.editor_line_numbers, cx);
                 }),
+                Content::Search(s) => s.update(cx, |s, cx| {
+                    s.set_style(style.clone(), self.config.editor_line_numbers, cx)
+                }),
             }
         }
         cx.notify();
@@ -1435,6 +1463,7 @@ impl Workspace {
         let tab = match &self.tabs.get(self.active)?.content {
             Content::Terminals(t) => t,
             Content::Editor(e) => return Some(e.clone().into_any_element()),
+            Content::Search(s) => return Some(s.clone().into_any_element()),
         };
         if tab.zoomed {
             return Some(tab.focused.clone().into_any_element());
@@ -1821,6 +1850,18 @@ impl Workspace {
                     process: String::new(),
                     badge: None,
                     line: dirty.then(|| "Unsaved changes".to_owned()),
+                    running: false,
+                    progress: None,
+                    system: Default::default(),
+                }
+            }
+            Content::Search(search) => {
+                let search = search.read(cx);
+                TabSummary {
+                    title: tabs::named(tab.name.as_ref(), search.title()),
+                    process: String::new(),
+                    badge: None,
+                    line: search.summary(),
                     running: false,
                     progress: None,
                     system: Default::default(),
@@ -3051,10 +3092,7 @@ impl Render for Workspace {
         // Like Otty, a running command marks the window edited (the dot in
         // the close button), since closing it would kill that command.
         let busy = self.panes().any(|(_, view)| view.read(cx).busy)
-            || self
-                .tabs
-                .iter()
-                .any(|tab| tab.as_editor().is_some_and(|e| e.read(cx).is_dirty()));
+            || self.tabs.iter().any(|tab| tab.dirty_editor(cx).is_some());
         let state = (
             background_appearance(t),
             busy && !self.config.hide_dirty_indicator,
@@ -3366,6 +3404,9 @@ impl Render for Workspace {
                 }
             }))
             .on_action(
+                cx.listener(|this, _: &SearchInFiles, window, cx| this.search_in_files(window, cx)),
+            )
+            .on_action(
                 cx.listener(|this, _: &GlobalSearch, window, cx| {
                     this.open_global_search(window, cx)
                 }),
@@ -3450,6 +3491,7 @@ fn tab_title(tab: &Tab, cx: &App) -> String {
     let title = match &tab.content {
         Content::Terminals(t) => t.focused.read(cx).display_title(),
         Content::Editor(e) => e.read(cx).title(),
+        Content::Search(s) => s.read(cx).title(),
     };
     tabs::named(tab.name.as_ref(), title)
 }

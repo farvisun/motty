@@ -104,6 +104,8 @@ enum Kind {
     Session,
     /// The Search "…" in agent conversations row.
     SearchAgents,
+    /// The Search "…" in file contents row.
+    SearchFiles,
 }
 
 impl Kind {
@@ -119,7 +121,7 @@ impl Kind {
             Kind::File => "File",
             Kind::Path => "Path",
             Kind::Session => "Agent",
-            Kind::SearchAgents => "Search",
+            Kind::SearchAgents | Kind::SearchFiles => "Search",
         }
     }
 
@@ -133,7 +135,7 @@ impl Kind {
             Kind::Command => "Jump to",
             Kind::Link | Kind::File | Kind::Path => "Open",
             Kind::Session => "Resume",
-            Kind::SearchAgents => "Search",
+            Kind::SearchAgents | Kind::SearchFiles => "Search",
         }
     }
 }
@@ -171,6 +173,8 @@ enum Target {
     Session(Box<Session>),
     /// Look for the words in what was said in agent sessions.
     SearchAgents(String),
+    /// Search in Files under the folder.
+    SearchFiles(PathBuf, String),
 }
 
 struct Item {
@@ -326,6 +330,7 @@ fn ago(time: SystemTime) -> String {
 fn icon_for(kind: Kind, color: Hsla) -> gpui::AnyElement {
     let w = 1.1;
     match kind {
+        Kind::SearchFiles => super::picker::magnifier(color).into_any_element(),
         // A speech bubble.
         Kind::Session | Kind::SearchAgents => icon(14., 14., move |o, window| {
             stroke(o, color, window, w, |p, at| {
@@ -822,6 +827,24 @@ impl Workspace {
                 .unwrap_or(out.len());
             out.insert(at, row);
         }
+        // The Files group's last row: the words inside the files.
+        if wants(Filter::Files)
+            && !query.is_empty()
+            && let Some((dir, _)) = &oq.files
+        {
+            let row = Item {
+                group: "Files",
+                kind: Kind::SearchFiles,
+                title: format!("Search “{query}” in file contents"),
+                detail: tilde(dir),
+                target: Target::SearchFiles(dir.clone(), query.to_owned()),
+            };
+            let at = out
+                .iter()
+                .rposition(|i| i.group == "Files")
+                .map_or(out.len(), |i| i + 1);
+            out.insert(at, row);
+        }
         out
     }
 
@@ -958,6 +981,13 @@ impl Workspace {
             }
             // Handled before the panel closes.
             Target::SearchAgents(_) => {}
+            Target::SearchFiles(dir, query) => self.open_search_tab(
+                super::search_view::Scope::Files,
+                Some(dir),
+                query,
+                window,
+                cx,
+            ),
             Target::Session(s) => self.resume_session(
                 &ResumeSession {
                     agent: s.agent.to_owned(),
@@ -990,7 +1020,7 @@ impl Workspace {
         };
         let actions: Vec<(&'static str, Act)> = match item.target {
             Target::Session(session) => return self.session_actions(*session, window, cx),
-            Target::SearchAgents(_) => vec![("Search", Act::Run)],
+            Target::SearchAgents(_) | Target::SearchFiles(..) => vec![("Search", Act::Run)],
             Target::Editor(_, editor) => {
                 let mut v = vec![("Switch to Tab", Act::Run)];
                 if let Some(path) = editor.read(cx).path().map(Path::to_path_buf) {

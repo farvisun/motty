@@ -1077,6 +1077,11 @@ impl Workspace {
                 .path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "Untitled".into()),
+            Content::Search(s) => s
+                .read(cx)
+                .folder()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
         };
         let ids = match &tab.content {
             Content::Terminals(terms) => terms
@@ -1086,7 +1091,7 @@ impl Workspace {
                 .map(|v| v.read(cx).id.to_string())
                 .collect::<Vec<_>>()
                 .join(" "),
-            Content::Editor(_) => String::new(),
+            Content::Editor(_) | Content::Search(_) => String::new(),
         };
         let answer = window.prompt(
             gpui::PromptLevel::Info,
@@ -1141,6 +1146,9 @@ impl Workspace {
             Content::Editor(e) => {
                 self.pane_subscriptions.remove(&e.entity_id());
             }
+            Content::Search(s) => {
+                self.pane_subscriptions.remove(&s.entity_id());
+            }
         }
     }
 
@@ -1187,6 +1195,7 @@ impl Workspace {
                 }
             }
             Content::Editor(e) => self.watch_editor(e, cx),
+            Content::Search(s) => self.watch_search(s, window, cx),
         }
         self.tabs.push(tab);
         self.activate(self.tabs.len() - 1, window, cx);
@@ -1254,6 +1263,7 @@ impl Workspace {
         match &tab.content {
             Content::Terminals(t) => t.focused.read(cx).cwd.clone(),
             Content::Editor(e) => e.read(cx).folder(),
+            Content::Search(s) => s.read(cx).folder(),
         }
     }
 

@@ -85,6 +85,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("Go", "Open Quickly", OpenQuickly),
         Command::new("Go", "Open Files Quickly", OpenFilesQuickly),
         Command::new("Go", "Find in All Tabs", GlobalSearch),
+        Command::new("Go", "Search Across Files", SearchInFiles),
         Command::new("Go", "Search Agent Conversations", SearchAgentConversations),
         Command::new("Go", "Show Next Unread Tab", ShowNextUnread),
         Command::new("File", "New File Editor", NewFileEditor),

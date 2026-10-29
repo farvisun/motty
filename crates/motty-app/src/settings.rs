@@ -75,7 +75,9 @@ impl AssetSource for Assets {
             "shield",
             "coffee",
             "monitor-smartphone",
-            "pin"
+            "pin",
+            "lock",
+            "lock-open"
         )
         .map(Cow::Borrowed))
     }

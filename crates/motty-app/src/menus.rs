@@ -446,6 +446,7 @@ fn view_menu(s: &Snapshot) -> Menu {
         MenuItem::action("Open Files Quickly", OpenFilesQuickly),
         MenuItem::action("Open Agent Session", AgentHistory),
         MenuItem::separator(),
+        MenuItem::action("Search Across Files", SearchInFiles),
         MenuItem::action("Search Agent Conversations", SearchAgentConversations),
         MenuItem::separator(),
         MenuItem::action("Toggle Tabs Panel", ToggleTabsPanel),

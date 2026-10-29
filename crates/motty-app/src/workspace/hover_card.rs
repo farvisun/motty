@@ -40,6 +40,10 @@ impl Workspace {
                 let e = e.read(cx);
                 (e.opening_lines(4), e.folder())
             }
+            Content::Search(s) => {
+                let s = s.read(cx);
+                (summary.line.into_iter().collect(), s.folder())
+            }
         };
         let c = Colors::new(&self.theme);
         Some(HoverCard {
