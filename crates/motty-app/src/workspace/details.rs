@@ -255,7 +255,7 @@ impl Workspace {
                 let v = view.read(cx);
                 (v.cwd.clone(), v.session().processes())
             }
-            PaneItem::File(editor) => (editor.read(cx).folder(), Vec::new()),
+            other => (other.folder(cx), Vec::new()),
         };
         let builtin = self.details.view.is_none();
         if builtin && self.details.tab == DetailsTab::Outline {
