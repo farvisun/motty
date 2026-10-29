@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::css::{self, Rgba};
+use crate::details_view::DetailsView;
 use crate::tab_rule::TabRule;
 use crate::theme::{self, Mode, ParsedTheme, Theme};
 
@@ -25,6 +26,8 @@ pub struct Config {
     /// How opaque unfocused split panes are drawn (Otty's default is 0.6).
     pub unfocused_split_opacity: Option<f32>,
     pub details_panel_width: Option<f32>,
+    /// `details-view` lines, in tab order (see [`crate::details_view`]).
+    pub details_views: Vec<DetailsView>,
     pub option_as_meta: bool,
     pub scrollback: Option<usize>,
     /// Inject Motty's prompt marks and cwd reporting into the shell.
@@ -777,6 +780,11 @@ impl Config {
                     out.unfocused_split_opacity = num_of(value).map(|o| o.clamp(0., 1.))
                 }
                 "details-panel-width" => out.details_panel_width = num_of(value),
+                "details-view" => match value.as_str().map(DetailsView::parse) {
+                    Some(Ok(view)) => out.details_views.push(view),
+                    Some(Err(e)) => unknown.push(format!("config.toml details-view: {e}")),
+                    None => unknown.push(format!("config.toml details-view: can't read {value}")),
+                },
                 // `true`, `false`, `left` or `right`; one side counts as on
                 // until left/right modifiers are told apart.
                 "macos-option-as-alt" | "option-as-meta" => {
