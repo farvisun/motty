@@ -251,7 +251,9 @@ mod tests {
             widen_ambiguous: parse_blocks(&list).0,
             ..Default::default()
         };
-        assert_eq!(prefs.wide_ranges(), ['\u{2460}'..='\u{24FF}']);
+        let ranges = prefs.wide_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], '\u{2460}'..='\u{24FF}');
         // Every block is a real Unicode block: 16-aligned, in order.
         for (name, range) in &AMBIGUOUS_BLOCKS {
             assert_eq!(*range.start() as u32 % 16, 0, "{name}");

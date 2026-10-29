@@ -520,7 +520,7 @@ mod tests {
         // ① is ambiguous; ━ (box drawing) is too, but outside the range.
         assert_eq!(cursor_column(&render("①x")), 2);
         let config = Config {
-            wide_ambiguous: vec!['\u{2460}'..='\u{24ff}'],
+            wide_ambiguous: std::iter::once('\u{2460}'..='\u{24ff}').collect(),
             ..Config::default()
         };
         let term = render_with(config, "①x━");
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(cursor_column(&term), 4);
         // Neutral (not ambiguous) characters in a range stay narrow: ∁.
         let math = Config {
-            wide_ambiguous: vec!['\u{2200}'..='\u{22ff}'],
+            wide_ambiguous: std::iter::once('\u{2200}'..='\u{22ff}').collect(),
             ..Config::default()
         };
         assert_eq!(cursor_column(&render_with(math.clone(), "∀")), 2);
