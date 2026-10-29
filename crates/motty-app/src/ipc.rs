@@ -307,7 +307,12 @@ fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
     let path = PathBuf::from(&p.target);
     anyhow::ensure!(path.is_absolute(), "{} isn't an absolute path", p.target);
     let meta = std::fs::metadata(&path).with_context(|| format!("can't open {}", p.target))?;
-    let (handle, view) = resolve(&p.pane, cx)?;
+    // Over a file pane there's no terminal to start from: the front window.
+    let (handle, view) = match resolve(&p.pane, cx) {
+        Ok((handle, view)) => (handle, Some(view)),
+        Err(e) if p.pane.pane.is_none() => (workspaces(cx).into_iter().next().ok_or(e)?, None),
+        Err(e) => return Err(e),
+    };
     if meta.is_dir() {
         let place = match p.place {
             Place::Tab => crate::workspace::Place::Tab,
@@ -315,7 +320,9 @@ fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
             Place::Split(d) => crate::workspace::Place::Split(direction(d)),
         };
         let pane = handle.update(cx, |workspace, window, cx| {
-            workspace.reveal_pane(&view, window, cx);
+            if let Some(view) = &view {
+                workspace.reveal_pane(view, window, cx);
+            }
             workspace.start_in("", Some(path), place, window, cx)
         })?;
         return Ok(match pane {
