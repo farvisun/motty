@@ -34,6 +34,7 @@ mod tab_icons;
 mod terminal_view;
 mod titlebar;
 mod tooltip;
+mod url_scheme;
 mod web_pane;
 // Some of the web view's API isn't used yet.
 #[allow(dead_code)]
@@ -283,9 +284,12 @@ pub(crate) fn open_window_running(
     Ok(())
 }
 
-/// Finder's Open: a recipe file opens its recipe in the front window
+/// `motty://` links, and Finder's Open: a recipe file opens its recipe in the front window
 /// (asking before its commands run); other files get an editor.
 fn open_urls(urls: Vec<String>, cx: &mut App) {
+    for url in urls.iter().filter(|u| u.starts_with(url_scheme::SCHEME)) {
+        url_scheme::open(url, cx);
+    }
     let paths: Vec<std::path::PathBuf> = urls
         .iter()
         .filter_map(|u| u.strip_prefix("file://"))

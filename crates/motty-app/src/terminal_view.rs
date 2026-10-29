@@ -618,7 +618,7 @@ impl TerminalView {
         if self.control_click(event, window, cx) {
             return;
         }
-        if self.click_link(&event.modifiers, cx) {
+        if self.click_link(&event.modifiers, window, cx) {
             return;
         }
         if self.report_mouse(

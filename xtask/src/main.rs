@@ -407,6 +407,13 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>Motty Link</string>
+            <key>CFBundleURLSchemes</key><array><string>motty</string></array>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

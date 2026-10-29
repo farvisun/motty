@@ -689,6 +689,14 @@ fn about_line(s: &Snapshot) -> Menu {
                 text: last.text.clone(),
             },
         ));
+        if let Some(id) = s.pane {
+            items.push(MenuItem::action(
+                "Copy Deeplink",
+                CopyText {
+                    text: format!("{}pane/{id}?line={}", crate::url_scheme::SCHEME, last.row),
+                },
+            ));
+        }
         items.push(MenuItem::separator());
     }
     match s.pane {

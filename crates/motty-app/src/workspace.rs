@@ -1290,7 +1290,16 @@ impl Workspace {
         cx.notify();
     }
 
-    fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// The title the window shows (its active tab's).
+    pub(crate) fn title(&self) -> &str {
+        &self.window_title
+    }
+
+    pub(crate) fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub(crate) fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get_mut(ix) else {
             return;
         };

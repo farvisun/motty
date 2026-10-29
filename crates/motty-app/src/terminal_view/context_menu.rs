@@ -12,6 +12,7 @@ use gpui::{
     Action, ClipboardItem, Context, FocusHandle, Keystroke, MouseButton, MouseDownEvent,
     MouseUpEvent, Pixels, Point, Window,
 };
+use motty_term::alacritty_terminal::term::TermMode;
 use motty_term::input::{self, MouseAction};
 use motty_term::links::Target;
 use motty_theme::RightClick;
@@ -308,6 +309,8 @@ impl TerminalView {
             let output = block.output.unwrap_or_default();
             about.push(Item::new("Copy Output").enabled(!output.is_empty()).into());
             picks.push(Pick::Copy(output));
+            about.push(Item::new("Copy Deeplink").into());
+            picks.push(Pick::Copy(self.deeplink(block.row)));
             entries.push(Entry::Submenu {
                 label: "About This Line".into(),
                 entries: about,
@@ -346,6 +349,9 @@ impl TerminalView {
             };
             match pick {
                 Pick::Action(action) => focus.dispatch_action(&*action, window, cx),
+                Pick::Open(Target::Url(url)) if url.starts_with(crate::url_scheme::SCHEME) => {
+                    view.update(cx, |_, cx| super::links::open_motty_link(url, window, cx))
+                }
                 Pick::Open(Target::Url(url)) => cx.open_url(&url),
                 Pick::Open(Target::Path { path, .. }) => cx.open_with_system(&path),
                 Pick::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
@@ -362,6 +368,8 @@ impl TerminalView {
 
 /// The command under a right-click, for About This Line.
 struct BlockInfo {
+    /// The row clicked, counted from the top of the scrollback.
+    row: u64,
     command: Option<String>,
     /// `14:32:05`: when it started.
     ran_at: Option<String>,
@@ -396,11 +404,29 @@ impl TerminalView {
         let block = block.clone();
         drop(shell);
         Some(BlockInfo {
+            row,
             command: self.session.block_command(&block),
             ran_at: block.started.map(crate::workspace::clock_time),
             status,
             output: self.session.block_output(&block),
         })
+    }
+}
+
+impl TerminalView {
+    /// A `motty://` link back to `row` of this pane; on the alternate
+    /// screen there's no scrollback row to pin, so just the pane.
+    pub fn deeplink(&self, row: u64) -> String {
+        let alt = self
+            .session
+            .term
+            .lock()
+            .mode()
+            .contains(TermMode::ALT_SCREEN);
+        match alt {
+            true => format!("{}pane/{}", crate::url_scheme::SCHEME, self.id),
+            false => format!("{}pane/{}?line={row}", crate::url_scheme::SCHEME, self.id),
+        }
     }
 }
 

@@ -3,7 +3,8 @@
 //! a path in Finder (or copies a URL).
 
 use gpui::{
-    ClipboardItem, Context, Modifiers, Pixels, Point, SharedString, div, prelude::*, px, relative,
+    ClipboardItem, Context, Modifiers, Pixels, Point, SharedString, Window, div, prelude::*, px,
+    relative,
 };
 use motty_render::hsla;
 use motty_term::links::{self, Link, Target};
@@ -77,7 +78,12 @@ impl TerminalView {
     }
 
     /// ⌘-click (or ⌘⇧-click) on the hovered link; false when there's none.
-    pub(super) fn click_link(&mut self, modifiers: &Modifiers, cx: &mut Context<Self>) -> bool {
+    pub(super) fn click_link(
+        &mut self,
+        modifiers: &Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(link) = self.hovered_link.clone().filter(|_| modifiers.platform) else {
             return false;
         };
@@ -91,6 +97,9 @@ impl TerminalView {
             },
             (target, false) => match self.link_options.click {
                 LinkClick::Open => match target {
+                    Target::Url(url) if url.starts_with(crate::url_scheme::SCHEME) => {
+                        open_motty_link(url.clone(), window, cx)
+                    }
                     Target::Url(url) => cx.open_url(url),
                     Target::Path { path, .. } => cx.open_with_system(path),
                 },
@@ -126,5 +135,20 @@ impl TerminalView {
                 .overflow_hidden()
                 .child(SharedString::from(link.target.display())),
         )
+    }
+}
+
+/// A `motty://` link in a pane opens here rather than through the system,
+/// once this window's update is over (it may focus this very window).
+pub(super) fn open_motty_link(url: String, window: &mut Window, cx: &mut Context<TerminalView>) {
+    if matches!(
+        crate::url_scheme::parse(&url),
+        Some(crate::url_scheme::Link::Run { .. })
+    ) {
+        cx.defer_in(window, move |_, window, cx| {
+            crate::url_scheme::open_clicked(&url, window, cx)
+        });
+    } else {
+        cx.defer(move |cx| crate::url_scheme::open(&url, cx));
     }
 }
