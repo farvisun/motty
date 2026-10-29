@@ -115,3 +115,19 @@ $PROMPT_COMMAND}
 _motty_precmd_last"
   fi
 fi
+
+# `motty jump` changes this shell's folder itself, as zoxide does: nothing
+# is typed into the pane and history keeps the `motty jump` you ran.
+motty() {
+  if [ "${1:-}" = jump ]; then
+    builtin shift
+    builtin local out
+    out="$(command motty jump --shell-cd "$@")" || return
+    case "$out" in
+      cd:*) builtin cd -- "${out#cd:}" ;;
+      ?*) builtin printf '%s\n' "$out" ;;
+    esac
+  else
+    command motty "$@"
+  fi
+}

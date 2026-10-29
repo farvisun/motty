@@ -28,3 +28,18 @@ end
 function __motty_postexec --on-event fish_postexec
     set -g __motty_status $status
 end
+
+# `motty jump` changes this shell's folder itself, as zoxide does: nothing
+# is typed into the pane and history keeps the `motty jump` you ran.
+function motty --wraps motty
+    if test "$argv[1]" = jump
+        set -l out (command motty jump --shell-cd $argv[2..-1]); or return
+        if string match -q 'cd:*' -- "$out"
+            builtin cd -- (string sub -s 4 -- "$out")
+        else if test -n "$out"
+            printf '%s\n' $out
+        end
+    else
+        command motty $argv
+    end
+end
