@@ -210,9 +210,14 @@ impl Session {
         };
 
         let mut env = config.env.clone();
-        env.insert("TERM".into(), "xterm-256color".into());
+        // The app may pick another `$TERM` (the `term` key).
+        env.entry("TERM".into())
+            .or_insert_with(|| "xterm-256color".into());
         env.insert("COLORTERM".into(), "truecolor".into());
-        env.insert("TERM_PROGRAM".into(), "Motty".into());
+        env.insert("TERM_PROGRAM".into(), "motty".into());
+        // Amazon Q / Fig exec their own terminal mid-.zshrc unless this is
+        // set, which would drop the shell integration's marks.
+        env.insert("CW_TERM".into(), "motty".into());
         env.insert(
             "TERM_PROGRAM_VERSION".into(),
             env!("CARGO_PKG_VERSION").into(),

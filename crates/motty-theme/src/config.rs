@@ -35,6 +35,8 @@ pub struct Config {
     /// Shell names (`zsh`, `fish`) to leave alone.
     pub shell_integration_disabled_shells: Vec<String>,
     pub shell: Option<String>,
+    /// `term`: the `$TERM` shells get; `None` for `auto` (xterm-256color).
+    pub term: Option<String>,
     /// `cursor-style`: the shape programs get until they ask for another.
     pub cursor_style: CursorStyle,
     pub cursor_blink: CursorBlink,
@@ -847,6 +849,7 @@ impl Config {
                     out.scrollback = value.as_integer().map(|i| i.max(0) as usize)
                 }
                 "shell" => out.shell = str_of(value),
+                "term" => out.term = str_of(value).filter(|t| t != "auto"),
                 "shell-integration" => out.shell_integration = value.as_bool().unwrap_or(true),
                 "shell-integration-disabled-shells" => {
                     out.shell_integration_disabled_shells = value

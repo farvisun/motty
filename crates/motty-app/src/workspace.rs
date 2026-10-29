@@ -342,6 +342,13 @@ fn spawn_shell(
     };
     // Programs (and agents) in the pane can drive Motty through `motty`.
     env.insert(motty_ipc::PANE_ENV.into(), pane_id.to_string());
+    if let Some(term) = config.term.as_deref() {
+        if terminfo_exists(term) {
+            env.insert("TERM".into(), term.into());
+        } else {
+            tracing::warn!("term = {term}: no terminfo entry, using xterm-256color");
+        }
+    }
     if let Some(dir) = cli_dir() {
         let path = std::env::var("PATH").unwrap_or_default();
         env.insert("PATH".into(), format!("{}:{path}", dir.display()));
@@ -360,6 +367,36 @@ fn spawn_shell(
         preload,
     };
     Session::spawn(session, size)
+}
+
+/// Whether a terminfo entry for `name` is installed, so a `term` setting
+/// never leaves the shell with a `$TERM` nothing can look up.
+fn terminfo_exists(name: &str) -> bool {
+    let Some(first) = name.bytes().next() else {
+        return false;
+    };
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("TERMINFO")
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    dirs.push(home.join(".terminfo"));
+    if let Some(list) = std::env::var_os("TERMINFO_DIRS") {
+        dirs.extend(std::env::split_paths(&list).filter(|d| !d.as_os_str().is_empty()));
+    }
+    dirs.extend(
+        [
+            "/usr/share/terminfo",
+            "/opt/homebrew/share/terminfo",
+            "/usr/local/share/terminfo",
+        ]
+        .map(Into::into),
+    );
+    // ncurses files entries under the first letter, macOS under its hex.
+    dirs.iter().any(|d| {
+        d.join((first as char).to_string()).join(name).is_file()
+            || d.join(format!("{first:02x}")).join(name).is_file()
+    })
 }
 
 /// Where the `motty` CLI is: the bundle's Resources/bin, or beside the app
@@ -3825,4 +3862,14 @@ fn ssh_details(dest: &str) -> Vec<(String, &'static str)> {
     let user = value("user").unwrap_or_default();
     out.push((format!("{user}@{host}:{port}"), "link"));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_installed_terminfo() {
+        assert!(super::terminfo_exists("xterm-256color"));
+        assert!(!super::terminfo_exists("motty-no-such-term"));
+        assert!(!super::terminfo_exists(""));
+    }
 }
