@@ -1214,6 +1214,31 @@ impl SettingsWindow {
                 invert: false,
             },
         ));
+        // `$TERM`: a capability database, not a behaviour, so only names
+        // that every install has, plus whatever the config already says.
+        let mut terms: Vec<(SharedString, Option<Value>)> = vec![
+            ("Automatic (xterm-256color)".into(), None),
+            ("xterm".into(), s("xterm")),
+        ];
+        let term_current = match c.term.as_deref() {
+            None => 0,
+            Some("xterm") => 1,
+            Some(other) => {
+                terms.push((other.to_owned().into(), s(other)));
+                2
+            }
+        };
+        rows.push(row(
+            Shell,
+            "Shell",
+            "TERM",
+            Some("The terminal type programs look up; truecolor is advertised separately"),
+            Control::Choice {
+                key: "term",
+                options: terms,
+                current: term_current,
+            },
+        ));
         let scrollback = c.scrollback.unwrap_or(10_000);
         let presets = [1_000usize, 5_000, 10_000, 50_000, 100_000];
         let mut options: Vec<(SharedString, Option<Value>)> = presets
