@@ -296,7 +296,7 @@ impl Workspace {
     /// `auto-hide-tabs-panel = auto`: hidden with one tab, shown with
     /// more, as tabs open and close (the toggle holds until then).
     pub(super) fn auto_hide_sidebar(&mut self) {
-        if self.config.auto_hide_tabs_panel != motty_theme::AutoHide::Auto {
+        if policy(&self.config) != motty_theme::AutoHide::Auto {
             return;
         }
         let count = self.tabs.len();
@@ -304,6 +304,16 @@ impl Workspace {
             self.auto_hide_count = Some(count);
             self.sidebar_visible = count > 1 || self.inbox;
         }
+    }
+}
+
+/// The auto-hide policy for this layout's tab strip: the sidebar's, or the
+/// horizontal bar's.
+pub(super) fn policy(config: &motty_theme::Config) -> motty_theme::AutoHide {
+    if config.window_layout.horizontal() {
+        config.auto_hide_tab_bar
+    } else {
+        config.auto_hide_tabs_panel
     }
 }
 

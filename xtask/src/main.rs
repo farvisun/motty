@@ -421,6 +421,12 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <key>LSHandlerRank</key><string>Alternate</string>
             <key>CFBundleTypeExtensions</key><array><string>ottyrecipe</string></array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Otty Theme</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>CFBundleTypeExtensions</key><array><string>ottytheme</string></array>
+        </dict>
     </array>
 </dict>
 </plist>

@@ -42,7 +42,10 @@ mod palette;
 mod recipes;
 mod search_view;
 mod status;
+mod tab_bar;
+mod tab_look;
 mod tabs;
+mod theme_picker;
 mod welcome;
 
 pub(crate) use agents::Place;
@@ -133,6 +136,8 @@ pub(crate) struct Tab {
     /// In Inbox's Continue group: put there by dragging, or by being the
     /// tab you were on when Inbox opened.
     continued: bool,
+    /// Alias, icon and title from the tab rules.
+    look: motty_theme::Look,
 }
 
 enum Content {
@@ -166,6 +171,7 @@ impl Tab {
             mark: None,
             privileges: None,
             continued: false,
+            look: Default::default(),
         }
     }
 
@@ -184,6 +190,7 @@ impl Tab {
             mark: None,
             privileges: None,
             continued: false,
+            look: Default::default(),
         }
     }
 
@@ -235,6 +242,8 @@ pub struct Workspace {
     /// Open Quickly, while open.
     open_quickly: Option<open_quickly::OpenQuickly>,
     global: Option<global_search::GlobalSearch>,
+    theme_picker: Option<theme_picker::ThemePicker>,
+    import_preview: Option<theme_picker::ImportPreview>,
     recipe_dialog: Option<recipes::RecipeDialog>,
     /// The close was confirmed (or needed no asking): the window may go.
     closing_window: bool,
@@ -538,7 +547,7 @@ impl Workspace {
 
         // `auto-hide-tabs-panel`: Auto decides on the first frame, from
         // the tab count; a restored window keeps what it had.
-        let sidebar_visible = match config.auto_hide_tabs_panel {
+        let sidebar_visible = match tabs::policy(&config) {
             motty_theme::AutoHide::Always => true,
             _ => tabs::last_sidebar().unwrap_or(config.sidebar_visible),
         };
@@ -556,6 +565,8 @@ impl Workspace {
             palette: None,
             open_quickly: None,
             global: None,
+            theme_picker: None,
+            import_preview: None,
             recipe_dialog: None,
             closing_window: false,
             welcome: None,
@@ -694,6 +705,7 @@ impl Workspace {
             mark: None,
             privileges: None,
             continued: false,
+            look: Default::default(),
         })
     }
 
@@ -1400,11 +1412,13 @@ impl Workspace {
         if config.sidebar_visible != self.config.sidebar_visible {
             self.sidebar_visible = config.sidebar_visible;
         }
-        if config.auto_hide_tabs_panel != self.config.auto_hide_tabs_panel {
+        if tabs::policy(&config) != tabs::policy(&self.config)
+            || config.window_layout != self.config.window_layout
+        {
             // Switching to Always shows it everywhere; to Auto, it follows
             // the tab count from now.
             self.auto_hide_count = None;
-            if config.auto_hide_tabs_panel == motty_theme::AutoHide::Always {
+            if tabs::policy(&config) == motty_theme::AutoHide::Always {
                 self.sidebar_visible = true;
             }
         }
@@ -1436,7 +1450,13 @@ impl Workspace {
         for w in &parsed.warnings {
             tracing::warn!("{w}");
         }
-        self.theme = parsed.theme;
+        self.show_theme(parsed.theme, cx);
+    }
+
+    /// Draws everything in `theme`: on reload, and while the theme picker
+    /// previews one.
+    fn show_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
         crate::native_menu::follow_theme(self.theme.meta.mode == motty_theme::Mode::Dark);
         self.ui_font = crate::fonts::ui_family(&self.theme.token.font_ui, cx).into();
         self.mono_font = crate::fonts::terminal_family(&self.config, &self.theme, cx).into();
@@ -1558,9 +1578,14 @@ impl Workspace {
     /// The container's size: what the active tab's panes share.
     fn pane_area(&self, window: &Window) -> gpui::Size<gpui::Pixels> {
         let viewport = window.viewport_size();
-        let m = &self.theme.container.margin;
-        let sidebar = if self.sidebar_visible {
+        let m = self.container_margin();
+        let sidebar = if self.sidebar_shown() {
             self.sidebar_width()
+        } else {
+            0.
+        };
+        let bar = if self.tab_bar_shown() {
+            self.tab_bar_height()
         } else {
             0.
         };
@@ -1571,7 +1596,7 @@ impl Workspace {
         };
         gpui::size(
             (viewport.width - px(sidebar + details + m.left + m.right)).max(px(0.)),
-            (viewport.height - px(TITLEBAR_RESERVE + m.top + m.bottom)).max(px(0.)),
+            (viewport.height - px(TITLEBAR_RESERVE + bar + m.top + m.bottom)).max(px(0.)),
         )
     }
 
@@ -1798,7 +1823,13 @@ impl Workspace {
                     view.process.clone().unwrap_or_default()
                 };
                 let mut summary = TabSummary {
-                    title: tabs::named(tab.name.as_ref(), view.display_title()),
+                    title: tabs::named(
+                        tab.name.as_ref(),
+                        tab.look
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| view.display_title()),
+                    ),
                     process,
                     badge: None,
                     line: None,
@@ -1848,7 +1879,11 @@ impl Workspace {
                 TabSummary {
                     title: tabs::named(
                         tab.name.as_ref(),
-                        format!("{}{}", editor.title(), if dirty { "*" } else { "" }),
+                        format!(
+                            "{}{}",
+                            tab.look.title.clone().unwrap_or_else(|| editor.title()),
+                            if dirty { "*" } else { "" }
+                        ),
                     ),
                     process: String::new(),
                     badge: None,
@@ -1900,12 +1935,25 @@ impl Workspace {
         let badge = summary
             .badge
             .filter(|b| !(active && matches!(b, Badge::Finished | Badge::Done)));
+        // A rule's icon shares the label's slot (a badge takes over), or
+        // with separate placement goes before the title instead of the
+        // shell's name.
+        let separate = self.config.tab_icon_placement == motty_theme::IconPlacement::Separate;
+        let mut rule_icon = tab_look::icon(&self.tabs[ix].look, hsla(style.foreground), t);
         // Progress shows unless something needs the user.
         let label = match (badge, summary.progress) {
             (Some(badge), _) if badge.needs_you() => badge_icon(badge, ix, t),
             (_, Some(progress)) => progress_icon(progress, ix, t),
             (Some(badge), None) => badge_icon(badge, ix, t),
-            (None, None) => tracked(&summary.process, LABEL_PITCH).into_any_element(),
+            (None, None) if separate => gpui::Empty.into_any_element(),
+            (None, None) => match rule_icon.take() {
+                // The mark, not its box, ends where the label would.
+                Some(icon) => div()
+                    .mr(px(-tab_look::ICON_INSET))
+                    .child(icon)
+                    .into_any_element(),
+                None => tracked(&summary.process, LABEL_PITCH).into_any_element(),
+            },
         };
         let title = div()
             .flex_1()
@@ -1913,6 +1961,18 @@ impl Workspace {
             .pt(px(1.))
             .truncate()
             .child(summary.title.clone());
+        let title = match rule_icon.filter(|_| separate) {
+            // The mark (not its box) lines up with other tabs' titles.
+            Some(icon) => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(tab_look::ICON_GAP))
+                .child(div().flex_none().ml(px(-tab_look::ICON_INSET)).child(icon))
+                .child(title),
+            None => title,
+        };
         let renaming = self.renaming.as_ref().filter(|r| r.ix == ix && !r.divider);
         let title = match (&line, renaming) {
             (_, Some(rename)) => self.rename_field(rename, cx),
@@ -2213,6 +2273,7 @@ impl Workspace {
     pub(crate) fn snapshot_for_menus(&self, cx: &App) -> crate::menus::Snapshot {
         let mut s = crate::menus::Snapshot {
             pinned: self.pinned,
+            theme: self.theme.meta.name.clone(),
             secure: crate::secure_input::manual(cx),
             ..Default::default()
         };
@@ -2609,7 +2670,7 @@ impl Workspace {
     /// header's icon box does, or follows the traffic lights.
     fn titlebar_group_left(&self) -> f32 {
         let t = &self.theme;
-        if self.sidebar_visible {
+        if self.sidebar_shown() {
             let width = self.sidebar_inner_width();
             width - t.sidebar.padding.right - SIDEBAR_ICON_INSET + 6. - titlebar::GROUP
         } else {
@@ -2640,7 +2701,7 @@ impl Workspace {
                 // Keep a click from starting a window drag.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
-        let group = div()
+        let group_el = div()
             .absolute()
             .top(px(titlebar::TOP))
             .left(px(self.titlebar_group_left()))
@@ -2703,10 +2764,9 @@ impl Workspace {
                 )
                 .into_any_element()
         });
-        (
-            self.pointer_inside.then(|| group.into_any_element()),
-            details,
-        )
+        // A tab bar has its own new tab and notifications buttons.
+        let group = !self.config.window_layout.horizontal() && self.pointer_inside;
+        (group.then(|| group_el.into_any_element()), details)
     }
 
     /// The titlebar pills at the right: the pinned window, the focused
@@ -2916,7 +2976,7 @@ impl Workspace {
         }];
         // A sidebar on the window's own material is the same surface in Otty,
         // not a second layer (stacked glass would lighten the column).
-        if self.sidebar_visible && t.sidebar.material != t.window.material {
+        if self.sidebar_shown() && t.sidebar.material != t.window.material {
             wanted.push(Backdrop {
                 region: Region::Sidebar {
                     width: self.sidebar_width(),
@@ -3064,8 +3124,10 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::note_window_bounds(window);
+        self.refresh_looks(cx);
         self.auto_hide_sidebar();
-        let sidebar = self.sidebar_visible.then(|| self.render_sidebar(cx));
+        let sidebar = self.sidebar_shown().then(|| self.render_sidebar(cx));
+        let mut tab_bar = self.tab_bar_shown().then(|| self.render_tab_bar(cx));
         let details = self.details.visible.then(|| self.render_details(cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
         let t = &self.theme;
@@ -3118,8 +3180,11 @@ impl Render for Workspace {
         let side = [
             titlebar::TITLE_PAD_RIGHT,
             if pill { PILL_INTRUSION } else { 0. },
-            if self.sidebar_visible {
+            if self.sidebar_shown() {
                 0.
+            } else if self.config.window_layout.horizontal() {
+                // The bar holds the buttons; only the traffic lights are left.
+                titlebar::COLLAPSED_LEFT + titlebar::TITLE_PAD_LEFT
             } else {
                 titlebar::COLLAPSED_LEFT + titlebar::GROUP + titlebar::TITLE_PAD_LEFT
             },
@@ -3132,7 +3197,7 @@ impl Render for Workspace {
             .left_0()
             .right(px(if self.details.visible {
                 0.
-            } else if self.sidebar_visible {
+            } else if self.sidebar_shown() {
                 TITLE_RIGHT_INSET
             } else {
                 COLLAPSED_TITLE_RIGHT_INSET
@@ -3204,14 +3269,15 @@ impl Render for Workspace {
                 &c.border,
             )
         });
+        let margin = self.container_margin();
         let container = div()
             .relative()
             .flex_1()
             .min_h_0()
-            .mt(px(c.margin.top))
-            .mr(px(c.margin.right))
-            .mb(px(c.margin.bottom))
-            .ml(px(c.margin.left))
+            .mt(px(margin.top))
+            .mr(px(margin.right))
+            .mb(px(margin.bottom))
+            .ml(px(margin.left))
             .rounded(px(c.radius))
             .overflow_hidden()
             .bg(hsla(c.background))
@@ -3251,7 +3317,12 @@ impl Render for Workspace {
                         }
                     }),
             )
+            .when(
+                self.config.window_layout == motty_theme::WindowLayout::TabsTop,
+                |d| d.children(tab_bar.take()),
+            )
             .child(container)
+            .children(tab_bar)
             .child(title_band);
 
         let root = div().id("workspace");
@@ -3428,6 +3499,20 @@ impl Render for Workspace {
                 cx.listener(|this, _: &SearchInFiles, window, cx| this.search_in_files(window, cx)),
             )
             .on_action(
+                cx.listener(|this, _: &SwitchTheme, window, cx| this.open_theme_picker(window, cx)),
+            )
+            .on_action(cx.listener(|this, a: &SetTheme, _, cx| this.set_theme(&a.name, cx)))
+            .on_action(cx.listener(|_, _: &ReloadTheme, _, cx| reload_all(cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenThemeFile, window, cx| this.open_theme_file(window, cx)),
+            )
+            .on_action(cx.listener(|this, a: &ImportTheme, window, cx| {
+                this.import_theme(theme_picker::format_named(&a.format), window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &EditTheme, _, cx| {
+                crate::settings::open(Some(crate::settings::Section::Appearance), cx)
+            }))
+            .on_action(
                 cx.listener(|this, _: &GlobalSearch, window, cx| {
                     this.open_global_search(window, cx)
                 }),
@@ -3500,6 +3585,7 @@ impl Render for Workspace {
             .children(self.render_palette(window, cx))
             .children(self.render_open_quickly(window, cx))
             .children(self.render_global_search(window, cx))
+            .children(self.render_theme_picker(window, cx))
             .children(self.render_recipe_dialog(window, cx))
             .children(self.render_welcome(window, cx))
     }
@@ -3510,6 +3596,9 @@ impl Render for Workspace {
 /// returns is saved with the pane.
 /// The tab's name in the sidebar and the window title.
 fn tab_title(tab: &Tab, cx: &App) -> String {
+    if let Some(title) = &tab.look.title {
+        return tabs::named(tab.name.as_ref(), title.clone());
+    }
     let title = match &tab.content {
         Content::Terminals(t) => t.focused.read(cx).display_title(),
         Content::Editor(e) => e.read(cx).title(),

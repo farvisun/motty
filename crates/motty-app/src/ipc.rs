@@ -336,6 +336,14 @@ fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
         })?;
         return Ok(Value::Null);
     }
+    // Theme files are offered for import, with a preview.
+    if path.extension().is_some_and(|x| x == "ottytheme") {
+        handle.update(cx, |workspace, window, cx| {
+            window.activate_window();
+            workspace.preview_import(&path, None, window, cx);
+        })?;
+        return Ok(Value::Null);
+    }
     // Files always get an editor tab, wherever they were asked for.
     handle.update(cx, |workspace, window, cx| {
         workspace.open_editor(Some(path), window, cx);

@@ -39,6 +39,8 @@ pub struct Snapshot {
     pub privileges: Option<(Vec<(&'static str, bool)>, bool)>,
     /// Open in: (name, bundle id).
     pub open_with: Vec<(String, String)>,
+    /// The window's theme, checked in View › Theme.
+    pub theme: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +66,8 @@ struct Live {
     files: Vec<PathBuf>,
     /// Saved recipes: (id, name).
     recipes: Vec<(String, String)>,
+    /// Every theme: (name, dark).
+    themes: Vec<(String, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +99,7 @@ pub fn set(cx: &mut App) {
         hosts: crate::workspace::ssh_hosts(),
         files: crate::folders::recent_files(),
         recipes: saved_recipes(),
+        themes: theme_names(),
         ..Live::default()
     };
     build(&Snapshot::default(), &live, cx);
@@ -187,7 +192,15 @@ fn look_up(s: &Snapshot) -> Live {
         folders: crate::folders::ranked().into_iter().take(RECENT).collect(),
         files: crate::folders::recent_files(),
         recipes: saved_recipes(),
+        themes: theme_names(),
     }
+}
+
+fn theme_names() -> Vec<(String, bool)> {
+    motty_theme::config::list_themes()
+        .into_iter()
+        .map(|(name, mode, _)| (name, mode == motty_theme::Mode::Dark))
+        .collect()
 }
 
 /// File › Recipe lists the saved recipes, newest first.
@@ -271,7 +284,7 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
         file_menu(live),
         edit_menu(s),
         shell_menu(s, live),
-        view_menu(s),
+        view_menu(s, live),
         // AppKit lists the open windows after the last separator.
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
@@ -444,7 +457,36 @@ fn edit_menu(s: &Snapshot) -> Menu {
     ])
 }
 
-fn view_menu(s: &Snapshot) -> Menu {
+fn view_menu(s: &Snapshot, live: &Live) -> Menu {
+    // Theme: Switch Theme… and the files, then every theme, dark first.
+    let mut themes = vec![
+        MenuItem::action("Switch Theme…", SwitchTheme),
+        MenuItem::submenu(
+            Menu::new("Import Theme").items(motty_theme::import::Format::ALL.map(|f| {
+                MenuItem::action(
+                    format!("{}…", f.name()),
+                    ImportTheme {
+                        format: f.name().to_owned(),
+                    },
+                )
+            })),
+        ),
+        MenuItem::action("Edit Theme…", EditTheme),
+        MenuItem::action("Open Theme File", OpenThemeFile),
+        MenuItem::action("Reload Theme", ReloadTheme),
+    ];
+    for dark in [true, false] {
+        themes.push(MenuItem::separator());
+        themes.extend(
+            live.themes
+                .iter()
+                .filter(|(_, d)| *d == dark)
+                .map(|(name, _)| {
+                    MenuItem::action(name.clone(), SetTheme { name: name.clone() })
+                        .checked(name.eq_ignore_ascii_case(&s.theme))
+                }),
+        );
+    }
     Menu::new("View").items([
         MenuItem::action("Split Right", SplitRight),
         MenuItem::action("Split Left", SplitLeft),
@@ -488,6 +530,8 @@ fn view_menu(s: &Snapshot) -> Menu {
         MenuItem::action("Outline", DetailsOutline),
         MenuItem::action("Git", DetailsGit),
         MenuItem::action("Files", DetailsFiles),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Theme").items(themes)),
         MenuItem::separator(),
         MenuItem::action("Increase Font Size", IncreaseFontSize),
         MenuItem::action("Decrease Font Size", DecreaseFontSize),

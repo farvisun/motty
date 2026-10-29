@@ -90,6 +90,10 @@ pub struct TerminalView {
     pub allow_mouse: bool,
     /// The program in the foreground while a command runs (not the shell).
     pub foreground: Option<String>,
+    /// Its command line, for `tab-rule` `command` and `${command}`.
+    pub command: Option<String>,
+    /// The git branch of the folder (a short hash when detached).
+    pub branch: Option<String>,
     /// Sudo, SSH and caffeinate while a command runs.
     pub system: motty_term::SystemState,
     /// The agent's state, or how the last command went, for the tab.
@@ -189,6 +193,8 @@ impl TerminalView {
             allow_title: true,
             allow_mouse: true,
             foreground: None,
+            command: None,
+            branch: None,
             system: Default::default(),
             cwd: None,
             busy: false,
@@ -317,12 +323,22 @@ impl TerminalView {
         } else {
             (None, Default::default())
         };
+        let command = foreground
+            .as_ref()
+            .and_then(|_| self.session.foreground_pid())
+            .and_then(motty_term::system::process_args)
+            .map(|args| args.join(" "));
+        let branch = cwd.as_deref().and_then(git_branch);
         let changed = process != self.process
             || cwd != self.cwd
             || busy != self.busy
             || foreground != self.foreground
-            || system != self.system;
+            || system != self.system
+            || command != self.command
+            || branch != self.branch;
         self.foreground = foreground;
+        self.command = command;
+        self.branch = branch;
         self.system = system;
         let changed = self.refresh_progress() || changed;
         if cwd != self.cwd
@@ -1139,6 +1155,28 @@ impl EntityInputHandler for TerminalView {
 }
 
 /// `text` with every character a shell treats specially backslash-escaped.
+/// The branch checked out in `dir`'s repository, read from `HEAD` (a
+/// worktree's `.git` file points at its own); a short hash when detached.
+pub fn git_branch(dir: &std::path::Path) -> Option<String> {
+    let dot = dir
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|p| p.exists())?;
+    let git = if dot.is_file() {
+        let text = std::fs::read_to_string(&dot).ok()?;
+        let target = text.trim().strip_prefix("gitdir:")?.trim();
+        dot.parent()?.join(target)
+    } else {
+        dot
+    };
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_owned()),
+        None => Some(head.get(..7)?.to_owned()),
+    }
+}
+
 pub fn shell_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {

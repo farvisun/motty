@@ -19,6 +19,7 @@ mod recovery;
 mod secure_input;
 mod settings;
 mod shell_integration;
+mod tab_icons;
 mod terminal_view;
 mod titlebar;
 mod window_menu;
@@ -298,6 +299,8 @@ fn open_urls(urls: Vec<String>, cx: &mut App) {
                 .is_some_and(|x| x == recipes::EXTENSION || x == recipes::OTTY_EXTENSION);
             if recipe {
                 workspace.open_recipe_path(&path, window, cx);
+            } else if path.extension().is_some_and(|x| x == "ottytheme") {
+                workspace.preview_import(&path, None, window, cx);
             } else {
                 workspace.open_editor(Some(path), window, cx);
             }

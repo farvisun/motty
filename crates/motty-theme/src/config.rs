@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::css::{self, Rgba};
+use crate::tab_rule::TabRule;
 use crate::theme::{self, Mode, ParsedTheme, Theme};
 
 #[derive(Clone, Debug, Default)]
@@ -84,6 +85,16 @@ pub struct Config {
     pub new_tab_position: NewTabPosition,
     /// `auto-hide-tabs-panel`.
     pub auto_hide_tabs_panel: AutoHide,
+    /// `auto-hide-tab-bar`, for the horizontal tab bar.
+    pub auto_hide_tab_bar: AutoHide,
+    /// `window-layout`: the sidebar, or a tab bar above or below.
+    pub window_layout: WindowLayout,
+    /// `tab-rule` lines, highest priority first.
+    pub tab_rules: Vec<TabRule>,
+    /// `tab-icon-placement`.
+    pub tab_icon_placement: IconPlacement,
+    /// `title-from-osc` (see [`Config::programs_set_title`]).
+    pub title_from_osc: Option<bool>,
     /// `recipe-replay-saved` (see [`Config::replay_saved`]).
     pub recipe_replay_saved: Option<Replay>,
     /// `recipe-replay-file` (see [`Config::replay_file`]).
@@ -476,6 +487,69 @@ pub enum AutoHide {
     Auto,
 }
 
+/// `window-layout` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowLayout {
+    #[default]
+    SidebarLeft,
+    TabsTop,
+    TabsBottom,
+}
+
+impl WindowLayout {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "sidebar-left" | "sidebar" => Self::SidebarLeft,
+            "tabs-top" | "top" => Self::TabsTop,
+            "tabs-bottom" | "bottom" => Self::TabsBottom,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SidebarLeft => "sidebar-left",
+            Self::TabsTop => "tabs-top",
+            Self::TabsBottom => "tabs-bottom",
+        }
+    }
+
+    /// The tab bar runs across the window instead of down its side.
+    pub fn horizontal(self) -> bool {
+        self != Self::SidebarLeft
+    }
+}
+
+/// `tab-icon-placement` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IconPlacement {
+    /// Shares the badge slot on the right; a badge takes over while one
+    /// is showing.
+    #[default]
+    Combined,
+    /// Left of the title, badges on the right, shell name hidden.
+    Separate,
+}
+
+impl AutoHide {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "default" => Self::Default,
+            "always" => Self::Always,
+            "auto" => Self::Auto,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Always => "always",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 /// `new-tab-position` values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NewTabPosition {
@@ -487,6 +561,11 @@ pub enum NewTabPosition {
 }
 
 impl Config {
+    /// `title-from-osc`, on unless turned off: programs may rename tabs.
+    pub fn programs_set_title(&self) -> bool {
+        self.title_from_osc.unwrap_or(true)
+    }
+
     /// Where a new window, tab or split starts: its own key, else
     /// `working-directory`, else home for a window and the active pane's
     /// folder otherwise.
@@ -842,12 +921,28 @@ impl Config {
                         None => unknown.push(format!("config.toml {key}: unknown value {value}")),
                     }
                 }
-                "auto-hide-tabs-panel" => match value.as_str() {
-                    Some("default") => out.auto_hide_tabs_panel = AutoHide::Default,
-                    Some("always") => out.auto_hide_tabs_panel = AutoHide::Always,
-                    Some("auto") => out.auto_hide_tabs_panel = AutoHide::Auto,
+                "auto-hide-tabs-panel" | "auto-hide-tab-bar" | "window-show-tab-bar" => {
+                    match value.as_str().and_then(AutoHide::parse) {
+                        Some(a) if key == "auto-hide-tabs-panel" => out.auto_hide_tabs_panel = a,
+                        Some(a) => out.auto_hide_tab_bar = a,
+                        None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                    }
+                }
+                "window-layout" => match value.as_str().and_then(WindowLayout::parse) {
+                    Some(l) => out.window_layout = l,
+                    None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "tab-rule" => match value.as_str().map(TabRule::parse) {
+                    Some(Ok(rule)) => out.tab_rules.push(rule),
+                    Some(Err(e)) => unknown.push(format!("config.toml tab-rule: {e}")),
+                    None => unknown.push(format!("config.toml tab-rule: can't read {value}")),
+                },
+                "tab-icon-placement" => match value.as_str() {
+                    Some("combined") => out.tab_icon_placement = IconPlacement::Combined,
+                    Some("separate") => out.tab_icon_placement = IconPlacement::Separate,
                     _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
                 },
+                "title-from-osc" => out.title_from_osc = value.as_bool(),
                 "notification-foreground" => match value.as_str() {
                     Some("off") => out.notification_foreground = NotificationForeground::Off,
                     Some("always") => out.notification_foreground = NotificationForeground::Always,
@@ -1346,6 +1441,52 @@ pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
 
 /// Sets each key to its value, or removes it for `None`, in Motty's own
 /// config.toml (see [`save_values`]).
+/// Replaces every `tab-rule` line with `rules`, in order, where the first
+/// one was (or at the end).
+pub fn save_tab_rules(rules: &[TabRule]) -> std::io::Result<PathBuf> {
+    edit(|src| replace_tab_rules(src, rules))
+}
+
+fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
+    let lines: String = rules
+        .iter()
+        .map(|r| {
+            let line = r.to_line();
+            // A TOML literal string can't hold a `'`; fall back to a basic one.
+            if line.contains('\'') {
+                format!("tab-rule = {}\n", toml::Value::String(line))
+            } else {
+                format!("tab-rule = '{line}'\n")
+            }
+        })
+        .collect();
+    let mut out = String::new();
+    let mut placed = false;
+    for line in src.lines() {
+        let key = line
+            .trim_start()
+            .split(['=', ' '])
+            .next()
+            .unwrap_or_default();
+        if key == "tab-rule" {
+            if !placed {
+                out.push_str(&lines);
+                placed = true;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !placed {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&lines);
+    }
+    out
+}
+
 pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf> {
     edit(|src| {
         let mut src = src.to_owned();
@@ -1362,6 +1503,30 @@ pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf>
 const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
 const MOTTY_LIGHT: &str = include_str!("../themes/motty-light.ottytheme");
 
+/// Every theme shipped in the binary: Motty's own, then popular schemes
+/// written from their published (MIT) palettes. A theme file of the same
+/// name in a themes folder takes its place.
+pub const BUILTIN_THEMES: &[&str] = &[
+    MOTTY_DARK,
+    MOTTY_LIGHT,
+    include_str!("../themes/ayu-dark.ottytheme"),
+    include_str!("../themes/ayu-light.ottytheme"),
+    include_str!("../themes/catppuccin-latte.ottytheme"),
+    include_str!("../themes/catppuccin-mocha.ottytheme"),
+    include_str!("../themes/dracula.ottytheme"),
+    include_str!("../themes/github-dark.ottytheme"),
+    include_str!("../themes/github-light.ottytheme"),
+    include_str!("../themes/gruvbox-dark.ottytheme"),
+    include_str!("../themes/gruvbox-light.ottytheme"),
+    include_str!("../themes/nord.ottytheme"),
+    include_str!("../themes/one-dark.ottytheme"),
+    include_str!("../themes/one-light.ottytheme"),
+    include_str!("../themes/rose-pine.ottytheme"),
+    include_str!("../themes/solarized-dark.ottytheme"),
+    include_str!("../themes/solarized-light.ottytheme"),
+    include_str!("../themes/tokyo-night.ottytheme"),
+];
+
 pub fn builtin(mode: Mode) -> ParsedTheme {
     theme::parse(if mode == Mode::Dark {
         MOTTY_DARK
@@ -1369,6 +1534,20 @@ pub fn builtin(mode: Mode) -> ParsedTheme {
         MOTTY_LIGHT
     })
     .expect("built-in theme parses")
+}
+
+/// A built-in theme's file text, by name.
+pub fn builtin_source(name: &str) -> Option<&'static str> {
+    let wanted = normalize(name);
+    BUILTIN_THEMES
+        .iter()
+        .copied()
+        .find(|src| theme::parse(src).is_ok_and(|p| normalize(&p.theme.meta.name) == wanted))
+}
+
+/// Where Motty keeps themes it writes (imports, edits).
+pub fn user_themes_dir() -> PathBuf {
+    motty_dir().join("themes")
 }
 
 pub fn theme_dirs() -> Vec<PathBuf> {
@@ -1418,13 +1597,6 @@ pub fn files_fingerprint() -> u64 {
 /// Finds a theme by `[meta] name` or file stem, case-insensitively.
 pub fn find_theme(name: &str) -> Option<ParsedTheme> {
     let wanted = normalize(name);
-    for builtin_src in [MOTTY_DARK, MOTTY_LIGHT] {
-        if let Ok(p) = theme::parse(builtin_src)
-            && normalize(&p.theme.meta.name) == wanted
-        {
-            return Some(p);
-        }
-    }
     for dir in theme_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1451,15 +1623,14 @@ pub fn find_theme(name: &str) -> Option<ParsedTheme> {
             }
         }
     }
-    None
+    BUILTIN_THEMES
+        .iter()
+        .filter_map(|src| theme::parse(src).ok())
+        .find(|p| normalize(&p.theme.meta.name) == wanted)
 }
 
 pub fn list_themes() -> Vec<(String, Mode, Option<PathBuf>)> {
-    let mut out: Vec<(String, Mode, Option<PathBuf>)> = [MOTTY_DARK, MOTTY_LIGHT]
-        .iter()
-        .filter_map(|s| theme::parse(s).ok())
-        .map(|p| (p.theme.meta.name, p.theme.meta.mode, None))
-        .collect();
+    let mut out: Vec<(String, Mode, Option<PathBuf>)> = Vec::new();
     for dir in theme_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1476,6 +1647,14 @@ pub fn list_themes() -> Vec<(String, Mode, Option<PathBuf>)> {
             {
                 out.push((t.theme.meta.name, t.theme.meta.mode, Some(path)));
             }
+        }
+    }
+    for p in BUILTIN_THEMES.iter().filter_map(|s| theme::parse(s).ok()) {
+        if !out
+            .iter()
+            .any(|(n, ..)| normalize(n) == normalize(&p.theme.meta.name))
+        {
+            out.push((p.theme.meta.name, p.theme.meta.mode, None));
         }
     }
     out.sort_by_key(|(n, ..)| n.to_lowercase());
@@ -1611,6 +1790,37 @@ mod tests {
     }
 
     #[test]
+    fn tab_rules_round_trip() {
+        let src = "theme = \"Nord\"\ntab-rule = 'path=\"~/a\" title=\"A\"'\nfont-size = 13\ntab-rule = 'icon=\"x\"'\n";
+        let cfg = Config::parse(src);
+        assert_eq!(cfg.tab_rules.len(), 2);
+        let mut rules = cfg.tab_rules.clone();
+        rules.reverse();
+        rules[0].title = Some("it's ${folder}".into());
+        let out = replace_tab_rules(src, &rules);
+        assert_eq!(out.matches("tab-rule").count(), 2);
+        assert!(out.starts_with("theme = \"Nord\"\ntab-rule"));
+        assert!(out.contains("font-size = 13"));
+        assert_eq!(Config::parse(&out).tab_rules, rules);
+        let added = replace_tab_rules("theme = \"Nord\"\n", &rules[..1]);
+        assert_eq!(Config::parse(&added).tab_rules, rules[..1]);
+        assert_eq!(replace_tab_rules(src, &[]).matches("tab-rule").count(), 0);
+    }
+
+    #[test]
+    fn layout_keys() {
+        let cfg = Config::parse(
+            "window-layout = \"tabs-bottom\"\nwindow-show-tab-bar = \"auto\"\ntab-icon-placement = \"separate\"\ntitle-from-osc = false\n",
+        );
+        assert_eq!(cfg.window_layout, WindowLayout::TabsBottom);
+        assert_eq!(cfg.auto_hide_tab_bar, AutoHide::Auto);
+        assert_eq!(cfg.auto_hide_tabs_panel, AutoHide::Default);
+        assert_eq!(cfg.tab_icon_placement, IconPlacement::Separate);
+        assert!(!cfg.programs_set_title());
+        assert!(Config::parse("").programs_set_title());
+    }
+
+    #[test]
     fn auto_hide_tabs_panel() {
         assert_eq!(Config::parse("").auto_hide_tabs_panel, AutoHide::Default);
         let cfg = Config::parse("auto-hide-tabs-panel = \"auto\"\n");
@@ -1671,6 +1881,20 @@ mod tests {
             &read,
         ));
         assert_eq!(missing.warnings.len(), 1);
+    }
+
+    #[test]
+    fn every_builtin_parses_cleanly() {
+        for src in BUILTIN_THEMES {
+            let p = theme::parse(src).unwrap();
+            assert!(
+                p.warnings.is_empty(),
+                "{}: {:?}",
+                p.theme.meta.name,
+                p.warnings
+            );
+        }
+        assert_eq!(BUILTIN_THEMES.len(), 18);
     }
 
     #[test]

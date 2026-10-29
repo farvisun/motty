@@ -28,6 +28,9 @@ use crate::agents::{self, hooks};
 use crate::native_menu::{self, Entry, Item};
 use motty_ipc::skills;
 
+mod tab_rules;
+mod theme_editor;
+
 const WIDTH: f32 = 720.;
 const HEIGHT: f32 = 520.;
 const SIDEBAR: f32 = 197.;
@@ -43,6 +46,12 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(name) = path
+            .strip_prefix("tab-icons/")
+            .and_then(|p| p.strip_suffix(".svg"))
+        {
+            return Ok(crate::tab_icons::svg(name).map(Cow::Borrowed));
+        }
         macro_rules! icons {
             ($($name:literal),*) => {
                 match path {
@@ -168,6 +177,11 @@ enum Command {
     DeleteRecipe(usize),
     AddSnippet,
     RevealRecipes,
+    /// The tab rule editor, typing into this field.
+    EditTabRules(Option<tab_rules::Field>),
+    ImportTheme,
+    EditTheme,
+    ResetTheme,
 }
 
 enum Control {
@@ -328,6 +342,10 @@ pub struct SettingsWindow {
     /// The agent whose details are shown.
     agent_open: Option<usize>,
     skill: Option<SkillDialog>,
+    /// The tab rule editor, while open.
+    rules: Option<tab_rules::RuleEditor>,
+    /// The theme color editor, while open.
+    theme_editor: Option<theme_editor::ThemeEditor>,
     /// The section shown before the current one, and a count bumped on each
     /// switch, which restarts the transition.
     previous: Section,
@@ -560,6 +578,8 @@ impl SettingsWindow {
             agents: scan_agents(),
             agent_open: None,
             skill: None,
+            rules: None,
+            theme_editor: None,
             previous: section,
             epoch: 0,
             _intercept: intercept,
@@ -829,6 +849,18 @@ impl SettingsWindow {
                 let _ = std::fs::create_dir_all(&dir);
                 cx.reveal_path(&dir);
             }
+            Command::EditTabRules(field) => {
+                self.open_rule_editor(field, crate::workspace::mode_for(window.appearance()))
+            }
+            Command::ImportTheme => with_workspace(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(ImportTheme::default()), cx)
+            }),
+            Command::EditTheme => {
+                self.open_theme_editor(crate::workspace::mode_for(window.appearance()))
+            }
+            Command::ResetTheme => {
+                self.reset_theme(crate::workspace::mode_for(window.appearance()), cx)
+            }
         }
         let _ = window;
         cx.notify();
@@ -844,6 +876,10 @@ impl SettingsWindow {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
+        if self.rule_editor_key(ks, cx) || self.theme_editor_key(ks, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(dialog) = self.skill.as_mut() {
             match ks.key.as_str() {
                 "escape" => self.skill = None,
@@ -964,6 +1000,72 @@ impl SettingsWindow {
                 on: c.sidebar_visible,
                 invert: false,
             },
+        ));
+        // Tabs & Title: what the rules give, counted, each opening the editor.
+        let count = |f: fn(&motty_theme::TabRule) -> bool| match c
+            .tab_rules
+            .iter()
+            .filter(|r| f(r))
+            .count()
+        {
+            0 => "No rules".to_owned(),
+            1 => "1 rule".to_owned(),
+            n => format!("{n} rules"),
+        };
+        for (title, note, field, n) in [
+            (
+                "Project Alias",
+                "A short name for a project, as ${alias} in titles",
+                tab_rules::Field::Alias,
+                count(|r| r.alias.is_some()),
+            ),
+            (
+                "Icon",
+                "An icon or emoji per project, agent, host or file, tinted from the palette",
+                tab_rules::Field::Emoji,
+                count(|r| r.icon.is_some()),
+            ),
+            (
+                "Title",
+                "A template such as ${folder} · ${branch}",
+                tab_rules::Field::Title,
+                count(|r| r.title.is_some()),
+            ),
+        ] {
+            let mut r = row(
+                View,
+                "Tabs & Title",
+                title,
+                Some(note),
+                Control::Button("Configure…", Command::EditTabRules(Some(field))),
+            );
+            r.description = Some(format!("{n} · {note}").into());
+            rows.push(r);
+        }
+        rows.push(row(
+            View,
+            "Tabs & Title",
+            "Programs Can Set the Title",
+            Some("Turn off once your rules decide the titles, so a shell that renames tabs doesn't fight them"),
+            Control::Toggle {
+                key: "title-from-osc",
+                on: c.programs_set_title(),
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            View,
+            "Tab Icon & Badge",
+            "Icon and Badge",
+            Some("Combined: one slot on the right, a badge takes over while active. Separate: the icon left of the title"),
+            choice(
+                "tab-icon-placement",
+                &[("Combined", "combined"), ("Separate", "separate")],
+                match c.tab_icon_placement {
+                    motty_theme::IconPlacement::Combined => "Combined",
+                    motty_theme::IconPlacement::Separate => "Separate",
+                },
+            ),
         ));
         let rule_label = |r: ConfirmClose| match r {
             ConfirmClose::Process => "Running Process",
@@ -1628,6 +1730,31 @@ impl SettingsWindow {
         ));
         rows.push(row(
             Appearance,
+            "Theme",
+            "Import Theme",
+            Some("An Otty, iTerm2, Kitty, Alacritty or Ghostty theme file"),
+            Control::Button("Import…", Command::ImportTheme),
+        ));
+        rows.push(row(
+            Appearance,
+            "Theme",
+            "Edit Theme",
+            Some("The current theme's colors; saved as a copy in your themes folder"),
+            Control::Button("Edit…", Command::EditTheme),
+        ));
+        let mode = crate::workspace::mode_for(cx.window_appearance());
+        let active = theme_editor::active_theme(c, mode);
+        if theme_editor::override_path(&active).is_some() {
+            rows.push(row(
+                Appearance,
+                "Theme",
+                format!("{active} Has Your Changes"),
+                Some("Your edited copy is used instead of the built-in colors"),
+                Control::Button("Reset to Built-in", Command::ResetTheme),
+            ));
+        }
+        rows.push(row(
+            Appearance,
             "Font",
             "Font Family",
             None,
@@ -1730,16 +1857,49 @@ impl SettingsWindow {
         rows.push(row(
             Appearance,
             "Tabs",
-            "Auto Hide Tabs Panel",
+            "Layout",
+            Some("A tabs panel on the left, or a tab bar above or below the terminal"),
+            choice(
+                "window-layout",
+                &[
+                    ("Sidebar", "sidebar-left"),
+                    ("Tabs on Top", "tabs-top"),
+                    ("Tabs on Bottom", "tabs-bottom"),
+                ],
+                match c.window_layout {
+                    motty_theme::WindowLayout::SidebarLeft => "Sidebar",
+                    motty_theme::WindowLayout::TabsTop => "Tabs on Top",
+                    motty_theme::WindowLayout::TabsBottom => "Tabs on Bottom",
+                },
+            ),
+        ));
+        // Each layout keeps its own policy, as Otty does.
+        let (auto_label, auto_key, auto_hide) = if c.window_layout.horizontal() {
+            (
+                "Auto Hide Tab Bar",
+                "auto-hide-tab-bar",
+                c.auto_hide_tab_bar,
+            )
+        } else {
+            (
+                "Auto Hide Tabs Panel",
+                "auto-hide-tabs-panel",
+                c.auto_hide_tabs_panel,
+            )
+        };
+        rows.push(row(
+            Appearance,
+            "Tabs",
+            auto_label,
             Some("Auto shows it once a window has two or more tabs"),
             choice(
-                "auto-hide-tabs-panel",
+                auto_key,
                 &[
                     ("Default", "default"),
                     ("Always", "always"),
                     ("Auto", "auto"),
                 ],
-                match c.auto_hide_tabs_panel {
+                match auto_hide {
                     motty_theme::AutoHide::Default => "Default",
                     motty_theme::AutoHide::Always => "Always",
                     motty_theme::AutoHide::Auto => "Auto",
@@ -2385,6 +2545,14 @@ impl Render for SettingsWindow {
             .skill
             .as_ref()
             .map(|d| self.render_skill_dialog(d, &c, cx));
+        let rules_dialog = self
+            .rules
+            .as_ref()
+            .map(|e| self.render_rule_editor(e, &c, cx));
+        let theme_dialog = self
+            .theme_editor
+            .as_ref()
+            .map(|e| self.render_theme_editor(e, &c, cx));
         div()
             .id("settings")
             .key_context("Settings")
@@ -2400,6 +2568,8 @@ impl Render for SettingsWindow {
             .child(sidebar)
             .child(main)
             .children(dialog)
+            .children(rules_dialog)
+            .children(theme_dialog)
     }
 }
 

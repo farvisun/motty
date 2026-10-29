@@ -80,6 +80,10 @@ actions!(
         FindPrevious,
         GlobalSearch,
         SearchInFiles,
+        SwitchTheme,
+        ReloadTheme,
+        OpenThemeFile,
+        EditTheme,
         SaveRecipe,
         ExportRecipe,
         OpenRecipe,
@@ -201,6 +205,22 @@ pub struct OpenUrl {
 #[action(namespace = motty, no_json)]
 pub struct RevealRow {
     pub row: u64,
+}
+
+/// Makes `name` the theme (the dark slot's, while dark with a separate
+/// dark theme).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct SetTheme {
+    pub name: String,
+}
+
+/// Imports a theme file: `format` names the kind (`Otty`, `iTerm2`, …), or
+/// is empty to tell from the file.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct ImportTheme {
+    pub format: String,
 }
 
 /// Opens a saved recipe (by id or name).

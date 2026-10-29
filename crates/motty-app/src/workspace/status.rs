@@ -150,15 +150,21 @@ impl Workspace {
     /// when they change, on reload, and for a new pane.
     pub(super) fn sync_shell_privileges(&mut self, cx: &mut Context<Self>) {
         let defaults = self.config.badges;
+        // Title From OSC off: the rules (or the folder) name every tab.
+        let programs = self.config.programs_set_title();
         for tab in &self.tabs {
             let b = tab.privileges.unwrap_or(defaults);
+            let title = b.title_shell && programs;
             let Some(terms) = tab.terms() else { continue };
             for view in terms.root.leaves() {
                 let v = view.read(cx);
-                if (v.allow_title, v.allow_mouse) != (b.title_shell, b.mouse_shell) {
+                if (v.allow_title, v.allow_mouse) != (title, b.mouse_shell) {
                     view.update(cx, |v, cx| {
-                        v.allow_title = b.title_shell;
+                        v.allow_title = title;
                         v.allow_mouse = b.mouse_shell;
+                        if !programs {
+                            v.title = None;
+                        }
                         cx.notify();
                     });
                 }

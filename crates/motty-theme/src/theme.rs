@@ -720,10 +720,8 @@ fn resolve(root: &Table, warnings: &std::cell::RefCell<Vec<String>>) -> anyhow::
         background: bar.color("background"),
         height: bar.num("height").unwrap_or(36.),
         padding: bar.edges("padding").unwrap_or(Edges::all(8.)),
-        border_bottom: bar.border("border-bottom").unwrap_or(Some(Border {
-            width: 1.,
-            color: None,
-        })),
+        // Otty's Night and Paper bars show no line unless the theme draws one.
+        border_bottom: bar.border("border-bottom").flatten(),
         material: bar.material("material"),
         separator: bar.bool("separator").unwrap_or(false),
         tabs: tab_states(&s, "tab-bar.tab", &bar_tab_defaults),
