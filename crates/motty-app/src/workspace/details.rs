@@ -971,7 +971,7 @@ pub(crate) fn open_in(bundle: &str, path: &Path) {
     }
 }
 
-fn tilde(path: &Path) -> String {
+pub(super) fn tilde(path: &Path) -> String {
     match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok().map(Path::to_path_buf)) {
         Some(rel) if rel.as_os_str().is_empty() => "~".into(),
         Some(rel) => format!("~/{}", rel.display()),

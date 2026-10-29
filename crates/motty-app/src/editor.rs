@@ -189,6 +189,16 @@ impl FileEditor {
             .unwrap_or_else(|| "Untitled.txt".into())
     }
 
+    /// The first `n` lines with text in them, for the tab's hover card.
+    pub fn opening_lines(&self, n: usize) -> Vec<String> {
+        (0..self.buffer.line_count())
+            .map(|ix| self.buffer.line(ix))
+            .filter(|l| !l.trim().is_empty())
+            .take(n)
+            .map(str::to_owned)
+            .collect()
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.buffer.text() != self.saved
     }

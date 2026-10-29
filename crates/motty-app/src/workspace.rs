@@ -33,6 +33,7 @@ mod closing;
 mod details;
 mod files;
 mod global_search;
+mod hover_card;
 mod menu_actions;
 pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
@@ -1789,6 +1790,16 @@ impl Workspace {
                 move |_, _, _, cx| {
                     let title = title.clone();
                     cx.new(|_| tabs::DragPreview { title })
+                }
+            })
+            .tooltip({
+                let this = cx.entity().downgrade();
+                move |_, cx| {
+                    let card = this.upgrade().and_then(|ws| ws.read(cx).hover_card(ix, cx));
+                    match card {
+                        Some(card) => cx.new(|_| card).into(),
+                        None => cx.new(|_| gpui::Empty).into(),
+                    }
                 }
             })
             .drag_over::<tabs::TabDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
