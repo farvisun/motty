@@ -9,7 +9,7 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, bail};
 use motty_ipc::{
     Client, Created, Direction, FindParams, FindResult, NewTabParams, PaneInfo, PaneRef,
-    ReadParams, RunParams, RunResult, SendTextParams, SplitParams, TextRange, method,
+    ReadParams, RunParams, RunResult, SendTextParams, SplitParams, Submit, TextRange, method,
 };
 use serde_json::{Value, json};
 
@@ -113,10 +113,11 @@ fn tools() -> Value {
         },
         {
             "name": "send_text",
-            "description": "Type text into a pane, e.g. answers for an interactive program. Include \\n (or \\r) to press Return.",
+            "description": "Type text into a pane, e.g. answers for an interactive program, or a prompt for the coding agent there. Include \\n (or \\r) to press Return, or set submit.",
             "inputSchema": {"type": "object", "required": ["pane", "text"], "properties": {
                 "pane": pane,
-                "text": {"type": "string"}
+                "text": {"type": "string"},
+                "submit": {"type": "string", "enum": ["queue", "now"], "description": "Press Return too: `queue` waits until the agent finishes its turn or the shell is back at an empty prompt; `now` sends at once"}
             }}
         },
         {
@@ -264,7 +265,13 @@ fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
                 .as_str()
                 .context("`text` is required")?
                 .to_owned();
-            let _: Value = client.call(method::SEND_TEXT, &SendTextParams { pane, text })?;
+            let submit = match args["submit"].as_str() {
+                Some("queue") => Some(Submit::Queue),
+                Some("now") => Some(Submit::Now),
+                _ => None,
+            };
+            let _: Value =
+                client.call(method::SEND_TEXT, &SendTextParams { pane, text, submit })?;
             Ok("sent".into())
         }
         "split_pane" => {

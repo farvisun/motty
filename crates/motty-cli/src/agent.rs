@@ -81,6 +81,8 @@ struct Report {
     state: Option<AgentState>,
     message: Option<String>,
     session: Option<String>,
+    /// The session's log, for History (Claude Code's `transcript_path`).
+    transcript: Option<String>,
 }
 
 fn send(
@@ -110,6 +112,7 @@ fn send(
         // The hook's parent is the agent.
         agent_pid: agent_pid.or_else(|| Some(std::os::unix::process::parent_id())),
         session_id: report.session,
+        transcript: report.transcript,
         label,
         message: report.message,
     };
@@ -264,6 +267,7 @@ fn report_for(agent: &str, payload: &Value, args: &[String]) -> Option<Report> {
         state: Some(state),
         message,
         session,
+        transcript: str_at(payload, &["transcript_path"]).map(str::to_owned),
     })
 }
 

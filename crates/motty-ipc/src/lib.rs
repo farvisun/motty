@@ -16,6 +16,8 @@ pub use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod skills;
+
 pub const SOCKET_ENV: &str = "MOTTY_SOCKET";
 pub const PANE_ENV: &str = "MOTTY_PANE_ID";
 
@@ -52,6 +54,7 @@ pub mod method {
     pub const ACTION: &str = "action";
     pub const LIST_ACTIONS: &str = "list-actions";
     pub const AGENT_STATE: &str = "agent-state";
+    pub const OPEN: &str = "open";
 }
 
 /// What a coding agent is doing, as its hooks report it.
@@ -96,6 +99,9 @@ pub struct AgentStateParams {
     pub agent_pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Where the agent logs the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
     /// Display name; defaults to the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -131,6 +137,32 @@ pub struct PaneInfo {
     /// What the agent is doing or needs, or how the last command went.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The agent is in the middle of a turn.
+    #[serde(default)]
+    pub in_turn: bool,
+    /// The agent's session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Prompts waiting in the pane's queue, plus one just sent that the
+    /// pane hasn't finished with.
+    #[serde(default)]
+    pub queued: usize,
+}
+
+impl PaneInfo {
+    /// Done with its work: an agent between turns, else a shell at its
+    /// prompt, with nothing left in the queue. `None` when the pane can't
+    /// tell (no agent and no shell integration).
+    pub fn idle(&self) -> Option<bool> {
+        let quiet = self.queued == 0;
+        if self.agent.is_some() {
+            Some(!self.in_turn && quiet)
+        } else if self.shell_integration {
+            Some(!self.busy && quiet)
+        } else {
+            None
+        }
+    }
 }
 
 /// Which pane a request is about; `None` means the focused one.
@@ -163,6 +195,40 @@ pub struct SendTextParams {
     #[serde(flatten)]
     pub pane: PaneRef,
     pub text: String,
+    /// Press Return too: when it's the pane's turn, or at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit: Option<Submit>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Submit {
+    /// Through the pane's prompt queue: once the agent finishes its turn
+    /// or the shell is back at an empty prompt.
+    Queue,
+    Now,
+}
+
+/// Where `open` puts what it opens.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Place {
+    #[default]
+    Tab,
+    Window,
+    Split(Direction),
+}
+
+/// Opens a file (editor tab), a folder (a shell there) or a URL (the
+/// browser).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenParams {
+    #[serde(flatten)]
+    pub pane: PaneRef,
+    /// An absolute path or a URL.
+    pub target: String,
+    #[serde(default)]
+    pub place: Place,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -374,6 +440,28 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_follows_the_agent_else_the_shell() {
+        let mut p: PaneInfo = serde_json::from_value(serde_json::json!({
+            "id": 1, "window": 0, "tab": 0, "title": "", "cwd": null, "process": null,
+            "busy": false, "focused": false, "cols": 80, "rows": 24,
+            "shell_integration": false,
+        }))
+        .unwrap();
+        assert_eq!(p.idle(), None);
+        p.shell_integration = true;
+        assert_eq!(p.idle(), Some(true));
+        p.queued = 1;
+        assert_eq!(p.idle(), Some(false));
+        // A running agent counts as busy to the shell; its turn decides.
+        p.queued = 0;
+        p.busy = true;
+        p.agent = Some("Claude Code".into());
+        assert_eq!(p.idle(), Some(true));
+        p.in_turn = true;
+        assert_eq!(p.idle(), Some(false));
+    }
 
     #[test]
     fn params_are_flat_and_kebab_case() {

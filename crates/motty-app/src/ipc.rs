@@ -12,8 +12,8 @@ use anyhow::{Context as _, anyhow, bail};
 use gpui::{App, AppContext as _, Entity, Focusable as _, Global, WindowHandle};
 use motty_ipc::{
     ActionParams, Created, Direction as IpcDirection, FindParams, FindResult, FoundMatch,
-    NewTabParams, PaneInfo, PaneRef, ReadParams, Request, Response, RunParams, RunResult,
-    SendTextParams, SetModeParams, SplitParams, TextRange, method,
+    NewTabParams, OpenParams, PaneInfo, PaneRef, Place, ReadParams, Request, Response, RunParams,
+    RunResult, SendTextParams, SetModeParams, SplitParams, Submit, TextRange, method,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Point};
@@ -142,6 +142,7 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::ACTION => parse(request.params).and_then(|p| action(p, cx)),
         method::LIST_ACTIONS => Ok(json!(action_names(cx))),
         method::AGENT_STATE => parse(request.params).and_then(|p| agent_state(p, cx)),
+        method::OPEN => parse(request.params).and_then(|p| open(p, cx)),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
@@ -232,6 +233,9 @@ fn list_panes(cx: &App) -> Vec<PaneInfo> {
                     .and_then(|s| s.badge)
                     .map(|b| b.name().to_owned()),
                 status: v.status.as_ref().and_then(|s| s.message.clone()),
+                in_turn: v.status.as_ref().is_some_and(|s| s.in_turn),
+                session: v.status.as_ref().and_then(|s| s.session.clone()),
+                queued: v.pending(),
             });
         }
     }
@@ -259,9 +263,84 @@ fn read(p: ReadParams, cx: &App) -> anyhow::Result<Value> {
 }
 
 fn send_text(p: SendTextParams, cx: &mut App) -> anyhow::Result<Value> {
-    let (_, view) = resolve(&p.pane, cx)?;
-    view.update(cx, |v, cx| v.write_input(&p.text, cx));
+    let (handle, view) = resolve(&p.pane, cx)?;
+    let badges = handle.read(cx)?.badges();
+    if !badges.ipc_send_keys {
+        bail!(
+            "typing into panes is off; turn on Settings › Advanced › IPC Allow Send Keys \
+             (ipc-allow-send-keys = true)"
+        );
+    }
+    let v = view.read(cx);
+    anyhow::ensure!(!v.is_read_only(), "pane {} is in Read Only mode", v.id);
+    let ssh = v
+        .process
+        .as_deref()
+        .is_some_and(|p| matches!(p, "ssh" | "mosh" | "mosh-client" | "et"));
+    if !badges.ipc_sensitive && (ssh || v.session().reading_secret()) {
+        bail!(
+            "pane {} is {}; Motty doesn't type into it (ipc-allow-sensitive-sessions)",
+            v.id,
+            if ssh {
+                "in an SSH session"
+            } else {
+                "at a password prompt"
+            }
+        );
+    }
+    let text = p.text;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |v, cx| match p.submit {
+            None => v.write_input(&text, cx),
+            Some(Submit::Now) => v.send_tracked(&text, window, cx),
+            Some(Submit::Queue) => v.enqueue(vec![text], window, cx),
+        })
+    })?;
     Ok(Value::Null)
+}
+
+/// A URL goes to the browser, a folder gets a shell, a file an editor tab.
+fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
+    if p.target.contains("://") || p.target.starts_with("mailto:") {
+        cx.open_url(&p.target);
+        return Ok(Value::Null);
+    }
+    let path = PathBuf::from(&p.target);
+    anyhow::ensure!(path.is_absolute(), "{} isn't an absolute path", p.target);
+    let meta = std::fs::metadata(&path).with_context(|| format!("can't open {}", p.target))?;
+    let (handle, view) = resolve(&p.pane, cx)?;
+    if meta.is_dir() {
+        let place = match p.place {
+            Place::Tab => crate::workspace::Place::Tab,
+            Place::Window => crate::workspace::Place::Window,
+            Place::Split(d) => crate::workspace::Place::Split(direction(d)),
+        };
+        let pane = handle.update(cx, |workspace, window, cx| {
+            workspace.reveal_pane(&view, window, cx);
+            workspace.start_in("", Some(path), place, window, cx)
+        })?;
+        return Ok(match pane {
+            Some(pane) => json!(Created {
+                pane: pane.read(cx).id
+            }),
+            None => Value::Null,
+        });
+    }
+    // Files always get an editor tab, wherever they were asked for.
+    handle.update(cx, |workspace, window, cx| {
+        workspace.open_editor(Some(path), window, cx);
+        window.activate_window();
+    })?;
+    Ok(Value::Null)
+}
+
+fn direction(d: IpcDirection) -> Direction {
+    match d {
+        IpcDirection::Left => Direction::Left,
+        IpcDirection::Right => Direction::Right,
+        IpcDirection::Up => Direction::Up,
+        IpcDirection::Down => Direction::Down,
+    }
 }
 
 fn command_of(command: Option<Vec<String>>) -> anyhow::Result<Option<(String, Vec<String>)>> {
@@ -277,12 +356,7 @@ fn command_of(command: Option<Vec<String>>) -> anyhow::Result<Option<(String, Ve
 
 fn split(p: SplitParams, cx: &mut App) -> anyhow::Result<Value> {
     let (handle, view) = resolve(&p.pane, cx)?;
-    let direction = match p.direction {
-        IpcDirection::Left => Direction::Left,
-        IpcDirection::Right => Direction::Right,
-        IpcDirection::Up => Direction::Up,
-        IpcDirection::Down => Direction::Down,
-    };
+    let direction = direction(p.direction);
     let command = command_of(p.command)?;
     let created = handle.update(cx, |workspace, window, cx| {
         workspace.reveal_pane(&view, window, cx);

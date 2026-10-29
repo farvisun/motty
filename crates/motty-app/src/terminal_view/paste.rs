@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, App, ClipboardEntry, Context, DragMoveEvent, ExternalPaths, Hsla, Image,
-    PromptLevel, Window, div, prelude::*, px,
+    AnyElement, App, ClipboardEntry, ClipboardItem, Context, DragMoveEvent, ExternalPaths, Hsla,
+    Image, PromptLevel, Window, div, prelude::*, px,
 };
 use motty_term::alacritty_terminal::term::TermMode;
 
@@ -110,22 +110,13 @@ impl TerminalView {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
-        match item.entries().first() {
-            Some(ClipboardEntry::ExternalPaths(paths)) => {
-                let text = escaped(paths.paths());
-                self.paste_text(&text, false, window);
-            }
-            Some(ClipboardEntry::String(s)) => {
-                let text = s.text().clone();
-                self.paste_checked(text, window, cx);
-            }
-            Some(ClipboardEntry::Image(image)) => match save_image(image) {
-                Ok(path) => self.paste_text(&escaped(&[path]), false, window),
-                Err(e) => {
-                    tracing::warn!("couldn't save the pasted image: {e}");
-                    window.play_system_bell();
-                }
-            },
+        if let Some(ClipboardEntry::String(s)) = item.entries().first() {
+            let text = s.text().clone();
+            return self.paste_checked(text, window, cx);
+        }
+        match clipboard_files(&item) {
+            Some(text) if !text.is_empty() => self.paste_text(&text, false, window),
+            Some(_) => window.play_system_bell(),
             None => {}
         }
     }
@@ -275,6 +266,22 @@ impl TerminalView {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+/// Files on the clipboard, or a picture (saved to a file), as shell
+/// words; empty when the picture couldn't be saved, `None` for text.
+pub(crate) fn clipboard_files(item: &ClipboardItem) -> Option<String> {
+    match item.entries().first()? {
+        ClipboardEntry::ExternalPaths(paths) => Some(escaped(paths.paths())),
+        ClipboardEntry::Image(image) => Some(match save_image(image) {
+            Ok(path) => escaped(&[path]),
+            Err(e) => {
+                tracing::warn!("couldn't save the pasted image: {e}");
+                String::new()
+            }
+        }),
+        _ => None,
     }
 }
 

@@ -272,6 +272,7 @@ fn record_osc(
         ShellOsc::Progress(_) | ShellOsc::Cwd(_) | ShellOsc::OutputStart => {
             Some(SessionEvent::ShellChanged)
         }
+        ShellOsc::InputStart => Some(SessionEvent::PromptReady),
         _ => None,
     };
     // Full-screen programs own the alternate screen; marks there would

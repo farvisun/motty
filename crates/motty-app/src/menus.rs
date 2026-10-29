@@ -28,6 +28,8 @@ pub struct Snapshot {
     pub last: Option<LastCommand>,
     /// The agent in the focused pane: its name and session.
     pub agent: Option<(String, Option<String>)>,
+    /// What forking that session is called (`Branch`), when it can be.
+    pub fork: Option<&'static str>,
     /// Each tab's title and its programs (pid, name), for Ports.
     pub tabs: Vec<(String, Vec<(i32, String)>)>,
 }
@@ -221,6 +223,10 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
                 MenuItem::action("Find in All Tabs…", GlobalSearch),
             ])),
             MenuItem::separator(),
+            MenuItem::action("Composer", ToggleComposer),
+            MenuItem::action("Prompt Queue…", TogglePromptQueue),
+            MenuItem::action("Send to Chat", SendToChat),
+            MenuItem::separator(),
             MenuItem::submenu(
                 Menu::new("Insert from").items([MenuItem::action("File Path…", InsertFilePath)]),
             ),
@@ -232,6 +238,7 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
             MenuItem::action("Open Quickly…", OpenQuickly),
             MenuItem::action("Jump To…", JumpTo),
             MenuItem::action("Open Files Quickly…", OpenFilesQuickly),
+            MenuItem::action("Agent History…", AgentHistory),
             MenuItem::separator(),
             MenuItem::action("Tabs Panel", ToggleTabsPanel),
             MenuItem::action("Inbox", ToggleInbox),
@@ -325,7 +332,20 @@ fn shell_menu(s: &Snapshot, live: &Live) -> Menu {
                 "Copy Session ID",
                 CopyText { text: id.clone() },
             ));
+            agent.push(MenuItem::action("View Session History", ViewSessionHistory));
         }
+        if let Some(fork) = s.fork {
+            agent.push(MenuItem::submenu(Menu::new(format!("{fork} in")).items([
+                MenuItem::action("New Tab", ForkSessionInNewTab),
+                MenuItem::action("New Window", ForkSessionInNewWindow),
+                MenuItem::separator(),
+                MenuItem::action("Split Right", ForkSessionRight),
+                MenuItem::action("Split Left", ForkSessionLeft),
+                MenuItem::action("Split Down", ForkSessionDown),
+                MenuItem::action("Split Up", ForkSessionUp),
+            ])));
+        }
+        agent.push(MenuItem::separator());
         agent.push(MenuItem::action("Clear Badge", ClearBadge));
         items.push(MenuItem::submenu(Menu::new(label.clone()).items(agent)));
     }

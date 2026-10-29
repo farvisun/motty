@@ -26,6 +26,7 @@ use toml::Value;
 use crate::actions::*;
 use crate::agents::{self, hooks};
 use crate::native_menu::{self, Entry, Item};
+use motty_ipc::skills;
 
 const WIDTH: f32 = 720.;
 const HEIGHT: f32 = 520.;
@@ -181,6 +182,16 @@ enum Control {
         open: bool,
     },
     Info(SharedString),
+    /// A skill's Copy button: `ix` indexes [`skills::SKILLS`].
+    Skill(usize),
+}
+
+/// The dialog a skill's Copy opens: the name it's installed under, and
+/// whether agents may type into panes.
+struct SkillDialog {
+    ix: usize,
+    name: String,
+    allow: bool,
 }
 
 struct Row {
@@ -282,6 +293,7 @@ pub struct SettingsWindow {
     agents: Vec<AgentInfo>,
     /// The agent whose details are shown.
     agent_open: Option<usize>,
+    skill: Option<SkillDialog>,
     /// The section shown before the current one, and a count bumped on each
     /// switch, which restarts the transition.
     previous: Section,
@@ -493,6 +505,7 @@ impl SettingsWindow {
             confirm_reset: false,
             agents: scan_agents(),
             agent_open: None,
+            skill: None,
             previous: section,
             epoch: 0,
             _intercept: intercept,
@@ -734,6 +747,24 @@ impl SettingsWindow {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
+        if let Some(dialog) = self.skill.as_mut() {
+            match ks.key.as_str() {
+                "escape" => self.skill = None,
+                "enter" => self.copy_skill(cx),
+                "backspace" => {
+                    dialog.name.pop();
+                }
+                _ if m.platform || m.control => return,
+                _ => match ks.key_char.as_deref() {
+                    Some(c) if c.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) => {
+                        dialog.name.push_str(c)
+                    }
+                    _ => return,
+                },
+            }
+            cx.stop_propagation();
+            return cx.notify();
+        }
         if let Some((ix, text)) = self.editing.as_mut() {
             let ix = *ix;
             match ks.key.as_str() {
@@ -1234,6 +1265,11 @@ impl SettingsWindow {
                 "privilege-caffeinate-agent-processing",
                 b.caffeinate,
             ),
+            (
+                "Resume Session on Recovery",
+                "privilege-resume-agent-session",
+                b.resume_session,
+            ),
         ] {
             rows.push(
                 row(
@@ -1280,6 +1316,15 @@ impl SettingsWindow {
             None,
             Control::Copy(format!("codex mcp add motty -- {cli} mcp")),
         ));
+        for (ix, skill) in skills::SKILLS.iter().enumerate() {
+            rows.push(row(
+                Agents,
+                "Skills",
+                format!("/{}", skill.name),
+                Some(skill.description),
+                Control::Skill(ix),
+            ));
+        }
 
         // Appearance
         let light: Vec<String> = self.themes.iter().map(|(n, _)| n.clone()).collect();
@@ -1512,6 +1557,28 @@ impl SettingsWindow {
             "Reload Config",
             Some("Motty also notices when the file changes"),
             Control::Button("Reload", Command::ReloadConfig),
+        ));
+        rows.push(row(
+            Advanced,
+            "IPC",
+            "IPC Allow Send Keys",
+            Some("motty send and agents' skills may type into panes"),
+            Control::Toggle {
+                key: "ipc-allow-send-keys",
+                on: b.ipc_send_keys,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Advanced,
+            "IPC",
+            "IPC Allow Sensitive Sessions",
+            Some("…even into SSH sessions and password prompts"),
+            Control::Toggle {
+                key: "ipc-allow-sensitive-sessions",
+                on: b.ipc_sensitive,
+                invert: false,
+            },
         ));
         for w in &c.warnings {
             rows.push(row(
@@ -1875,11 +1942,16 @@ impl Render for SettingsWindow {
             })
             .children(status);
 
+        let dialog = self
+            .skill
+            .as_ref()
+            .map(|d| self.render_skill_dialog(d, &c, cx));
         div()
             .id("settings")
             .key_context("Settings")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .size_full()
             .flex()
             .bg(c.content)
@@ -1888,6 +1960,225 @@ impl Render for SettingsWindow {
             .text_color(c.text)
             .child(sidebar)
             .child(main)
+            .children(dialog)
+    }
+}
+
+impl SettingsWindow {
+    /// Puts the skill's installer prompt on the clipboard, and saves the
+    /// typing switch when the dialog showed it.
+    fn copy_skill(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.skill.take() else {
+            return;
+        };
+        let skill = &skills::SKILLS[dialog.ix];
+        let name = match dialog.name.trim() {
+            "" => skill.name,
+            name => name,
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(skills::installer(skill, name)));
+        if skill.types && dialog.allow != self.config.badges.ipc_send_keys {
+            self.apply(
+                "ipc-allow-send-keys",
+                Some(Value::Boolean(dialog.allow)),
+                cx,
+            );
+        }
+        self.status = Some((
+            true,
+            format!("Copied. Paste it into your coding agent and send; then type /{name}."),
+        ));
+        cx.notify();
+    }
+
+    fn render_skill_dialog(
+        &self,
+        d: &SkillDialog,
+        c: &Colors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let skill = &skills::SKILLS[d.ix];
+        let name = match d.name.trim() {
+            "" => skill.name,
+            name => name,
+        };
+        let usage = format!("/{name}{}", &skill.usage[skill.name.len() + 1..]);
+        let label = |text: &'static str| {
+            div()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(c.header)
+                .child(text)
+        };
+        let button = |id: &'static str, text: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .when(primary, |d| {
+                    d.bg(c.accent).text_color(hsla(Rgba::rgb(0xffffff)))
+                })
+                .when(!primary, |d| {
+                    d.bg(c.control)
+                        .border(px(0.5))
+                        .border_color(c.control_border)
+                })
+                .shadow_xs()
+                .child(text)
+        };
+        let field = div()
+            .h(px(30.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .bg(c.field)
+            .border(px(1.))
+            .border_color(c.accent)
+            .child(div().text_color(c.secondary).child("/"))
+            .child(SharedString::from(d.name.clone()))
+            .child(div().w(px(1.5)).h(px(15.)).bg(c.accent));
+        let (track, knob_left) = if d.allow {
+            (c.accent, 18.)
+        } else {
+            (c.switch_off, 2.)
+        };
+        let switch = skill.types.then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child("Allow Agents to Type into Panes")
+                        .child(div().text_size(px(11.)).text_color(c.secondary).child(
+                            "Without it, every send is refused. SSH sessions and \
+                                     password prompts refuse typing either way.",
+                        )),
+                )
+                .child(
+                    div()
+                        .id("skill-allow")
+                        .flex_none()
+                        .relative()
+                        .w(px(38.))
+                        .h(px(22.))
+                        .rounded_full()
+                        .bg(track)
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(2.))
+                                .left(px(knob_left))
+                                .size(px(18.))
+                                .rounded_full()
+                                .bg(hsla(Rgba::rgb(0xffffff)))
+                                .shadow_sm(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(d) = this.skill.as_mut() {
+                                d.allow = !d.allow;
+                            }
+                            cx.notify();
+                        })),
+                )
+        });
+        let card = div()
+            .id("skill-dialog")
+            .occlude()
+            .w(px(420.))
+            .p(px(20.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .rounded(px(12.))
+            .bg(c.card)
+            .border(px(1.))
+            .border_color(c.separator)
+            .shadow_lg()
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(SharedString::from(format!("Install /{}", skill.name))),
+            )
+            .child(div().text_color(c.secondary).child(
+                "Copy puts an installer prompt on the clipboard. Paste it into your \
+                         coding agent and send: the agent writes the skill file itself.",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(label("NAME"))
+                    .child(field)
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(c.secondary)
+                            .child("Rename it if you already have a skill by this name."),
+                    ),
+            )
+            .children(switch)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(label("ONCE INSTALLED, TYPE"))
+                    .child(
+                        div()
+                            .px(px(10.))
+                            .py(px(7.))
+                            .rounded(px(6.))
+                            .bg(c.field)
+                            .font_family("Menlo")
+                            .text_size(px(12.))
+                            .child(SharedString::from(usage)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        button("skill-cancel", "Cancel", false).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.skill = None;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        button("skill-copy", "Copy", true)
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_skill(cx))),
+                    ),
+            );
+        div()
+            .id("skill-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(hsla(Rgba::rgb(0x000000).with_alpha(0.25)))
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.skill = None;
+                cx.notify();
+            }))
+            .child(card)
+            .into_any_element()
     }
 }
 
@@ -2255,6 +2546,28 @@ impl SettingsWindow {
                     .child(button("plus", "+", 1.))
                     .into_any_element()
             }
+            Control::Skill(skill) => div()
+                .id(("skill", ix))
+                .flex_none()
+                .h(px(26.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .bg(c.control)
+                .border(px(0.5))
+                .border_color(c.control_border)
+                .shadow_xs()
+                .child("Copy")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.skill = Some(SkillDialog {
+                        ix: skill,
+                        name: skills::SKILLS[skill].name.to_owned(),
+                        allow: this.config.badges.ipc_send_keys || skills::SKILLS[skill].types,
+                    });
+                    cx.notify();
+                }))
+                .into_any_element(),
             Control::Button(label, command) => div()
                 .id(("button", ix))
                 .flex_none()

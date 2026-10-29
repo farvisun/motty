@@ -28,6 +28,7 @@ use crate::terminal_view::PaneMode;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::titlebar;
 
+mod agents;
 mod closing;
 mod details;
 mod files;
@@ -39,6 +40,7 @@ mod status;
 mod tabs;
 mod welcome;
 
+pub(crate) use agents::Place;
 pub(crate) use details::{listening_ports, open_in, open_with_apps, web_url};
 pub(crate) use palette::keycaps;
 pub(crate) use tabs::MovedTab;
@@ -567,10 +569,25 @@ impl Workspace {
             PaneState::Leaf {
                 cwd,
                 scrollback: saved,
+                agent,
+                queue,
             } => {
                 let cwd = cwd.clone().filter(|d| d.is_dir());
                 let preload = saved.as_deref().and_then(scrollback);
-                Pane::Leaf(self.new_terminal_with(None, cwd, preload, rect, window, cx)?)
+                let view = self.new_terminal_with(None, cwd, preload, rect, window, cx)?;
+                // Privilege: Resume Session on Recovery.
+                let resume = agent.as_ref().filter(|_| self.config.badges.resume_session);
+                if let Some(line) = resume
+                    .and_then(|[agent, id]| crate::agents::sessions::resume_command(agent, id))
+                {
+                    let line = format!("{line}\r");
+                    view.update(cx, |v, cx| v.write_input(&line, cx));
+                }
+                if !queue.is_empty() {
+                    let queue = queue.clone();
+                    view.update(cx, |v, cx| v.enqueue(queue, window, cx));
+                }
+                Pane::Leaf(view)
             }
             PaneState::Split {
                 vertical,
@@ -1164,6 +1181,11 @@ impl Workspace {
                 cx,
             );
         }
+    }
+
+    /// The `privilege-*` and `ipc-allow-*` switches.
+    pub fn badges(&self) -> motty_theme::Badges {
+        self.config.badges
     }
 
     /// Re-reads config.toml and the themes after one of them changed on disk.
@@ -1817,6 +1839,11 @@ impl Workspace {
                 .status
                 .as_ref()
                 .and_then(|st| Some((st.agent.clone()?, st.session.clone())));
+            s.fork = v.status.as_ref().and_then(|st| {
+                let (agent, id) = (st.agent_id.as_deref()?, st.session.as_deref()?);
+                crate::agents::sessions::fork_command(agent, id)
+                    .map(|_| crate::agents::sessions::fork_label(agent))
+            });
         }
         s.tabs = self
             .tabs
@@ -2564,7 +2591,14 @@ impl Render for Workspace {
             .overflow_hidden()
             .bg(hsla(c.background))
             .shadow(shadows(&c.shadow))
-            .children(self.render_panes(cx))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_1().min_h_0().children(self.render_panes(cx)))
+                    .children(self.render_pinned_composer(cx)),
+            )
             .children(border_overlay);
 
         let main = div()
@@ -2744,6 +2778,40 @@ impl Render for Workspace {
                     this.open_global_search(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &SendToChat, window, cx| this.send_to_chat(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, a: &ResumeSession, window, cx| {
+                    this.resume_session(a, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &AgentHistory, window, cx| {
+                    this.show_agent_history(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ViewSessionHistory, window, cx| {
+                this.view_focused_history(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionInNewTab, window, cx| {
+                this.fork_focused("tab", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionInNewWindow, window, cx| {
+                this.fork_focused("window", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionRight, window, cx| {
+                this.fork_focused("right", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionLeft, window, cx| {
+                this.fork_focused("left", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionDown, window, cx| {
+                this.fork_focused("down", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForkSessionUp, window, cx| {
+                this.fork_focused("up", window, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenConfigFile, _, _| this.open_config_file()))
             .on_action(cx.listener(|this, _: &ShowWelcome, w, cx| this.show_welcome(w, cx)))
             .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle(1, w, cx)))
@@ -2821,9 +2889,15 @@ fn tab_state(
                     }
                     keep(bytes)
                 });
+                let agent = view
+                    .status
+                    .as_ref()
+                    .and_then(|s| Some([s.agent_id.clone()?, s.session.clone()?]));
                 PaneState::Leaf {
                     cwd: view.cwd.clone(),
                     scrollback,
+                    agent,
+                    queue: view.queued().to_vec(),
                 }
             }
             Pane::Split(split) => PaneState::Split {

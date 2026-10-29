@@ -89,6 +89,14 @@ pub struct Badges {
     pub notify_awaiting: bool,
     /// `privilege-caffeinate-agent-processing`
     pub caffeinate: bool,
+    /// `privilege-resume-agent-session`: a recovered pane resumes the
+    /// agent session it had.
+    pub resume_session: bool,
+    /// `ipc-allow-send-keys`: `motty send` and agents may type into panes.
+    pub ipc_send_keys: bool,
+    /// `ipc-allow-sensitive-sessions`: …even into SSH sessions and
+    /// password prompts.
+    pub ipc_sensitive: bool,
 }
 
 impl Default for Badges {
@@ -101,6 +109,9 @@ impl Default for Badges {
             notify_complete: true,
             notify_awaiting: true,
             caffeinate: false,
+            resume_session: true,
+            ipc_send_keys: false,
+            ipc_sensitive: false,
         }
     }
 }
@@ -475,7 +486,10 @@ impl Config {
                 | "privilege-badge-agent-awaiting-input"
                 | "privilege-notify-agent-task-complete"
                 | "privilege-notify-agent-awaiting-input"
-                | "privilege-caffeinate-agent-processing" => match value.as_bool() {
+                | "privilege-caffeinate-agent-processing"
+                | "privilege-resume-agent-session"
+                | "ipc-allow-send-keys"
+                | "ipc-allow-sensitive-sessions" => match value.as_bool() {
                     Some(on) => {
                         let b = &mut out.badges;
                         *match key {
@@ -485,6 +499,9 @@ impl Config {
                             "privilege-badge-agent-awaiting-input" => &mut b.agent_awaiting,
                             "privilege-notify-agent-task-complete" => &mut b.notify_complete,
                             "privilege-notify-agent-awaiting-input" => &mut b.notify_awaiting,
+                            "privilege-resume-agent-session" => &mut b.resume_session,
+                            "ipc-allow-send-keys" => &mut b.ipc_send_keys,
+                            "ipc-allow-sensitive-sessions" => &mut b.ipc_sensitive,
                             _ => &mut b.caffeinate,
                         } = on;
                     }

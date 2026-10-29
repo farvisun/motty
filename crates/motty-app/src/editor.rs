@@ -6,6 +6,7 @@
 //! any length cost only what's on screen.
 
 mod buffer;
+mod prose;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, Font, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     Pixels, Point, ScrollEvent, ShapedLine, SharedString, TextAlign, TextRun, UTF16Selection,
-    Window, canvas, div, fill, point, prelude::*, px, size,
+    Window, WrappedLine, canvas, div, fill, point, prelude::*, px, size,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::alacritty_terminal::vte::ansi::NamedColor;
@@ -58,6 +59,10 @@ struct Layout {
     text_left: Pixels,
     first: usize,
     lines: Vec<ShapedLine>,
+    /// Prose: every line wrapped, and how far below the top each starts.
+    wrapped: Vec<WrappedLine>,
+    tops: Vec<Pixels>,
+    content_height: Pixels,
 }
 
 pub struct FileEditor {
@@ -84,6 +89,12 @@ pub struct FileEditor {
     error: Option<String>,
     style: Rc<TerminalStyle>,
     layout: Rc<RefCell<Layout>>,
+    /// A text field rather than a file (see `prose`).
+    prose: Option<prose::Prose>,
+    /// A document's name, for one that isn't a file (a transcript).
+    name: Option<String>,
+    /// Buttons on the toolbar's right, each sending its action.
+    buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
@@ -116,6 +127,9 @@ impl FileEditor {
             error: None,
             style: Rc::new(style),
             layout: Rc::default(),
+            prose: None,
+            name: None,
+            buttons: Vec::new(),
         };
         if let Some(path) = path {
             editor.load(path);
@@ -139,11 +153,32 @@ impl FileEditor {
         self.path = Some(path);
     }
 
+    /// `text` to read, not edit, under `name`, with `buttons` on the
+    /// toolbar (History's Resume).
+    pub fn viewer(
+        name: String,
+        text: String,
+        buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
+        style: TerminalStyle,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut editor = Self::new(None, style, cx);
+        editor.buffer = Buffer::from_text(&text);
+        editor.saved = text;
+        editor.read_only = true;
+        editor.name = Some(name);
+        editor.buttons = buttons;
+        editor
+    }
+
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
     pub fn title(&self) -> String {
+        if let Some(name) = &self.name {
+            return name.clone();
+        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -348,7 +383,11 @@ impl FileEditor {
                     "pageup" => -page,
                     _ => page,
                 };
-                let to = self.vertical(delta, window);
+                let to = if self.prose.is_some() {
+                    self.prose_vertical(delta, window)
+                } else {
+                    self.vertical(delta, window)
+                };
                 self.move_to(to, select, cx);
             }
             "home" => self.move_to(smart_home(b, cursor), select, cx),
@@ -382,7 +421,7 @@ impl FileEditor {
                     b.line(cursor.line)[..b.indent_end(cursor.line).min(cursor.col)].to_owned();
                 self.insert(&format!("\n{indent}"), cx);
             }
-            "tab" if !m.platform && !m.control && !m.alt => {
+            "tab" if !m.platform && !m.control && !m.alt && self.prose.is_none() => {
                 if select {
                     self.outdent(cx);
                 } else {
@@ -420,6 +459,11 @@ impl FileEditor {
         self.changed(cx);
     }
 
+    pub fn selected_text(&self) -> Option<String> {
+        let (a, b) = self.selection()?;
+        Some(self.buffer.slice(a, b))
+    }
+
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if let Some((a, b)) = self.selection() {
             cx.write_to_clipboard(ClipboardItem::new_string(self.buffer.slice(a, b)));
@@ -435,7 +479,16 @@ impl FileEditor {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        // A text field takes files and pictures as their paths.
+        let files = self
+            .prose
+            .is_some()
+            .then(|| crate::terminal_view::clipboard_files(&item))
+            .flatten();
+        if let Some(text) = files.or_else(|| item.text()) {
             self.typing_at = None;
             self.insert(&text, cx);
         }
@@ -531,6 +584,9 @@ impl FileEditor {
     // Mouse
 
     fn pos_at(&self, at: Point<Pixels>, window: &mut Window) -> Pos {
+        if self.prose.is_some() {
+            return self.prose_pos_at(at);
+        }
         let layout = self.layout.borrow();
         let lh = layout.line_height.max(px(1.));
         let y = at.y - layout.bounds.top() + self.scroll.y;
@@ -599,6 +655,9 @@ impl FileEditor {
     }
 
     fn on_scroll(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.prose.is_some() {
+            return self.prose_scroll(event, cx);
+        }
         let layout = self.layout.borrow();
         let lh = layout.line_height.max(px(1.));
         let delta = event.delta.pixel_delta(lh);
@@ -619,6 +678,26 @@ impl FileEditor {
     fn foreground(&self) -> Rgba {
         self.style.palette[NamedColor::Foreground as usize]
     }
+}
+
+/// A toolbar button with a label only.
+fn button_row(
+    id: impl Into<gpui::ElementId>,
+    label: SharedString,
+    text: Hsla,
+    hover: Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(24.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(13.))
+        .text_color(text)
+        .hover(move |s| s.bg(hover))
+        .child(label)
 }
 
 /// ⌘← goes to the text after the indentation, then to column 0.
@@ -660,6 +739,9 @@ fn read_text(path: &Path) -> Result<(String, bool), String> {
 
 impl Render for FileEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.prose.is_some() {
+            return self.render_prose(window, cx);
+        }
         let style = self.style.clone();
         let fg = self.foreground();
         let dark = style.dark;
@@ -685,27 +767,48 @@ impl Render for FileEditor {
                 .child(div().text_size(px(12.)).child(glyph))
                 .child(label)
         };
-        let toolbar =
-            div()
-                .flex_none()
-                .h(px(TOOLBAR))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .text_size(px(12.))
-                        .text_color(ink(0.5))
-                        .when(self.read_only, |d| d.child("Read Only"))
-                        .children(self.error.clone()),
-                )
-                .child(div().flex().items_center().gap(px(4.)).when(
-                    dirty && !self.read_only,
-                    |d| {
+        let toolbar = div()
+            .flex_none()
+            .h(px(TOOLBAR))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(12.))
+                    .text_color(ink(0.5))
+                    .when(self.read_only && self.name.is_none(), |d| {
+                        d.child("Read Only")
+                    })
+                    .children(self.error.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .children(
+                        self.buttons
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, (label, action))| {
+                                let action = action.boxed_clone();
+                                button_row(
+                                    ("editor-button", ix),
+                                    label.clone(),
+                                    ink(0.85),
+                                    ink(0.07),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(action.boxed_clone(), cx)
+                                })
+                            }),
+                    )
+                    .when(dirty && !self.read_only, |d| {
                         d.child(
                             button("save", "✓", "Save")
                                 .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
@@ -714,8 +817,8 @@ impl Render for FileEditor {
                             button("discard", "✕", "Discard")
                                 .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
                         )
-                    },
-                ));
+                    }),
+            );
 
         let focused = self.focus.is_focused(window);
         let reveal = std::mem::take(&mut self.reveal);
@@ -729,6 +832,7 @@ impl Render for FileEditor {
             focused,
             style: style.clone(),
             fg: hsla(fg),
+            numbers: self.name.is_none(),
             gutter_bg: ink(if dark { 0.04 } else { 0.025 }),
             number: ink(0.38),
             current_line: if dark {
@@ -790,6 +894,7 @@ impl Render for FileEditor {
                     .on_scroll(cx.listener(Self::on_scroll))
                     .child(text),
             )
+            .into_any_element()
     }
 }
 
@@ -803,6 +908,8 @@ struct PaintState {
     focused: bool,
     style: Rc<TerminalStyle>,
     fg: Hsla,
+    /// Line numbers in a gutter (not for a transcript).
+    numbers: bool,
     gutter_bg: Hsla,
     number: Hsla,
     current_line: Hsla,
@@ -825,7 +932,11 @@ fn paint_text(
     let count = s.lines.line_count();
     let digits = count.to_string().len().max(2);
     let digit = shape(&"0".into(), font, font_size, s.number, window).width;
-    let gutter = px(GUTTER_PAD_LEFT) + digit * digits as f32 + px(GUTTER_PAD_RIGHT);
+    let gutter = if s.numbers {
+        px(GUTTER_PAD_LEFT) + digit * digits as f32 + px(GUTTER_PAD_RIGHT)
+    } else {
+        px(GUTTER_PAD_LEFT)
+    };
     let text_bounds = Bounds::from_corners(
         point(bounds.left() + gutter + px(TEXT_PAD), bounds.top()),
         bounds.bottom_right(),
@@ -867,10 +978,12 @@ fn paint_text(
     let top = text_bounds.top() - scroll.y + lh * first as f32;
     let text_left = text_bounds.left() - scroll.x;
 
-    window.paint_quad(fill(
-        Bounds::new(bounds.origin, size(gutter, bounds.size.height)),
-        s.gutter_bg,
-    ));
+    if s.numbers {
+        window.paint_quad(fill(
+            Bounds::new(bounds.origin, size(gutter, bounds.size.height)),
+            s.gutter_bg,
+        ));
+    }
 
     let mut shaped = Vec::with_capacity(last.saturating_sub(first));
     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
@@ -890,7 +1003,7 @@ fn paint_text(
                 .text_system()
                 .shape_line(text.into(), font_size, &runs, None);
 
-            if line == s.cursor.line && s.selection.is_none() {
+            if s.numbers && line == s.cursor.line && s.selection.is_none() {
                 window.paint_quad(fill(
                     Bounds::new(
                         point(text_bounds.left() - px(TEXT_PAD), y),
@@ -922,24 +1035,26 @@ fn paint_text(
                 }
             }
 
-            let number = shape(
-                &SharedString::from((line + 1).to_string()),
-                font,
-                font_size,
-                s.number,
-                window,
-            );
-            let _ = number.paint(
-                point(
-                    bounds.left() + gutter - px(GUTTER_PAD_RIGHT) - number.width,
-                    y,
-                ),
-                lh,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
+            if s.numbers {
+                let number = shape(
+                    &SharedString::from((line + 1).to_string()),
+                    font,
+                    font_size,
+                    s.number,
+                    window,
+                );
+                let _ = number.paint(
+                    point(
+                        bounds.left() + gutter - px(GUTTER_PAD_RIGHT) - number.width,
+                        y,
+                    ),
+                    lh,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
             window.with_content_mask(
                 Some(gpui::ContentMask {
                     bounds: text_bounds,
@@ -967,6 +1082,7 @@ fn paint_text(
         text_left,
         first,
         lines: shaped,
+        ..Layout::default()
     };
     moved.then_some(scroll)
 }
@@ -1073,6 +1189,9 @@ impl EntityInputHandler for FileEditor {
         window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if self.prose.is_some() {
+            return Some(self.prose_caret());
+        }
         let x = self.x_for(self.cursor, window);
         let layout = self.layout.borrow();
         let y = layout.bounds.top() + layout.line_height * self.cursor.line as f32 - self.scroll.y;

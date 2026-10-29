@@ -26,6 +26,7 @@ use crate::actions::*;
 
 mod autocomplete;
 mod behavior;
+mod composer;
 mod context_menu;
 mod find;
 mod hints;
@@ -33,7 +34,9 @@ mod links;
 mod paste;
 mod vi;
 
+pub use composer::{Chip, is_pinned as composer_pinned};
 pub use links::LinkOptions;
+pub(crate) use paste::clipboard_files;
 pub use vi::PaneMode;
 
 pub enum TerminalEvent {
@@ -121,6 +124,9 @@ pub struct TerminalView {
     suggestion: Option<autocomplete::Suggestion>,
     /// The prompt line whose suggestion Esc hid.
     dismissed: Option<String>,
+    /// The Composer's draft, open or not.
+    composer: Option<composer::Composer>,
+    queue: composer::Queue,
     events: async_channel::Receiver<SessionEvent>,
     _events: Task<()>,
     _focus_out: gpui::Subscription,
@@ -196,6 +202,8 @@ impl TerminalView {
             autocomplete: Default::default(),
             suggestion: None,
             dismissed: None,
+            composer: None,
+            queue: Default::default(),
             events,
             _events: task,
             _focus_out: focus_out,
@@ -327,6 +335,11 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Input is refused (Read Only mode).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -401,6 +414,7 @@ impl TerminalView {
                 // Where it ran: the folder before any `cd` it did.
                 self.record_command(self.cwd.clone(), exit);
                 self.refresh_process();
+                self.command_done();
                 cx.emit(TerminalEvent::CommandFinished { exit, duration });
             }
             SessionEvent::Notification { title, body } => {
@@ -411,6 +425,9 @@ impl TerminalView {
                     cx.emit(TerminalEvent::TitleChanged);
                 }
             }
+            // zsh marks input start again as it accepts a line, so this can't
+            // end a command; it lets the next queued prompt go.
+            SessionEvent::PromptReady => self.dispatch(window, cx),
         }
     }
 
@@ -444,6 +461,10 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Keys typed in the Composer or the queue aren't the terminal's.
+        if !self.focus_handle.is_focused(window) {
+            return;
+        }
         if self.hints.is_some() {
             self.hint_key(event, window, cx);
             return;
@@ -836,29 +857,22 @@ impl Render for TerminalView {
         .on_paint(move |bounds, window, cx| {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
         });
-        div()
-            .id("terminal")
-            .key_context("Terminal")
-            .track_focus(&self.focus_handle)
+        let screen = div()
+            .id("terminal-screen")
             .relative()
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .cursor(if self.hovered_link.is_some() {
                 gpui::CursorStyle::PointingHand
             } else {
                 gpui::CursorStyle::IBeam
             })
-            .on_modifiers_changed(cx.listener(
-                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
-                    this.update_hovered_link(None, &event.modifiers, cx)
-                },
-            ))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
                     this.pointer = None;
                     this.update_hovered_link(None, &gpui::Modifiers::default(), cx);
                 }
             }))
-            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -874,6 +888,34 @@ impl Render for TerminalView {
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
                     this.dropped(paths, window, cx)
+                }),
+            )
+            .child(element)
+            .children(self.render_link_status())
+            .children(self.render_vi_key_hints())
+            .children(self.render_find_bar(cx))
+            .children(self.render_drop_zone(cx));
+        div()
+            .id("terminal")
+            .key_context("Terminal")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.update_hovered_link(None, &event.modifiers, cx)
+                },
+            ))
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(
+                cx.listener(|this, _: &ToggleComposer, window, cx| {
+                    this.toggle_composer(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &TogglePromptQueue, window, cx| {
+                    this.toggle_queue(window, cx)
                 }),
             )
             .on_action(cx.listener(Self::copy))
@@ -957,11 +999,8 @@ impl Render for TerminalView {
             .on_action(
                 cx.listener(|this, _: &FindPrevious, window, cx| this.find_step(false, window, cx)),
             )
-            .child(element)
-            .children(self.render_link_status())
-            .children(self.render_vi_key_hints())
-            .children(self.render_find_bar(cx))
-            .children(self.render_drop_zone(cx))
+            .child(screen)
+            .children(self.render_composer(cx))
     }
 }
 

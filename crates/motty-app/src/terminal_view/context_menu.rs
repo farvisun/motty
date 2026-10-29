@@ -1,5 +1,5 @@
-//! Right-click in a terminal: the native context menu (Otty's items, minus
-//! the agent ones still to come), or what `right-click-action` says instead.
+//! Right-click in a terminal: the native context menu (Otty's items), or
+//! what `right-click-action` says instead.
 //! On a path it also offers Open With, Change Directory Here and a new tab
 //! there; on a command's rows, About This Line.
 //! A program that captures the mouse gets the click; ⌃-click always opens
@@ -221,6 +221,23 @@ impl TerminalView {
                 .keystroke(key(&Paste))
                 .enabled(!self.read_only),
             Pick::Action(Box::new(Paste)),
+        );
+        entries.push(Entry::Separator);
+        add(
+            &mut entries,
+            &mut picks,
+            Item::new("Send to Chat")
+                .symbol("bubble.left")
+                .keystroke(key(&SendToChat)),
+            Pick::Action(Box::new(SendToChat)),
+        );
+        add(
+            &mut entries,
+            &mut picks,
+            Item::new("Composer")
+                .symbol("square.and.pencil")
+                .keystroke(key(&ToggleComposer)),
+            Pick::Action(Box::new(ToggleComposer)),
         );
         entries.push(Entry::Separator);
         add(

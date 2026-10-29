@@ -115,6 +115,17 @@ actions!(
         PinWindow,
         OpenFile,
         ToggleSecureKeyboardEntry,
+        ToggleComposer,
+        TogglePromptQueue,
+        SendToChat,
+        AgentHistory,
+        ViewSessionHistory,
+        ForkSessionInNewTab,
+        ForkSessionInNewWindow,
+        ForkSessionRight,
+        ForkSessionLeft,
+        ForkSessionDown,
+        ForkSessionUp,
     ]
 );
 
@@ -182,6 +193,18 @@ pub struct DropSplit {
     pub path: std::path::PathBuf,
 }
 
+/// Continues a past agent session, or forks it (`fork`), at `place`:
+/// `tab`, `window`, `right`, `left`, `down` or `up`.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct ResumeSession {
+    pub agent: String,
+    pub id: String,
+    pub cwd: Option<std::path::PathBuf>,
+    pub fork: bool,
+    pub place: String,
+}
+
 /// Opens files in editor tabs (files dropped on a pane's edge).
 #[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
 #[action(namespace = motty, no_json)]
@@ -222,6 +245,20 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-y", Redo, EDITOR),
         b("cmd-s", Save, EDITOR),
         b("cmd-f", Find, TERMINAL),
+        b("cmd-shift-e", ToggleComposer, TERMINAL),
+        b("cmd-shift-m", TogglePromptQueue, TERMINAL),
+        b("cmd-ctrl-enter", SendToChat, WORKSPACE),
+        // In the Composer these are the text's, not the shell's.
+        b("cmd-left", NoAction, EDITOR),
+        b("cmd-right", NoAction, EDITOR),
+        b("alt-left", NoAction, EDITOR),
+        b("alt-right", NoAction, EDITOR),
+        b("cmd-backspace", NoAction, EDITOR),
+        b("cmd-delete", NoAction, EDITOR),
+        b("alt-backspace", NoAction, EDITOR),
+        b("alt-delete", NoAction, EDITOR),
+        b("cmd-home", NoAction, EDITOR),
+        b("cmd-end", NoAction, EDITOR),
         b("ctrl-shift-space", ToggleViMode, TERMINAL),
         b("cmd-/", ToggleViKeyHints, TERMINAL),
         b("cmd-g", FindNext, TERMINAL),
@@ -299,8 +336,10 @@ fn defaults() -> Vec<DefaultKey> {
 }
 
 /// The ⌘ chords Open Quickly handles itself: filters, rows, open.
-const OPEN_QUICKLY_KEYS: [&str; 17] = [
+const OPEN_QUICKLY_KEYS: [&str; 19] = [
     "cmd-0",
+    "cmd-g",
+    "cmd-k",
     "cmd-w",
     "cmd-r",
     "cmd-z",

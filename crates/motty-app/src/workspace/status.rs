@@ -79,14 +79,29 @@ impl Workspace {
             .session_id
             .clone()
             .or_else(|| prev.as_ref()?.session.clone());
-        view.update(cx, |v, _| {
+        // Grok runs Claude's hooks: the program says which it is.
+        let agent_id = process
+            .as_deref()
+            .and_then(agents::by_command)
+            .map_or_else(|| p.agent.clone(), |a| a.id.to_owned());
+        if let Some(path) = &p.transcript
+            && matches!(p.agent.as_str(), "claude" | "grok")
+        {
+            agents::sessions::remember_claude_root(std::path::Path::new(path));
+        }
+        view.update(cx, |v, cx| {
             v.status = Some(Status {
                 agent: Some(label),
+                agent_id: Some(agent_id),
                 badge,
                 message,
                 session,
                 in_turn: still_in_turn,
-            })
+            });
+            // The queue's next prompt goes when a turn ends.
+            if matches!(p.state, AgentState::Idle | AgentState::Error) {
+                v.turn_ended(window, cx);
+            }
         });
         self.touched(view, cx);
     }
@@ -118,6 +133,7 @@ impl Workspace {
         view.update(cx, |v, _| {
             v.status = badge.map(|badge| Status {
                 agent: None,
+                agent_id: None,
                 badge: Some(badge),
                 message,
                 session: None,

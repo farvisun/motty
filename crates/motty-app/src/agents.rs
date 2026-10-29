@@ -2,6 +2,7 @@
 //! shows about the one running in it, or about its last command.
 
 pub mod hooks;
+pub mod sessions;
 
 pub struct Agent {
     /// The id hooks report under (`motty hook claude`).
@@ -151,6 +152,8 @@ impl Badge {
 pub struct Status {
     /// The agent's display name, when an agent reported this.
     pub agent: Option<String>,
+    /// Its catalog id (`claude`), for resuming and forking.
+    pub agent_id: Option<String>,
     pub badge: Option<Badge>,
     /// The step it's on, what it waits for, or its last reply.
     pub message: Option<String>,

@@ -62,6 +62,8 @@ pub enum SessionEvent {
     },
     /// The shell reported a new cwd or progress; see [`Session::shell`].
     ShellChanged,
+    /// The shell is at a fresh prompt, ready for input.
+    PromptReady,
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -81,6 +83,7 @@ impl std::fmt::Debug for SessionEvent {
             }
             Self::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
             Self::ShellChanged => f.write_str("ShellChanged"),
+            Self::PromptReady => f.write_str("PromptReady"),
         }
     }
 }
@@ -400,7 +403,12 @@ impl Session {
     /// The last `n` lines, scrollback included, without trailing blank lines.
     pub fn last_lines(&self, n: usize) -> String {
         let term = self.term.lock();
-        let bottom = term.bottommost_line();
+        // Blank rows under the cursor aren't lines yet.
+        let mut bottom = term.bottommost_line();
+        let cursor = term.grid().cursor.point.line;
+        while bottom > cursor && term.grid()[bottom].is_clear() {
+            bottom -= 1;
+        }
         let top = Line((bottom.0 - n as i32 + 1).max(term.topmost_line().0));
         text_between(&term, top, bottom)
             .trim_end_matches('\n')

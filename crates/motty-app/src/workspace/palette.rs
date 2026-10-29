@@ -118,6 +118,53 @@ fn commands(
         Command::new("Terminal", "Hints: Copy Link", HintCopy),
         Command::new("Terminal", "Hints: Paste Word", HintPaste),
         Command::new("Terminal", "Hints: Reveal Path", HintReveal),
+        Command::new("Agent", "Composer", ToggleComposer),
+        Command::new("Agent", "Prompt Queue", TogglePromptQueue),
+        Command::new("Agent", "Send to Chat", SendToChat),
+        Command::new("Agent", "Agent History", AgentHistory),
+    ]);
+    if let Some(status) = &target.status
+        && let (Some(agent), Some(id)) = (status.agent_id.as_deref(), status.session.as_deref())
+    {
+        list.push(Command::new(
+            "Agent",
+            "View Session History",
+            ViewSessionHistory,
+        ));
+        if crate::agents::sessions::fork_command(agent, id).is_some() {
+            let branch = crate::agents::sessions::fork_label(agent) == "Branch";
+            for (title_branch, title_fork, action) in [
+                (
+                    "Branch in New Tab",
+                    "Fork in New Tab",
+                    Box::new(ForkSessionInNewTab) as Box<dyn Action>,
+                ),
+                (
+                    "Branch in New Window",
+                    "Fork in New Window",
+                    Box::new(ForkSessionInNewWindow),
+                ),
+                (
+                    "Branch in Split Right",
+                    "Fork in Split Right",
+                    Box::new(ForkSessionRight),
+                ),
+                (
+                    "Branch in Split Down",
+                    "Fork in Split Down",
+                    Box::new(ForkSessionDown),
+                ),
+            ] {
+                list.push(Command {
+                    group: "Agent",
+                    title: if branch { title_branch } else { title_fork },
+                    action,
+                    checked: false,
+                });
+            }
+        }
+    }
+    list.extend([
         Command::new("Settings", "Settings…", OpenSettings),
         Command::new("Settings", "Open Config File", OpenConfigFile),
         Command::new("Motty", "Welcome Guide", ShowWelcome),

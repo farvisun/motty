@@ -168,7 +168,28 @@ fn open_window(
     restore: Option<&recovery::WindowState>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_window_inner(config, command, restore, None, cx)
+    open_window_inner(config, command, restore, None, None, cx)?;
+    Ok(())
+}
+
+/// A window whose first shell starts in `cwd` and runs `line`.
+pub(crate) fn open_window_running(
+    config: Config,
+    cwd: Option<std::path::PathBuf>,
+    line: &str,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let window = open_window_inner(config, None, None, None, cwd, cx)?;
+    if line.is_empty() {
+        return Ok(());
+    }
+    let line = format!("{line}\r");
+    window.update(cx, |workspace, _, cx| {
+        if let Some(view) = workspace.focused_pane() {
+            view.update(cx, |v, cx| v.write_input(&line, cx));
+        }
+    })?;
+    Ok(())
 }
 
 /// A window for a tab moved out of another one (Move Tab to New Window).
@@ -177,7 +198,8 @@ pub(crate) fn open_window_with_tab(
     tab: workspace::MovedTab,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    open_window_inner(config, None, None, Some(tab), cx)
+    open_window_inner(config, None, None, Some(tab), None, cx)?;
+    Ok(())
 }
 
 fn open_window_inner(
@@ -185,8 +207,9 @@ fn open_window_inner(
     command: Option<(String, Vec<String>)>,
     restore: Option<&recovery::WindowState>,
     moved: Option<workspace::MovedTab>,
+    cwd: Option<std::path::PathBuf>,
     cx: &mut App,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
     let moving = moved.is_some();
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
@@ -216,9 +239,11 @@ fn open_window_inner(
         ..Default::default()
     };
     // Launched from a shell, start there; from Finder the cwd is `/`.
-    let cwd = std::env::current_dir()
-        .ok()
-        .filter(|d| d.parent().is_some());
+    let cwd = cwd.or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .filter(|d| d.parent().is_some())
+    });
     // The harness's extra tabs and split are for the first window only.
     let extra_tabs = if moving { 0 } else { extra_tabs_arg() };
     let split = if moving { None } else { split_arg() };
@@ -242,5 +267,5 @@ fn open_window_inner(
     if !window.update(cx, |workspace, _, _| workspace.has_tabs())? {
         anyhow::bail!("failed to start the shell");
     }
-    Ok(())
+    Ok(window)
 }

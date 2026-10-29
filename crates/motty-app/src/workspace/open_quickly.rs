@@ -1,9 +1,10 @@
 //! Open Quickly (⇧⌘O): one fuzzy field over everything to jump to — open
 //! windows and tabs, recently closed tabs, frequent folders, SSH hosts, the
-//! focused pane's commands and links, and the files in its folder. Filters
-//! run across the top (⌘0 All, ⌘W Opened, ⌘R Recent, ⌘Z Folders, ⌘S SSH,
-//! ⌘J Current, ⌘P Files; Tab cycles); ⌘J opens straight to Current. ↩ runs
-//! the highlighted item, ⌘1–⌘9 the first nine.
+//! focused pane's commands and links, the files in its folder, and past
+//! coding-agent sessions. Filters run across the top (⌘0 All, ⌘W Opened,
+//! ⌘R Recent, ⌘G Agents, ⌘Z Folders, ⌘S SSH, ⌘J Current, ⌘P Files; Tab
+//! cycles); ⌘J opens straight to Current. ↩ runs the highlighted item,
+//! ⌘1–⌘9 the first nine; ⌘K offers a session's other actions.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -20,6 +21,7 @@ use motty_theme::{Mode, Rgba};
 use super::picker::{self, Colors, ROW_GAP, ROW_HEIGHT, ROW_INSET, ROW_RADIUS, edit_query, score};
 use super::{ClosedTabs, Workspace};
 use crate::actions::*;
+use crate::agents::{self, sessions::Session};
 use crate::terminal_view::TerminalView;
 use crate::titlebar::{icon, stroke};
 
@@ -40,6 +42,7 @@ pub(super) enum Filter {
     All,
     Opened,
     Recent,
+    Agents,
     Folders,
     Ssh,
     Current,
@@ -47,10 +50,11 @@ pub(super) enum Filter {
 }
 
 /// Each filter's chip label and its ⌘ key.
-const FILTERS: [(Filter, &str, &str); 7] = [
+const FILTERS: [(Filter, &str, &str); 8] = [
     (Filter::All, "All", "0"),
     (Filter::Opened, "Opened", "w"),
     (Filter::Recent, "Recent", "r"),
+    (Filter::Agents, "Agents", "g"),
     (Filter::Folders, "Folders", "z"),
     (Filter::Ssh, "SSH", "s"),
     (Filter::Current, "Current", "j"),
@@ -68,6 +72,9 @@ pub(super) struct OpenQuickly {
     /// Files in the target's folder, newest first, once listed.
     files: Option<(PathBuf, Vec<PathBuf>)>,
     _list_files: Option<Task<()>>,
+    /// Past agent sessions, newest first, once read.
+    sessions: Option<Vec<Session>>,
+    _list_sessions: Task<()>,
     /// ⌘ is held: rows show their ⌘1–⌘9.
     quick_select: bool,
 }
@@ -83,6 +90,7 @@ enum Kind {
     Link,
     File,
     Path,
+    Session,
 }
 
 impl Kind {
@@ -97,6 +105,7 @@ impl Kind {
             Kind::Link => "Link",
             Kind::File => "File",
             Kind::Path => "Path",
+            Kind::Session => "Agent",
         }
     }
 
@@ -109,6 +118,7 @@ impl Kind {
             Kind::Ssh => "Connect",
             Kind::Command => "Jump to",
             Kind::Link | Kind::File | Kind::Path => "Open",
+            Kind::Session => "Resume",
         }
     }
 }
@@ -124,6 +134,7 @@ enum Target {
     Row(u64),
     Link(LinkTarget),
     File(PathBuf),
+    Session(Box<Session>),
 }
 
 struct Item {
@@ -250,9 +261,36 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+/// How long ago, in Otty's short form.
+fn ago(time: SystemTime) -> String {
+    let secs = SystemTime::now()
+        .duration_since(time)
+        .map_or(0, |d| d.as_secs());
+    match secs {
+        0..60 => "now".into(),
+        60..3600 => format!("{}m ago", secs / 60),
+        3600..86_400 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
 fn icon_for(kind: Kind, color: Hsla) -> gpui::AnyElement {
     let w = 1.1;
     match kind {
+        // A speech bubble.
+        Kind::Session => icon(14., 14., move |o, window| {
+            stroke(o, color, window, w, |p, at| {
+                p.move_to(at(2., 2.5));
+                p.line_to(at(12., 2.5));
+                p.line_to(at(12., 9.5));
+                p.line_to(at(6.5, 9.5));
+                p.line_to(at(3.5, 12.));
+                p.line_to(at(3.5, 9.5));
+                p.line_to(at(2., 9.5));
+                p.close();
+            });
+        })
+        .into_any_element(),
         Kind::Window => icon(14., 14., move |o, window| {
             stroke(o, color, window, w, |p, at| {
                 p.move_to(at(1.5, 3.));
@@ -383,6 +421,19 @@ impl Workspace {
                 });
             })
         });
+        let sessions = cx.spawn(async move |this, cx| {
+            let sessions = cx
+                .background_spawn(async move {
+                    crate::agents::sessions::list(&crate::agents::sessions::Roots::current(), 500)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(oq) = this.open_quickly.as_mut() {
+                    oq.sessions = Some(sessions);
+                    cx.notify();
+                }
+            });
+        });
         self.open_quickly = Some(OpenQuickly {
             focus,
             query: String::new(),
@@ -392,6 +443,8 @@ impl Workspace {
             target,
             files: None,
             _list_files: list,
+            sessions: None,
+            _list_sessions: sessions,
             quick_select: false,
         });
         cx.notify();
@@ -495,6 +548,32 @@ impl Workspace {
                         title: c.title.clone(),
                         detail: c.cwd.as_deref().map(tilde).unwrap_or_default(),
                         target: Target::Closed(c.id),
+                    })
+                    .collect(),
+            );
+        }
+
+        if wants(Filter::Agents)
+            && let Some(sessions) = &oq.sessions
+        {
+            groups.push(
+                sessions
+                    .iter()
+                    .map(|s| {
+                        let mut detail = agents::label_for(s.agent);
+                        if let Some(cwd) = &s.cwd {
+                            detail.push_str(" · ");
+                            detail.push_str(&tilde(cwd));
+                        }
+                        detail.push_str(" · ");
+                        detail.push_str(&ago(s.modified));
+                        Item {
+                            group: "Agents",
+                            kind: Kind::Session,
+                            title: s.title.clone(),
+                            detail,
+                            target: Target::Session(Box::new(s.clone())),
+                        }
                     })
                     .collect(),
             );
@@ -622,7 +701,9 @@ impl Workspace {
                 scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
             }
             let limit = match scored.first().map(|(_, i)| i.kind) {
-                Some(Kind::File | Kind::Folder) if filter == Filter::All => ALL_LIMIT,
+                Some(Kind::File | Kind::Folder | Kind::Session) if filter == Filter::All => {
+                    ALL_LIMIT
+                }
                 _ => FILTER_LIMIT,
             };
             out.extend(scored.into_iter().take(limit).map(|(_, i)| i));
@@ -700,11 +781,84 @@ impl Workspace {
                 cx,
             ),
             Target::Row(row) => target.update(cx, |view, cx| view.reveal_row(row, cx)),
+            Target::Session(s) => self.resume_session(
+                &ResumeSession {
+                    agent: s.agent.to_owned(),
+                    id: s.id,
+                    cwd: s.cwd,
+                    fork: false,
+                    place: "tab".into(),
+                },
+                window,
+                cx,
+            ),
             Target::Link(LinkTarget::Url(url)) => cx.open_url(&url),
             Target::Link(LinkTarget::Path { path, .. }) | Target::File(path) => {
                 cx.open_with_system(&path)
             }
         }
+    }
+
+    /// ⌘K on a session: resume, fork it somewhere, read it, copy its id.
+    fn session_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.open_quickly.as_ref().map_or(0, |oq| oq.selected);
+        let Some(Target::Session(session)) = self
+            .open_quickly_items(window, cx)
+            .into_iter()
+            .nth(selected)
+            .map(|i| i.target)
+        else {
+            return;
+        };
+        let session = *session;
+        let fork = crate::agents::sessions::fork_command(session.agent, &session.id).is_some();
+        let label = crate::agents::sessions::fork_label(session.agent);
+        let places = [
+            ("tab", "New Tab"),
+            ("right", "Split Right"),
+            ("down", "Split Down"),
+            ("window", "New Window"),
+        ];
+        let mut entries: Vec<crate::native_menu::Entry> =
+            vec![crate::native_menu::Item::new("Resume").into()];
+        for (_, name) in places {
+            entries.push(
+                crate::native_menu::Item::new(format!("{label} in {name}"))
+                    .enabled(fork)
+                    .into(),
+            );
+        }
+        entries.push(crate::native_menu::Entry::Separator);
+        entries.push(crate::native_menu::Item::new("View Session History").into());
+        entries.push(crate::native_menu::Item::new("Copy Session ID").into());
+        let at = window.mouse_position();
+        let this = cx.entity().downgrade();
+        crate::native_menu::popup(entries, at, Some(0), window, cx, move |ix, window, cx| {
+            let _ = this.update(cx, |this, cx| {
+                let resume = |fork: bool, place: &str| ResumeSession {
+                    agent: session.agent.to_owned(),
+                    id: session.id.clone(),
+                    cwd: session.cwd.clone(),
+                    fork,
+                    place: place.into(),
+                };
+                match ix {
+                    0 => {
+                        this.close_open_quickly(window, cx);
+                        this.resume_session(&resume(false, "tab"), window, cx);
+                    }
+                    1..=4 => {
+                        this.close_open_quickly(window, cx);
+                        this.resume_session(&resume(true, places[ix - 1].0), window, cx);
+                    }
+                    5 => {
+                        this.close_open_quickly(window, cx);
+                        this.view_history(session.clone(), window, cx);
+                    }
+                    _ => cx.write_to_clipboard(ClipboardItem::new_string(session.id.clone())),
+                }
+            });
+        });
     }
 
     /// Types `command` into `view`'s shell when it's at a prompt; else opens
@@ -765,6 +919,10 @@ impl Workspace {
             if key == "enter" {
                 let ix = self.open_quickly.as_ref().map_or(0, |oq| oq.selected);
                 self.run_open_quickly(ix, window, cx);
+                return cx.stop_propagation();
+            }
+            if key == "k" {
+                self.session_actions(window, cx);
                 return cx.stop_propagation();
             }
             // Other ⌘ shortcuts (paste, the palettes) go on.
@@ -953,7 +1111,11 @@ impl Workspace {
             );
         }
         if items.is_empty() {
-            let loading = oq.filter == Filter::Files && oq.files.is_none();
+            let loading = match oq.filter {
+                Filter::Files if oq.files.is_none() => Some("Listing files…"),
+                Filter::Agents if oq.sessions.is_none() => Some("Reading agent sessions…"),
+                _ => None,
+            };
             children.push(
                 div()
                     .h(px(ROW_HEIGHT))
@@ -961,16 +1123,13 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .text_color(c.placeholder)
-                    .child(if loading {
-                        "Listing files…"
-                    } else {
-                        "No results"
-                    })
+                    .child(loading.unwrap_or("No results"))
                     .into_any_element(),
             );
         }
 
         let verb = items.get(selected).map_or("Open", |i| i.kind.verb());
+        let more = items.get(selected).is_some_and(|i| i.kind == Kind::Session);
         let footer = div()
             .flex_none()
             .h(px(FOOTER_HEIGHT))
@@ -984,7 +1143,11 @@ impl Workspace {
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(c.placeholder)
             .child("Quick Select ⌘")
-            .child(format!("{verb} ↩"));
+            .child(if more {
+                format!("Actions ⌘K   {verb} ↩")
+            } else {
+                format!("{verb} ↩")
+            });
 
         let card = picker::card(WIDTH, &c)
             .id("open-quickly")

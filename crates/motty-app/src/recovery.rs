@@ -70,6 +70,12 @@ pub enum PaneState {
         /// File in the scrollback folder (saved on quit only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scrollback: Option<String>,
+        /// The agent running there and its session: `[agent, session]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<[String; 2]>,
+        /// Prompts still queued.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        queue: Vec<String>,
     },
     Split {
         /// Children stacked top and bottom (else side by side).
