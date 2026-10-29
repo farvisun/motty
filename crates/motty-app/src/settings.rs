@@ -28,6 +28,7 @@ use crate::agents::{self, hooks};
 use crate::native_menu::{self, Entry, Item};
 use motty_ipc::skills;
 
+mod launch_commands;
 mod tab_rules;
 mod theme_editor;
 
@@ -259,6 +260,12 @@ enum Control {
         open: bool,
     },
     Info(SharedString),
+    /// A coding agent's launch command and config home, under Integrations:
+    /// `ix` indexes [`agents::CATALOG`].
+    Launch {
+        ix: usize,
+        open: bool,
+    },
     /// A saved recipe's Open and Delete buttons: its index in
     /// [`crate::recipes::list`].
     Recipe(usize),
@@ -374,6 +381,8 @@ pub struct SettingsWindow {
     /// The agent whose details are shown.
     agent_open: Option<usize>,
     skill: Option<SkillDialog>,
+    /// Settings › Integrations › Coding Agents.
+    launch: launch_commands::LaunchCommands,
     /// The tab rule editor, while open.
     rules: Option<tab_rules::RuleEditor>,
     /// The theme color editor, while open.
@@ -610,6 +619,7 @@ impl SettingsWindow {
             agents: scan_agents(),
             agent_open: None,
             skill: None,
+            launch: Default::default(),
             rules: None,
             theme_editor: None,
             previous: section,
@@ -627,6 +637,7 @@ impl SettingsWindow {
         self.query.clear();
         self.recording = None;
         self.editing = None;
+        self.launch.stop_editing();
         self.confirm_reset = false;
         self.scroll.scroll_to_item(0);
     }
@@ -908,7 +919,10 @@ impl SettingsWindow {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
-        if self.rule_editor_key(ks, cx) || self.theme_editor_key(ks, cx) {
+        if self.rule_editor_key(ks, cx)
+            || self.theme_editor_key(ks, cx)
+            || self.launch_command_key(ks, cx)
+        {
             cx.stop_propagation();
             return;
         }
@@ -1782,6 +1796,21 @@ impl SettingsWindow {
             None,
             Control::Copy(format!("codex mcp add motty -- {cli} mcp")),
         ));
+        for (ix, agent) in agents::CATALOG.iter().enumerate() {
+            let launch = c.agent_command(agent.id);
+            let command = agents::sessions::launch_command(agent.id, launch);
+            rows.push(Row {
+                section: Integrations,
+                group: "Coding Agents",
+                title: agent.label.into(),
+                description: command.map(|l| SharedString::from(l.to_owned())),
+                control: Control::Launch {
+                    ix,
+                    open: self.launch.open == Some(ix),
+                },
+                dim: false,
+            });
+        }
         for (ix, skill) in skills::SKILLS.iter().enumerate() {
             rows.push(row(
                 Agents,
@@ -3064,10 +3093,11 @@ impl SettingsWindow {
         }
         let details = match &r.control {
             Control::Agent { ix, open: true, .. } => Some(self.agent_details(*ix, c, cx)),
+            Control::Launch { ix, open: true } => Some(self.launch_details(*ix, c, cx)),
             _ => None,
         };
         let icon = match &r.control {
-            Control::Agent { ix, .. } => Some(agent_mark(*ix)),
+            Control::Agent { ix, .. } | Control::Launch { ix, .. } => Some(agent_mark(*ix)),
             _ => None,
         };
         let dim = r.dim;
@@ -3584,6 +3614,7 @@ impl SettingsWindow {
                     )
                     .into_any_element()
             }
+            Control::Launch { ix: agent, open } => self.launch_chevron(ix, agent, open, c, cx),
             Control::Info(text) => div()
                 .flex_none()
                 .text_color(c.secondary)

@@ -58,6 +58,34 @@ pub fn target(id: &str, env: &Env) -> Option<PathBuf> {
     })
 }
 
+/// The folder an agent keeps its own settings in, moved by the variable
+/// the agent reads for it, and the variable.
+pub fn config_home(id: &str, env: &Env) -> Option<(PathBuf, Option<&'static str>)> {
+    let (var, default) = match id {
+        "claude" => (Some("CLAUDE_CONFIG_DIR"), ".claude"),
+        "codex" => (Some("CODEX_HOME"), ".codex"),
+        "kimi" => (Some("KIMI_CODE_HOME"), ".kimi-code"),
+        "grok" => (Some("GROK_HOME"), ".grok"),
+        "reasonix" => (Some("REASONIX_HOME"), ".reasonix"),
+        "copilot" => (Some("COPILOT_HOME"), ".copilot"),
+        "pi" => (Some("PI_CODING_AGENT_DIR"), ".pi/agent"),
+        "omp" => (None, ".omp/agent"),
+        "cursor" => (None, ".cursor"),
+        "codebuddy" => (None, ".codebuddy"),
+        "antigravity" => (None, ".gemini"),
+        "opencode" => {
+            let config = env.dir("XDG_CONFIG_HOME", ".config");
+            return Some((config.join("opencode"), Some("XDG_CONFIG_HOME")));
+        }
+        _ => return None,
+    };
+    let dir = match var {
+        Some(var) => env.dir(var, default),
+        None => env.home.join(default),
+    };
+    Some((dir, var))
+}
+
 /// What to do after installing, when there's something.
 pub fn note(id: &str) -> Option<&'static str> {
     Some(match id {
@@ -670,6 +698,38 @@ mod tests {
         assert!(installed("kimi", &env));
         uninstall("kimi", &env).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn config_homes_follow_their_variables() {
+        let home = PathBuf::from("/Users/me");
+        let plain = Env {
+            home: home.clone(),
+            var: |_| None,
+        };
+        assert_eq!(
+            config_home("kimi", &plain),
+            Some((home.join(".kimi-code"), Some("KIMI_CODE_HOME")))
+        );
+        assert_eq!(
+            config_home("cursor", &plain),
+            Some((home.join(".cursor"), None))
+        );
+        assert_eq!(config_home("nope", &plain), None);
+        let moved = Env {
+            home,
+            var: |k| (k == "KIMI_CODE_HOME").then(|| "/elsewhere/kimi".to_owned()),
+        };
+        assert_eq!(
+            config_home("kimi", &moved).map(|(d, _)| d),
+            Some(PathBuf::from("/elsewhere/kimi"))
+        );
+        // Every agent in the catalog has one.
+        assert!(
+            crate::agents::CATALOG
+                .iter()
+                .all(|a| config_home(a.id, &plain).is_some())
+        );
     }
 
     #[test]
