@@ -71,7 +71,11 @@ impl AssetSource for Assets {
             "text-select",
             "panels-top-left",
             "blocks",
-            "book-open"
+            "book-open",
+            "shield",
+            "coffee",
+            "monitor-smartphone",
+            "pin"
         )
         .map(Cow::Borrowed))
     }

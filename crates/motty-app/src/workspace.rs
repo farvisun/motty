@@ -1616,11 +1616,23 @@ impl Workspace {
                     line: None,
                     running: false,
                     progress: None,
+                    system: Default::default(),
                 };
+                let caffeinate = tab.privileges.unwrap_or(self.config.badges).caffeinate;
                 let mut best = usize::MAX;
                 for pane in panes {
                     let pane = pane.read(cx);
                     summary.running |= pane.busy;
+                    let s = &mut summary.system;
+                    s.sudo |= pane.system.sudo;
+                    s.caffeinate |= pane.system.caffeinate
+                        || caffeinate
+                            && pane.status.as_ref().is_some_and(|s| {
+                                s.agent.is_some() && s.in_turn && s.badge != Some(Badge::Awaiting)
+                            });
+                    if s.ssh.is_none() {
+                        s.ssh.clone_from(&pane.system.ssh);
+                    }
                     summary.progress = most_pressing(summary.progress, pane.progress);
                     let Some(status) = &pane.status else { continue };
                     let rank = status.badge.map_or(9, badge_rank);
@@ -1655,6 +1667,7 @@ impl Workspace {
                     line: dirty.then(|| "Unsaved changes".to_owned()),
                     running: false,
                     progress: None,
+                    system: Default::default(),
                 }
             }
         }
@@ -1682,8 +1695,13 @@ impl Workspace {
         } else {
             t.token.tertiary
         });
+        // The success dot and checkmark only mark what happened while you
+        // were away, so the active tab never shows them.
+        let badge = summary
+            .badge
+            .filter(|b| !(active && matches!(b, Badge::Finished | Badge::Done)));
         // Progress shows unless something needs the user.
-        let label = match (summary.badge, summary.progress) {
+        let label = match (badge, summary.progress) {
             (Some(badge), _) if badge.needs_you() => badge_icon(badge, ix, t),
             (_, Some(progress)) => progress_icon(progress, ix, t),
             (Some(badge), None) => badge_icon(badge, ix, t),
@@ -1799,6 +1817,8 @@ impl Workspace {
                     .font_family(self.mono_font.clone())
                     .text_size(px(LABEL_FONT_SIZE))
                     .text_color(label_color)
+                    .gap(px(4.))
+                    .children(system_badges(&summary.system, label_color))
                     .child(label),
             );
         card.children(
@@ -2086,6 +2106,8 @@ struct TabSummary {
     running: bool,
     /// The panes' progress, the most pressing first.
     progress: Option<motty_term::shell::Progress>,
+    /// Sudo, SSH or caffeinate in any pane (an agent kept awake counts).
+    system: motty_term::SystemState,
 }
 
 /// Which badge a tab shows when its panes have several: the one most in
@@ -2156,6 +2178,28 @@ fn progress_icon(progress: motty_term::shell::Progress, ix: usize, t: &Theme) ->
         }
     })
     .into_any_element()
+}
+
+/// The devices, shield and coffee cup: a tab on another host, in a sudo
+/// session, keeping the Mac awake. They reflect ongoing state, so they show
+/// on the active tab too.
+fn system_badges(system: &motty_term::SystemState, color: Hsla) -> Vec<AnyElement> {
+    [
+        (system.ssh.is_some(), "icons/monitor-smartphone.svg"),
+        (system.sudo, "icons/shield.svg"),
+        (system.caffeinate, "icons/coffee.svg"),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, path)| {
+        svg()
+            .path(path)
+            .flex_none()
+            .size(px(12.))
+            .text_color(color)
+            .into_any_element()
+    })
+    .collect()
 }
 
 fn badge_icon(badge: Badge, ix: usize, t: &Theme) -> AnyElement {
@@ -2302,17 +2346,31 @@ impl Workspace {
         )
     }
 
-    /// The focused pane's vi or read-only mode, as a pill left of the details
-    /// toggle (measured from Otty's READ ONLY pill).
-    /// The titlebar pills at the right: Secure Keyboard Entry, and the
-    /// focused pane's mode.
+    /// The titlebar pills at the right: the pinned window, the focused
+    /// pane's SSH host and sudo session, Secure Keyboard Entry, and the
+    /// focused pane's mode (measured from Otty's READ ONLY pill).
     fn render_pills(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pane = self.focused_pane().map(|v| v.read(cx));
+        let read_only = pane.is_some_and(|p| p.is_read_only());
+        // Nothing typed reaches a read-only pane, so these would only mislead.
         let secure = (self.config.behavior.secure_input_indication
+            && !read_only
             && window.is_window_active()
             && crate::secure_input::is_on(cx))
         .then(|| self.render_secure_pill());
+        let sudo = pane.filter(|p| p.system.sudo && !read_only).map(|_| {
+            self.render_label_pill("sudo", "icons/shield.svg", "SUDO".into())
+                .into_any_element()
+        });
+        let ssh = pane
+            .and_then(|p| p.system.ssh.clone())
+            .map(|host| self.render_ssh_pill(host, cx));
+        let pin = self.pinned.then(|| self.render_pin_pill(cx));
         let mode = self.render_mode_pill(cx);
-        if secure.is_none() && mode.is_none() {
+        if [&secure, &sudo, &ssh, &pin, &mode]
+            .iter()
+            .all(|p| p.is_none())
+        {
             return None;
         }
         Some(
@@ -2322,10 +2380,97 @@ impl Workspace {
                 .right(px(43.5))
                 .flex()
                 .gap(px(6.))
+                .children(pin)
+                .children(ssh)
+                .children(sudo)
                 .children(secure)
                 .children(mode)
                 .into_any_element(),
         )
+    }
+
+    /// A pill in the SECURE INPUT style: an icon and a label.
+    fn render_label_pill(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        label: SharedString,
+    ) -> gpui::Stateful<gpui::Div> {
+        let t = &self.theme;
+        let ink = hsla(native_label(t, 1., 1.));
+        div()
+            .id(id)
+            .h(px(20.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .bg(hsla(native_label(t, 0.065, 0.1)))
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ink)
+            .child(svg().path(icon).flex_none().size(px(12.)).text_color(ink))
+            .child(label)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    }
+
+    /// The SSH host; a click shows the host, its address and the connection.
+    fn render_ssh_pill(&self, host: String, cx: &mut Context<Self>) -> AnyElement {
+        let shown = if host.is_empty() {
+            "SSH".to_owned()
+        } else {
+            host.rsplit('@').next().unwrap_or(&host).to_owned()
+        };
+        let highlight = hsla(native_label(&self.theme, 0.12, 0.16));
+        self.render_label_pill("ssh", "icons/monitor-smartphone.svg", shown.into())
+            .cursor_pointer()
+            .hover(move |s| s.bg(highlight))
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    let at = event.position();
+                    this.show_ssh_details(host.clone(), at, window, cx)
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// Pinned windows float above the others; the pill unpins.
+    fn render_pin_pill(&self, cx: &mut Context<Self>) -> AnyElement {
+        let highlight = hsla(native_label(&self.theme, 0.12, 0.16));
+        self.render_label_pill("pinned", "icons/pin.svg", "PINNED".into())
+            .cursor_pointer()
+            .hover(move |s| s.bg(highlight))
+            .on_click(
+                cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(PinWindow), cx)),
+            )
+            .into_any_element()
+    }
+
+    /// What `ssh -G` makes of `host`, and the address it resolves to; read
+    /// off the main thread, then shown as a menu at `at`.
+    fn show_ssh_details(
+        &mut self,
+        host: String,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let details = cx.background_spawn(async move { ssh_details(&host) }).await;
+            let _ = cx.update_window(handle, |_, window, cx| {
+                let mut entries = vec![crate::native_menu::Entry::Header("SSH".into())];
+                for (label, symbol) in details {
+                    entries.push(crate::native_menu::Entry::Info {
+                        label: label.into(),
+                        symbol,
+                    });
+                }
+                crate::native_menu::popup(entries, at, None, window, cx, |_, _, _| {});
+            });
+        })
+        .detach();
     }
 
     fn render_secure_pill(&self) -> AnyElement {
@@ -2786,6 +2931,7 @@ impl Render for Workspace {
                 this.pinned = !this.pinned;
                 crate::materials::set_pinned(window, this.pinned);
                 cx.defer(crate::menus::refresh);
+                cx.notify();
             }))
             .on_action(
                 cx.listener(|this, _: &OpenFile, window, cx| this.open_from_finder(window, cx)),
@@ -3046,4 +3192,37 @@ fn tab_state(
         name: whole.name.as_ref().map(|n| n.text.clone()),
         name_prefix: whole.name.as_ref().is_some_and(|n| n.prefix),
     })
+}
+
+/// The SSH pill's menu lines for `dest` (`user@host` as typed): host,
+/// address and connection, from `ssh -G` (which reads the config only).
+fn ssh_details(dest: &str) -> Vec<(String, &'static str)> {
+    use std::net::ToSocketAddrs;
+    let config = std::process::Command::new("ssh")
+        .arg("-G")
+        .arg(dest)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let value = |key: &str| {
+        config.lines().find_map(|l| {
+            let (k, v) = l.split_once(' ')?;
+            (k == key).then(|| v.to_owned())
+        })
+    };
+    let host = value("hostname").unwrap_or_else(|| dest.rsplit('@').next().unwrap_or(dest).into());
+    let port: u16 = value("port").and_then(|p| p.parse().ok()).unwrap_or(22);
+    let mut out = vec![(host.clone(), "network")];
+    if let Some(addr) = (host.as_str(), port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+    {
+        out.push((addr.ip().to_string(), "globe"));
+    }
+    let user = value("user").unwrap_or_default();
+    out.push((format!("{user}@{host}:{port}"), "link"));
+    out
 }

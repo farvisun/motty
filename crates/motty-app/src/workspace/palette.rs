@@ -150,9 +150,7 @@ fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
         Command::new("Terminal", "Reload Terminal View", ReloadTerminalView),
     ]);
     // A program other than the shell is in the foreground.
-    if target.busy
-        && let Some(program) = &target.process
-    {
+    if let Some(program) = &target.foreground {
         list.push(Command::new(
             "Terminal",
             format!("Quit {program}"),

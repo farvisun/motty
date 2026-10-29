@@ -76,6 +76,10 @@ pub struct TerminalView {
     pub process: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
     pub busy: bool,
+    /// The program in the foreground while a command runs (not the shell).
+    pub foreground: Option<String>,
+    /// Sudo, SSH and caffeinate while a command runs.
+    pub system: motty_term::SystemState,
     /// The agent's state, or how the last command went, for the tab.
     pub status: Option<crate::agents::Status>,
     /// OSC 9;4 progress, or a spinner for a slow command.
@@ -170,6 +174,8 @@ impl TerminalView {
             layout: Rc::new(Cell::new(None)),
             title: None,
             process: None,
+            foreground: None,
+            system: Default::default(),
             cwd: None,
             busy: false,
             status: None,
@@ -287,7 +293,23 @@ impl TerminalView {
             .clone()
             .or_else(|| self.session.foreground_cwd());
         let busy = self.session.is_busy();
-        let changed = process != self.process || cwd != self.cwd || busy != self.busy;
+        let (foreground, system) = if busy {
+            (
+                self.session
+                    .foreground_process_name()
+                    .filter(|name| Some(name) != process.as_ref()),
+                self.session.system_state(),
+            )
+        } else {
+            (None, Default::default())
+        };
+        let changed = process != self.process
+            || cwd != self.cwd
+            || busy != self.busy
+            || foreground != self.foreground
+            || system != self.system;
+        self.foreground = foreground;
+        self.system = system;
         let changed = self.refresh_progress() || changed;
         if cwd != self.cwd
             && let Some(dir) = &cwd

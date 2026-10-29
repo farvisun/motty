@@ -25,10 +25,12 @@ mod pty_loop;
 pub mod search;
 pub mod shell;
 pub mod snapshot;
+pub mod system;
 
 use pty_loop::{LoopSender, Msg, PtyLoop};
 
 pub use alacritty_terminal;
+pub use system::SystemState;
 
 pub type Terminal = Term<EventProxy>;
 
@@ -339,6 +341,15 @@ impl Session {
         }
     }
 
+    /// Sudo, SSH and caffeinate among the shell's descendants.
+    pub fn system_state(&self) -> SystemState {
+        let procs = self.processes();
+        SystemState::from_processes(
+            procs.iter().skip(1).map(|p| (p.pid, p.name.as_str())),
+            system::process_args,
+        )
+    }
+
     /// Short name of the shell, e.g. `zsh`.
     pub fn shell_name(&self) -> Option<String> {
         process_name(self.shell_pid())
@@ -516,7 +527,30 @@ fn process_name(pid: i32) -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: the buffer is valid for its full length.
     let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    if n > 0 {
+        return Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+    }
+    // proc_name refuses another user's process (sudo runs as root); the
+    // short BSD info, which ps reads too, doesn't.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as i32;
+    // SAFETY: `info` is a properly sized, writable proc_bsdshortinfo.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    let comm = &info.pbsi_comm;
+    let len = comm.iter().position(|&c| c == 0).unwrap_or(comm.len());
+    let bytes: Vec<u8> = comm[..len].iter().map(|&c| c as u8).collect();
+    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(target_os = "macos")]

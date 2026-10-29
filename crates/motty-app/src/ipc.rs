@@ -273,16 +273,15 @@ fn send_text(p: SendTextParams, cx: &mut App) -> anyhow::Result<Value> {
     }
     let v = view.read(cx);
     anyhow::ensure!(!v.is_read_only(), "pane {} is in Read Only mode", v.id);
-    let ssh = v
-        .process
-        .as_deref()
-        .is_some_and(|p| matches!(p, "ssh" | "mosh" | "mosh-client" | "et"));
-    if !badges.ipc_sensitive && (ssh || v.session().reading_secret()) {
+    let ssh = v.system.ssh.is_some();
+    if !badges.ipc_sensitive && (ssh || v.system.sudo || v.session().reading_secret()) {
         bail!(
             "pane {} is {}; Motty doesn't type into it (ipc-allow-sensitive-sessions)",
             v.id,
             if ssh {
                 "in an SSH session"
+            } else if v.system.sudo {
+                "in a sudo session"
             } else {
                 "at a password prompt"
             }
