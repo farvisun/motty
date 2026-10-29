@@ -76,6 +76,8 @@ pub struct Config {
     pub split_working_directory: Option<WorkingDir>,
     /// `new-tab-position`.
     pub new_tab_position: NewTabPosition,
+    /// `auto-hide-tabs-panel`.
+    pub auto_hide_tabs_panel: AutoHide,
     /// `notification-foreground`: banners while Motty is in front.
     pub notification_foreground: NotificationForeground,
     /// `clipboard-read`: a program reading the clipboard (OSC 52).
@@ -406,6 +408,18 @@ pub enum Access {
     Ask,
     Allow,
     Deny,
+}
+
+/// `auto-hide-tabs-panel` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutoHide {
+    /// Only the toggle; a new window copies the last one's.
+    #[default]
+    Default,
+    /// New windows open with it shown.
+    Always,
+    /// Shown with two or more tabs.
+    Auto,
 }
 
 /// `new-tab-position` values.
@@ -741,6 +755,12 @@ impl Config {
                     Some("auto") => out.new_tab_position = NewTabPosition::Auto,
                     Some("end") => out.new_tab_position = NewTabPosition::End,
                     Some("after-current") => out.new_tab_position = NewTabPosition::AfterCurrent,
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "auto-hide-tabs-panel" => match value.as_str() {
+                    Some("default") => out.auto_hide_tabs_panel = AutoHide::Default,
+                    Some("always") => out.auto_hide_tabs_panel = AutoHide::Always,
+                    Some("auto") => out.auto_hide_tabs_panel = AutoHide::Auto,
                     _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
                 },
                 "notification-foreground" => match value.as_str() {
@@ -1368,6 +1388,18 @@ mod tests {
                 .warnings
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn auto_hide_tabs_panel() {
+        assert_eq!(Config::parse("").auto_hide_tabs_panel, AutoHide::Default);
+        let cfg = Config::parse("auto-hide-tabs-panel = \"auto\"\n");
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.auto_hide_tabs_panel, AutoHide::Auto);
+        assert_eq!(
+            Config::parse("auto-hide-tabs-panel = \"always\"\n").auto_hide_tabs_panel,
+            AutoHide::Always
         );
     }
 

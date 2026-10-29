@@ -239,6 +239,8 @@ pub struct Workspace {
     order: tabs::Order,
     /// Group sections folded in this window, by heading.
     collapsed: std::collections::BTreeSet<String>,
+    /// The tab count `auto-hide-tabs-panel = auto` last acted on.
+    auto_hide_count: Option<usize>,
     /// A tab's name being typed.
     renaming: Option<tabs::Rename>,
     /// View › Pin Window: above other apps' windows.
@@ -442,7 +444,12 @@ impl Workspace {
             }
         });
 
-        let sidebar_visible = config.sidebar_visible;
+        // `auto-hide-tabs-panel`: Auto decides on the first frame, from
+        // the tab count; a restored window keeps what it had.
+        let sidebar_visible = match config.auto_hide_tabs_panel {
+            motty_theme::AutoHide::Always => true,
+            _ => tabs::last_sidebar().unwrap_or(config.sidebar_visible),
+        };
 
         let mut this = Self {
             config,
@@ -468,6 +475,7 @@ impl Workspace {
             inbox: false,
             grouping: Default::default(),
             collapsed: Default::default(),
+            auto_hide_count: None,
             order: Default::default(),
             renaming: None,
             pinned: false,
@@ -548,6 +556,7 @@ impl Workspace {
         self.grouping = tabs::Grouping::from_key(&state.grouping);
         self.order = tabs::Order::from_key(&state.order);
         self.collapsed = state.collapsed.iter().cloned().collect();
+        self.auto_hide_count = Some(state.tabs.len());
         for tab in &state.tabs {
             match self.restore_tab(tab, &crate::recovery::read_scrollback, window, cx) {
                 Ok(tab) => self.tabs.push(tab),
@@ -1279,6 +1288,14 @@ impl Workspace {
         // The toggle wins until the key itself changes.
         if config.sidebar_visible != self.config.sidebar_visible {
             self.sidebar_visible = config.sidebar_visible;
+        }
+        if config.auto_hide_tabs_panel != self.config.auto_hide_tabs_panel {
+            // Switching to Always shows it everywhere; to Auto, it follows
+            // the tab count from now.
+            self.auto_hide_count = None;
+            if config.auto_hide_tabs_panel == motty_theme::AutoHide::Always {
+                self.sidebar_visible = true;
+            }
         }
         self.config = config;
         let (meta, blink, cursor) = (
@@ -2396,6 +2413,7 @@ impl Workspace {
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
+        tabs::note_sidebar(self.sidebar_visible);
         cx.notify();
     }
 
@@ -2858,6 +2876,7 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::note_window_bounds(window);
+        self.auto_hide_sidebar();
         let sidebar = self.sidebar_visible.then(|| self.render_sidebar(cx));
         let details = self.details.visible.then(|| self.render_details(cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);

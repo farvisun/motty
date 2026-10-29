@@ -1635,6 +1635,25 @@ impl SettingsWindow {
         rows.push(row(
             Appearance,
             "Tabs",
+            "Auto Hide Tabs Panel",
+            Some("Auto shows it once a window has two or more tabs"),
+            choice(
+                "auto-hide-tabs-panel",
+                &[
+                    ("Default", "default"),
+                    ("Always", "always"),
+                    ("Auto", "auto"),
+                ],
+                match c.auto_hide_tabs_panel {
+                    motty_theme::AutoHide::Default => "Default",
+                    motty_theme::AutoHide::Always => "Always",
+                    motty_theme::AutoHide::Auto => "Auto",
+                },
+            ),
+        ));
+        rows.push(row(
+            Appearance,
+            "Tabs",
             "New Tab Position",
             None,
             choice(

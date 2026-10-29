@@ -278,6 +278,35 @@ fn folder_label(path: &Path) -> String {
     }
 }
 
+thread_local! {
+    static LAST_SIDEBAR: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The tabs panel as last toggled in any window: `auto-hide-tabs-panel =
+/// default` opens new windows that way.
+pub(super) fn last_sidebar() -> Option<bool> {
+    LAST_SIDEBAR.with(|l| l.get())
+}
+
+pub(super) fn note_sidebar(visible: bool) {
+    LAST_SIDEBAR.with(|l| l.set(Some(visible)));
+}
+
+impl Workspace {
+    /// `auto-hide-tabs-panel = auto`: hidden with one tab, shown with
+    /// more, as tabs open and close (the toggle holds until then).
+    pub(super) fn auto_hide_sidebar(&mut self) {
+        if self.config.auto_hide_tabs_panel != motty_theme::AutoHide::Auto {
+            return;
+        }
+        let count = self.tabs.len();
+        if self.auto_hide_count != Some(count) {
+            self.auto_hide_count = Some(count);
+            self.sidebar_visible = count > 1 || self.inbox;
+        }
+    }
+}
+
 /// Menu rows and what each one does, counted as `native_menu` counts.
 struct Menu {
     entries: Vec<Entry>,
