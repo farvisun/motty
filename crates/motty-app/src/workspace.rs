@@ -2776,6 +2776,7 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::note_window_bounds(window);
         let sidebar = self.sidebar_visible.then(|| self.render_sidebar(cx));
         let details = self.details.visible.then(|| self.render_details(cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);

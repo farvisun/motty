@@ -61,7 +61,7 @@ mod mac {
         if visible.as_bool() {
             APP.with(|app| {
                 if let Some(app) = app.borrow().as_ref() {
-                    let _ = app.update(crate::workspace::show_next_failing);
+                    app.update(crate::workspace::show_next_failing);
                 }
             });
             return Bool::YES;

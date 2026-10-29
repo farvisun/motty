@@ -157,6 +157,37 @@ fn bounds_arg(cx: &App) -> Bounds<gpui::Pixels> {
     Bounds::centered(None, size(px(1200.), px(800.)), cx)
 }
 
+thread_local! {
+    static WINDOW_BOUNDS: std::cell::RefCell<
+        std::collections::HashMap<gpui::WindowId, Bounds<gpui::Pixels>>,
+    > = Default::default();
+}
+
+/// Where a workspace window was when it last drew, for [`cascaded`].
+pub(crate) fn note_window_bounds(window: &gpui::Window) {
+    let id = window.window_handle().window_id();
+    WINDOW_BOUNDS.with(|b| b.borrow_mut().insert(id, window.bounds()));
+}
+
+/// A new window steps 28pt down and right of the front one, as Otty's do,
+/// while that still fits on its display.
+fn cascaded(cx: &mut App) -> Option<Bounds<gpui::Pixels>> {
+    const STEP: f32 = 28.;
+    let front = cx
+        .window_stack()
+        .unwrap_or_else(|| cx.windows())
+        .into_iter()
+        .find_map(|w| w.downcast::<Workspace>())?;
+    // Read from the last frame: the front window is often the one asking,
+    // and busy.
+    let bounds = WINDOW_BOUNDS.with(|b| b.borrow().get(&front.window_id()).copied())?;
+    let next = Bounds::new(bounds.origin + point(px(STEP), px(STEP)), bounds.size);
+    cx.displays()
+        .iter()
+        .any(|d| d.bounds().contains(&next.bottom_right()) && d.bounds().contains(&next.origin))
+        .then_some(next)
+}
+
 /// The value after `flag`, among the arguments before `-e`.
 fn flag_value(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().take_while(|a| a != "-e").collect();
@@ -253,7 +284,7 @@ fn open_window_inner(
                 Bounds::centered(None, saved.size, cx)
             }
         }
-        None => bounds_arg(cx),
+        None => cascaded(cx).unwrap_or_else(|| bounds_arg(cx)),
     };
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
