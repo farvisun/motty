@@ -50,11 +50,15 @@ pub fn find(name: &str) -> Option<&'static Skill> {
 }
 
 const PANES: &str = "\
-Every pane has a number. `motty list` prints them, one per line: the id, its
-window and tab (`w0 t1`), `*` on the focused one, the program, the folder and,
-in brackets, the coding agent running there. `motty list --json` has more: the
-agent's session id, whether a command is running (`busy`) and whether an agent
-is in the middle of a turn (`in_turn`). Your own pane is `$MOTTY_PANE_ID`.";
+Every pane has a number. `motty pane list` prints a table of them: the id
+(`*` on the focused one), its window and tab (`w_1`, `t_3`), its place in the
+tab, the program, the coding agent running there or whether it's busy, and the
+folder. `--tab <t_id>` or `--window <w_id>` narrows it. `motty --json pane
+list` has more: the agent's session id, whether a command is running (`busy`)
+and whether an agent is in the middle of a turn (`in_turn`). Your own pane is
+`$MOTTY_PANE_ID`, and commands act on it when no `--pane` is given. A
+`--pane`, `--tab` or `--window` that matches nothing fails with exit status 4;
+it never falls back to another pane.";
 
 const WAIT: &str = "\
 # wait — block until something in Motty is done
@@ -67,20 +71,21 @@ on it with one command — never sleep and poll.
 PANES
 
 ## Wait
-- One pane: `motty wait --pane <id>`
-- Every pane of that pane's tab: `motty wait --pane <id> --tab`
-- An agent session: `motty wait --session <session-id>`
-- Add `--timeout-secs <n>` to give up after n seconds (exit status 124).
+- One pane: `motty pane wait --pane <id>`
+- Every pane of that pane's tab: `motty pane wait --pane <id> --tab`
+- Every pane of a window: `motty pane wait --window <w_id>`
+- An agent session: `motty pane wait --session <session-id>`
+- Add `--timeout-secs <n>` to give up after n seconds (exit status 9).
 
 A shell pane is done when its command has exited and the prompt is back; an
-agent pane when the agent finished its turn. `motty wait` returns at once with
-exit status 3 and says why when a pane can report neither (no shell
+agent pane when the agent finished its turn. `motty pane wait` returns at once
+with exit status 6 and says why when a pane can report neither (no shell
 integration and no agent integration): tell the user exactly that rather than
 falling back to sleeping.
 
-When it returns, read what happened: `motty read --pane <id> --last-command`
-for a shell command's output, or `motty read --pane <id> --lines 40` for the
-end of the screen, and report it.";
+When it returns, read what happened: `motty pane capture --pane <id>
+--last-command` for a shell command's output, or `motty pane capture --pane
+<id> --lines 40` for the end of the screen, and report it.";
 
 const TELL: &str = "\
 # tell — say something in another terminal
@@ -96,12 +101,15 @@ With no target named, the user means the focused pane (the one with `*`),
 unless that's your own pane.
 
 ## Send
-`motty send --pane <id> --submit \"<text>\"`
+`motty pane send-text --pane <id> --submit \"<text>\"`
 
 `--submit` presses Return when it's that pane's turn: the text waits in the
 pane's prompt queue until the agent finishes its turn or the shell is back at
 an empty prompt. `--submit=now` sends at once. Without `--submit` the text is
-typed but not sent.
+typed but not sent. C escapes in the text are typed as what they stand for
+(`\\n`, `\\x03`), so write `\\\\` for a backslash; `--stdin` sends standard
+input as it is. Single keys go with `motty pane send-keys --pane <id>
+key:C-c` (or `key:Enter`, `key:Escape`, …).
 
 If Motty answers that typing into panes is off, tell the user to turn on
 Settings › Advanced › IPC Allow Send Keys; don't retry. Panes in SSH, at a
@@ -110,15 +118,17 @@ password prompt or in Read Only mode refuse typed input.";
 const OPEN: &str = "\
 # open — put a file, a folder or a page on the user's screen
 
-`motty open <path-or-url>` opens it in Motty:
-- a file in an editor tab,
-- a folder as a terminal there,
-- a URL in the browser.
+- A file to read: `motty view <file>`; to change: `motty edit <file>`. Both
+  open a new tab; `--right`, `--left`, `--top` or `--bottom` put it in a split
+  beside your pane instead, `--new-window` in a new window. `motty view
+  <http-url>` shows a page.
+- A folder: `motty open <dir>` opens a new window there (`--command \"<line>\"`
+  runs something in it); `motty tab new --cwd <dir>` a new tab; `motty pane
+  split --cwd <dir> --direction right|left|up|down` a split beside your pane.
+- A URL in the browser: `motty open <url>`.
 
-For a folder, add where: `--split right|left|down|up` beside your pane, `--tab`
-(the default) or `--window`. Files always open in an editor tab. Relative paths
-are from the current folder. Saying \"in a split\" or \"in a new window\" is
-enough from the user; pick the flag.";
+Relative paths are from the current folder. Saying \"in a split\" or \"in a
+new window\" is enough from the user; pick the command.";
 
 const MOTTY: &str = "\
 # motty — spread work across Motty's window
@@ -131,31 +141,38 @@ and to put a second coding agent on part of a task.
 PANES
 
 ## Open panes (they don't take the user's focus with --no-focus)
-- `motty split --pane $MOTTY_PANE_ID --direction right --no-focus` prints the
-  new pane's id. `--cwd <dir>` sets its folder; arguments after it run a
-  program instead of a shell.
-- `motty new-tab --cwd <dir>` prints the new pane's id.
+- `motty pane split --direction right --no-focus` splits your pane and prints
+  the new pane's id. `--cwd <dir>` sets its folder, `--command \"<line>\"`
+  runs a command line in its shell, `--size <10-90>` its share in percent.
+- `motty tab new --cwd <dir>` prints the new tab's pane id.
 
 ## Run and read
-- `motty run --pane <id> <command line>` runs it in that pane's shell, waits,
-  prints its output and exits with its status.
-- `motty read --pane <id> --last-command` or `--lines <n>`.
+- `motty pane exec --pane <id> <command line>` runs it in that pane's shell,
+  waits, prints its output (stderr apart) and exits with its status. `motty
+  pane run` does the same but only reports how it went.
+- `motty pane capture --pane <id> --last-command`, `--lines <n>` or
+  `--scrollback`.
 
 ## Hand work to another agent
-1. `motty split --pane $MOTTY_PANE_ID --no-focus claude` (or `codex`, …).
-2. `motty send --pane <id> --submit \"<the task, self-contained>\"`
-3. `motty wait --pane <id>` blocks until it finishes its turn; then
-   `motty read --pane <id> --lines 60`.
+1. `motty pane split --no-focus --command claude` (or `codex`, …).
+2. `motty pane send-text --pane <id> --submit \"<the task, self-contained>\"`
+3. `motty pane wait --pane <id>` blocks until it finishes its turn; then
+   `motty pane capture --pane <id> --lines 60`.
 
 ## Wait for several
-`motty wait --pane <id> --tab` returns when every pane of that tab is idle.
+`motty pane wait --pane <id> --tab` returns when every pane of that tab is
+idle. Exit status 6: a pane can't tell when it's done; 9: `--timeout-secs`
+ran out.
 
 ## Tidy up
-`motty close --pane <id>` — close only panes you opened, never your own
-(`$MOTTY_PANE_ID`): that would end this conversation.
+`motty pane close --pane <id>` — close only panes you opened, never your own
+(`$MOTTY_PANE_ID`): that would end this conversation. It refuses when Motty
+would ask first (a command still running); tell the user rather than adding
+`--force`.
 
-Typing into panes (`motty send`) needs Settings › Advanced › IPC Allow Send
-Keys. If Motty refuses, tell the user; everything else works without it.";
+Typing into panes (`pane send-text`, `pane send-keys`) needs Settings ›
+Advanced › IPC Allow Send Keys. If Motty refuses, tell the user; everything
+else works without it.";
 
 /// The skill as the agent should store it, with its chosen `name`.
 pub fn file(skill: &Skill, name: &str) -> String {

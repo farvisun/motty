@@ -2303,7 +2303,7 @@ impl SettingsWindow {
             Advanced,
             "IPC",
             "IPC Allow Send Keys",
-            Some("motty send and agents' skills may type into panes"),
+            Some("motty pane send-text and agents' skills may type into panes"),
             Control::Toggle {
                 key: "ipc-allow-send-keys",
                 on: b.ipc_send_keys,

@@ -92,17 +92,29 @@ Motty listens on a Unix socket; shells it starts get `$MOTTY_SOCKET`, `$MOTTY_PA
 `motty` CLI on `PATH`, so scripts and coding agents can drive it:
 
 ```sh
-motty list                         # panes in every window
-motty run -- cargo test            # run in this pane's shell, wait, print output, exit with its status
-motty read --last-command          # output of the last command (also --lines N, or the screen)
-motty mode read-only --pane 3      # lock a pane (also vi, normal)
-motty find -e 'error\[E\d+\]'      # search screen and scrollback (-c case, -w words, --show opens the bar)
-motty split -d down -- htop        # new pane; prints its id
-motty send --pane 3 $'q'           # type into a pane
-motty new-tab --cwd ~/src; motty focus --pane 3; motty close --pane 3
-motty quit                         # quit Motty, saving the session
-motty action split_right           # run any action, as its key would (motty action --list)
+motty panes                               # panes in every window (also windows, tabs; --json)
+motty pane exec -- cargo test             # run in this pane's shell, wait, print output, exit with its status
+motty pane capture --last-command         # output of the last command (also --lines N, --scrollback)
+motty pane split -d down --command htop   # new pane; prints its id (--size 30, --cwd, --no-focus)
+motty pane send-keys --pane 3 -- q key:Enter   # type into a pane (send-text for text with C escapes)
+motty pane wait --pane 3 --tab            # block until every pane of its tab is idle
+motty pane mode read-only --pane 3        # lock a pane (also vi, hints, normal)
+motty pane find -e 'error\[E\d+\]'        # search screen and scrollback (-c case, -w words, --show opens the bar)
+motty pane link --last-command            # motty://pane/12?line=1204; `motty pane focus <link>` goes back there
+motty tab new --cwd ~/src; motty tab badge --kind awaiting-input; motty tab close --tab t_4
+motty window list; motty window rename --window title:api API; motty open ~/src/api
+motty view --right build.log; motty edit src/main.rs
+motty watch -- cargo build                # spinner on the tab, then a badge and a notification
+motty jump api                            # cd to the best-ranked folder matching "api"
+motty pane action split_right             # run any action, as its key would (motty pane action --list)
 ```
+
+Panes, tabs and windows are picked with `--pane`, `--tab` and `--window`: an id (`12`, `t_3`,
+`w_1`), `index:<n>` for a pane, a 1-based index for a tab or window, `current`, and for
+windows also `last` and `title:<pattern>`. A selector that matches nothing exits with status
+4. Without one, commands act on the pane they run in. The flat verbs from before (`motty list`,
+`run`, `read`, `send`, `split`, `new-tab`, `wait`, `quit`, …) still work. `motty completions
+zsh` prints a completion script; `motty features list` shows terminal feature demos.
 
 `motty mcp` serves the same operations to coding agents as MCP tools (`list_panes`, `read_pane`,
 `find_in_pane`, `run_command`, `send_text`, `split_pane`, `new_tab`, `focus_pane`, `close_pane`):

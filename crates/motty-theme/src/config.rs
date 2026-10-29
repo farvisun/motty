@@ -202,7 +202,7 @@ pub struct Badges {
     pub clipboard_shell: bool,
     /// `privilege-mouse-shell`: programs may turn on mouse reporting.
     pub mouse_shell: bool,
-    /// `ipc-allow-send-keys`: `motty send` and agents may type into panes.
+    /// `ipc-allow-send-keys`: `motty pane send-text|send-keys` and agents may type into panes.
     pub ipc_send_keys: bool,
     /// `ipc-allow-sensitive-sessions`: …even into SSH sessions and
     /// password prompts. AppleScript's `do script`, `contents` and
