@@ -1,6 +1,6 @@
 //! The bar above a file pane, as Otty draws it: the Read-Only (or Preview)
-//! switch, Send to Chat and Share on the left; whether it's saved and
-//! Close on the right.
+//! switch, Send to Chat and Share on the left; the language, whether it's
+//! saved and Close on the right.
 
 use gpui::{AnyElement, Context, Hsla, MouseButton, Window, div, prelude::*, px};
 use motty_render::hsla;
@@ -18,6 +18,85 @@ const ICON: f32 = 14.;
 const ICON_BOX: f32 = 24.;
 
 impl FileEditor {
+    /// Whether the toolbar has the language dropdown: for an extension more
+    /// than one language uses (Otty's `.m`, `.h`, `.v`, `.pl`), or once one
+    /// was picked.
+    fn shows_language(&self) -> bool {
+        self.language_override.is_some()
+            || self.path.as_deref().is_some_and(|p| {
+                matches!(
+                    crate::file_kind::extension(p).as_str(),
+                    "m" | "h" | "v" | "pl"
+                )
+            })
+    }
+
+    /// The language the file is colored as; picking one overrides what was
+    /// detected, until Auto-detect.
+    fn language_dropdown(
+        &self,
+        ink: impl Fn(f32) -> Hsla + Copy + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let current = self.language();
+        div()
+            .id("editor-language")
+            .flex_none()
+            .h(px(24.))
+            .pl(px(6.))
+            .pr(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .rounded(px(5.))
+            .text_size(px(12.))
+            .text_color(ink(0.6))
+            .hover(move |s| s.bg(ink(0.07)))
+            .tooltip(|_, cx| crate::tooltip::text("Language", cx))
+            .child(current.unwrap_or("Plain Text"))
+            .child(
+                gpui::svg()
+                    .path("icons/chevron-down.svg")
+                    .size(px(11.))
+                    .text_color(ink(0.5)),
+            )
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    use crate::native_menu::{Entry, Item};
+                    let languages = super::highlight::languages();
+                    let auto = this.language_override.is_none();
+                    let mut entries: Vec<Entry> = vec![
+                        Item::new("Auto-detect").checked(auto).into(),
+                        Entry::Separator,
+                        Item::new("Plain Text")
+                            .checked(!auto && current.is_none())
+                            .into(),
+                    ];
+                    entries.extend(
+                        languages
+                            .iter()
+                            .map(|&l| Item::new(l).checked(!auto && current == Some(l)).into()),
+                    );
+                    let editor = cx.entity().downgrade();
+                    crate::native_menu::popup(
+                        entries,
+                        event.position(),
+                        None,
+                        window,
+                        cx,
+                        move |ix, _, cx| {
+                            let pick = match ix {
+                                0 => None,
+                                1 => Some(None),
+                                ix => Some(languages.get(ix - 2).copied()),
+                            };
+                            let _ = editor.update(cx, |this, cx| this.set_language(pick, cx));
+                        },
+                    );
+                }),
+            )
+    }
+
     pub(super) fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let fg = self.foreground();
         let ink = move |a: f32| {
@@ -43,7 +122,7 @@ impl FileEditor {
         let file = self.name.is_none() && self.path.is_some();
 
         let mut left = div().flex().items_center().gap(px(4.));
-        if file && !self.lockable {
+        if file && !self.lockable && !self.diff {
             let on = self.read_only;
             let enabled = self.can_edit;
             let track = match (on, active) {
@@ -118,13 +197,15 @@ impl FileEditor {
             );
         }
         left = left
-            .child(
-                icon("editor-chat", "icons/message-square.svg", "Send to Chat")
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(crate::actions::SendToChat), cx)
-                    }),
-            )
+            .when(!self.diff, |d| {
+                d.child(
+                    icon("editor-chat", "icons/message-square.svg", "Send to Chat")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(crate::actions::SendToChat), cx)
+                        }),
+                )
+            })
             .when_some(self.path.clone().filter(|_| file), |d, path| {
                 d.child(icon("editor-share", "icons/share.svg", "Share").on_click(
                     move |event, window, _| {
@@ -136,7 +217,7 @@ impl FileEditor {
                     },
                 ))
             });
-        if self.read_only && !self.lockable && self.name.is_none() && !self.can_edit {
+        if self.read_only && !self.lockable && self.name.is_none() && !self.can_edit && !self.diff {
             left = left.child(
                 div()
                     .ml(px(6.))
@@ -173,6 +254,9 @@ impl FileEditor {
             .flex()
             .items_center()
             .gap(px(6.))
+            .when(file && self.shows_language(), |d| {
+                d.child(self.language_dropdown(ink, cx))
+            })
             .children(self.buttons.iter().enumerate().map(|(ix, (text, action))| {
                 let action = action.boxed_clone();
                 button_row(("editor-button", ix), text.clone(), ink(0.85), ink(0.07))

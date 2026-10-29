@@ -117,7 +117,8 @@ pub enum Token {
 }
 
 impl Token {
-    /// Tokens whose delimiters (quotes, `#`, `+`) take their color.
+    /// Tokens whose delimiters (quotes, `#`) take their color. A diff's
+    /// `+` and `-` don't: Otty leaves them plain.
     fn wraps_punctuation(self) -> bool {
         matches!(
             self,
@@ -127,8 +128,6 @@ impl Token {
                 | Token::Emphasis
                 | Token::Strong
                 | Token::Link
-                | Token::Inserted
-                | Token::Deleted
                 | Token::Changed
         )
     }
@@ -196,7 +195,7 @@ fn classify(scope: &str) -> Option<Token> {
         Token::Inserted
     } else if any(&["markup.deleted"]) {
         Token::Deleted
-    } else if any(&["markup.changed", "meta.diff.range", "meta.diff.header"]) {
+    } else if any(&["markup.changed"]) {
         Token::Changed
     } else if any(&["markup.italic"]) {
         Token::Emphasis

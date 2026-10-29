@@ -147,6 +147,11 @@ pub struct FileEditor {
     lockable: bool,
     /// The next reveal centers the cursor's line.
     center: bool,
+    /// A `.diff` or `.patch`: read-only, with no switch.
+    diff: bool,
+    /// The language picked from the toolbar (`Some(None)`: plain text),
+    /// over the detected one.
+    language_override: Option<Option<&'static str>>,
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
@@ -202,6 +207,8 @@ impl FileEditor {
             rows: Rc::default(),
             lockable: false,
             center: false,
+            diff: false,
+            language_override: None,
         };
         if let Some(path) = path {
             editor.load(path);
@@ -215,8 +222,13 @@ impl FileEditor {
                 self.buffer = Buffer::from_text(&text);
                 self.saved = text;
                 self.revision += 1;
-                self.read_only = !editable;
-                self.can_edit = editable;
+                // A diff is only read, as Otty shows one.
+                self.diff = matches!(
+                    crate::file_kind::extension(&path).as_str(),
+                    "diff" | "patch"
+                );
+                self.read_only = !editable || self.diff;
+                self.can_edit = editable && !self.diff;
                 self.error = None;
             }
             Err(e) => {
@@ -226,7 +238,10 @@ impl FileEditor {
             }
         }
         self.mtime = disk::modified(&path);
-        let language = highlight::detect(Some(&path), self.buffer.line(0));
+        let language = match self.language_override {
+            Some(chosen) => chosen,
+            None => highlight::detect(Some(&path), self.buffer.line(0)),
+        };
         self.highlighter = language.map(|l| highlight::Highlighter::new(Some(l)));
         self.path = Some(path);
     }
@@ -887,14 +902,16 @@ impl FileEditor {
     }
 
     /// The language the file is colored as.
-    #[allow(dead_code)]
     pub fn language(&self) -> Option<&'static str> {
         self.highlighter.as_ref().and_then(|h| h.language())
     }
 
-    /// Colors the file as `language`, or plain with `None`.
-    #[allow(dead_code)]
-    pub fn set_language(&mut self, language: Option<&str>, cx: &mut Context<Self>) {
+    /// The toolbar's language dropdown: colors the file as `language`
+    /// (`Some(None)`: plain text), or as detected again with `None`.
+    pub fn set_language(&mut self, language: Option<Option<&'static str>>, cx: &mut Context<Self>) {
+        self.language_override = language;
+        let language = language
+            .unwrap_or_else(|| highlight::detect(self.path.as_deref(), self.buffer.line(0)));
         self.highlighter = language.map(|l| highlight::Highlighter::new(Some(l)));
         cx.notify();
     }
