@@ -97,9 +97,16 @@ impl Workspace {
             Item::new("New File Editor"),
             Pick::Action(Box::new(NewFileEditor)),
         ));
-        for title in ["New File Browser", "New Web Browser…"] {
-            entries.push(add(&mut picks, Item::new(title).enabled(false), Pick::None));
-        }
+        entries.push(add(
+            &mut picks,
+            Item::new("New File Browser").enabled(false),
+            Pick::None,
+        ));
+        entries.push(add(
+            &mut picks,
+            Item::new("New Web Browser…"),
+            Pick::Action(Box::new(NewWebBrowser)),
+        ));
         entries.push(add(&mut picks, Item::new("Open…"), Pick::Open));
         entries.push(add(
             &mut picks,

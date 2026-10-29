@@ -241,17 +241,21 @@ pub fn tab_layout(
 ) -> TabLayout {
     fn walk(pane: &PaneState, split: Option<(String, f32, usize)>, out: &mut Vec<PaneLayout>) {
         match pane {
-            PaneState::Leaf { .. } | PaneState::File { .. } => out.push(PaneLayout {
-                cwd: match pane {
-                    PaneState::Leaf { cwd, .. } => cwd.as_ref().map(|c| c.display().to_string()),
-                    PaneState::File { path } => path.parent().map(|c| c.display().to_string()),
-                    PaneState::Split { .. } => None,
-                },
-                split: split.as_ref().map(|s| s.0.clone()),
-                size: split.as_ref().map(|s| (s.1 * 100.).round() / 100.),
-                of: split.and_then(|s| (s.2 > 1).then_some(s.2)),
-                commands: Vec::new(),
-            }),
+            PaneState::Leaf { .. } | PaneState::File { .. } | PaneState::Web { .. } => {
+                out.push(PaneLayout {
+                    cwd: match pane {
+                        PaneState::Leaf { cwd, .. } => {
+                            cwd.as_ref().map(|c| c.display().to_string())
+                        }
+                        PaneState::File { path } => path.parent().map(|c| c.display().to_string()),
+                        PaneState::Split { .. } | PaneState::Web { .. } => None,
+                    },
+                    split: split.as_ref().map(|s| s.0.clone()),
+                    size: split.as_ref().map(|s| (s.1 * 100.).round() / 100.),
+                    of: split.and_then(|s| (s.2 > 1).then_some(s.2)),
+                    commands: Vec::new(),
+                })
+            }
             PaneState::Split {
                 vertical,
                 ratio,
@@ -318,7 +322,7 @@ pub fn tab_state(layout: &TabLayout, bases: &Bases) -> (TabState, Vec<Vec<String
 
 fn leaf_count(p: &PaneState) -> usize {
     match p {
-        PaneState::Leaf { .. } | PaneState::File { .. } => 1,
+        PaneState::Leaf { .. } | PaneState::File { .. } | PaneState::Web { .. } => 1,
         PaneState::Split { first, second, .. } => leaf_count(first) + leaf_count(second),
     }
 }

@@ -321,6 +321,7 @@ fn paint(native: Rc<Native>, id: EntityId, bounds: Bounds<Pixels>, window: &mut 
             })
         },
     );
+    native.set_suppressed(covered(window));
     native.place(window, bounds, visible);
     // Clicks on the web view go to it directly; one that reaches GPUI is
     // outside it, so GPUI takes the keyboard back (its NSView doesn't take
@@ -330,6 +331,30 @@ fn paint(native: Rc<Native>, id: EntityId, bounds: Bounds<Pixels>, window: &mut 
             native.blur();
         }
     });
+}
+
+thread_local! {
+    /// Windows with something GPUI draws over their content (a palette).
+    static COVERED: std::cell::RefCell<std::collections::HashSet<gpui::WindowId>> =
+        std::cell::RefCell::default();
+}
+
+/// Hides the window's web views while GPUI draws `covered` overlays, which
+/// they would otherwise cover.
+pub fn set_covered(window: &Window, covered: bool) {
+    let id = window.window_handle().window_id();
+    COVERED.with_borrow_mut(|set| {
+        if covered {
+            set.insert(id);
+        } else {
+            set.remove(&id);
+        }
+    });
+}
+
+fn covered(window: &Window) -> bool {
+    let id = window.window_handle().window_id();
+    COVERED.with_borrow(|set| set.contains(&id))
 }
 
 /// Lives in GPUI's element state while the web view is painted each frame;

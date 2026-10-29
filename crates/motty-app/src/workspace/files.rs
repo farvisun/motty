@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use gpui::{Context, PromptLevel, Window, prelude::*};
 
-use super::{Tab, Workspace, terminal_style};
+use super::{Content, Panes, Tab, Workspace, terminal_style};
 use crate::editor::{EditorEvent, FileEditor};
+use crate::web_pane::{WebPane, WebPaneEvent};
 
 impl Workspace {
     /// Opens `path` (or an empty Untitled file) in an editor tab; a file
@@ -35,6 +36,37 @@ impl Workspace {
         let editor = self.make_editor(path, cx);
         self.tabs.push(Tab::editor(editor));
         self.activate(self.tabs.len() - 1, window, cx);
+    }
+
+    /// A web pane in a new tab, at `url` or with its address field ready.
+    pub fn open_web(&mut self, url: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = url.is_none();
+        let web = self.make_web(url, cx);
+        self.tabs
+            .push(Tab::holding(Content::Panes(Panes::new(web.clone().into()))));
+        self.activate(self.tabs.len() - 1, window, cx);
+        if empty {
+            window.dispatch_action(Box::new(crate::actions::FocusAddress), cx);
+        }
+    }
+
+    /// A web pane, styled and watched.
+    pub(super) fn make_web(
+        &mut self,
+        url: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Entity<WebPane> {
+        let style = terminal_style(&self.config, &self.theme, cx);
+        let web = cx.new(|cx| WebPane::new(url, style, cx));
+        self.watch_web(&web, cx);
+        web
+    }
+
+    /// Redraws the tab as the page's title changes.
+    pub(super) fn watch_web(&mut self, web: &gpui::Entity<WebPane>, cx: &mut Context<Self>) {
+        let subscription = cx.subscribe(web, |_, _, _: &WebPaneEvent, cx| cx.notify());
+        self.pane_subscriptions
+            .insert(web.entity_id(), subscription);
     }
 
     /// A file pane for `path`, styled and watched.
@@ -170,5 +202,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_editor(None, window, cx);
+    }
+
+    pub(super) fn new_web_browser(
+        &mut self,
+        _: &crate::actions::NewWebBrowser,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_web(None, window, cx);
     }
 }

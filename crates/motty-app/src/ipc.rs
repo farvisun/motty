@@ -300,6 +300,17 @@ fn send_text(p: SendTextParams, cx: &mut App) -> anyhow::Result<Value> {
 
 /// A URL goes to the browser, a folder gets a shell, a file an editor tab.
 fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
+    // Web pages open in a web pane, like Otty's built-in browser.
+    if p.target.starts_with("http://") || p.target.starts_with("https://") {
+        let handle = workspaces(cx)
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no Motty window"))?;
+        handle.update(cx, |workspace, window, cx| {
+            workspace.open_web(Some(p.target.clone()), window, cx)
+        })?;
+        return Ok(Value::Null);
+    }
     if p.target.contains("://") || p.target.starts_with("mailto:") {
         cx.open_url(&p.target);
         return Ok(Value::Null);

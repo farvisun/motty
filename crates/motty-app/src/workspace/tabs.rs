@@ -670,7 +670,7 @@ impl Workspace {
                                 let program = v.process.clone().unwrap_or_else(|| "shell".into());
                                 format!("{program} — {}", v.display_title())
                             }
-                            crate::panes::PaneItem::File(e) => e.read(cx).title(),
+                            pane => pane.title(cx),
                         };
                         (
                             Item::new(label).checked(*pane == terms.focused),
@@ -1091,6 +1091,9 @@ impl Workspace {
                         .path()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "Untitled".into()),
+                    crate::panes::PaneItem::Web(w) => {
+                        w.read(cx).url().unwrap_or("New Tab").to_owned()
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1208,6 +1211,7 @@ impl Workspace {
                             self.watch_terminal(view, window, cx);
                         }
                         crate::panes::PaneItem::File(e) => self.watch_editor(e, cx),
+                        crate::panes::PaneItem::Web(w) => self.watch_web(w, cx),
                     }
                 }
             }

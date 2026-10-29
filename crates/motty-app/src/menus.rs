@@ -388,6 +388,7 @@ fn file_menu(live: &Live) -> Menu {
         MenuItem::action("Duplicate Tab", DuplicateTab),
         MenuItem::separator(),
         MenuItem::action("New File Editor", NewFileEditor),
+        MenuItem::action("New Web Browser", NewWebBrowser),
         MenuItem::separator(),
         MenuItem::submenu(Menu::new("Open Recent").items(recent)),
         MenuItem::submenu(Menu::new("Open Folder").items(folders)),

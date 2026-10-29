@@ -85,6 +85,8 @@ pub enum PaneState {
     },
     /// A file pane (its unsaved edits are kept apart, see `editor`).
     File { path: PathBuf },
+    /// A web pane, at the page it showed.
+    Web { url: Option<String> },
     Split {
         /// Children stacked top and bottom (else side by side).
         vertical: bool,

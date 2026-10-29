@@ -181,18 +181,12 @@ impl Panes {
 
     /// The focused pane's folder: a terminal's, or the open file's.
     fn folder(&self, cx: &App) -> Option<std::path::PathBuf> {
-        match &self.focused {
-            PaneItem::Terminal(view) => view.read(cx).cwd.clone(),
-            PaneItem::File(editor) => editor.read(cx).folder(),
-        }
+        self.focused.folder(cx)
     }
 
     /// The focused pane's title.
     fn title(&self, cx: &App) -> String {
-        match &self.focused {
-            PaneItem::Terminal(view) => view.read(cx).display_title(),
-            PaneItem::File(editor) => editor.read(cx).title(),
-        }
+        self.focused.title(cx)
     }
 }
 
@@ -784,6 +778,7 @@ impl Workspace {
                 Pane::Leaf(view.into())
             }
             PaneState::File { path } => Pane::Leaf(self.make_editor(Some(path.clone()), cx).into()),
+            PaneState::Web { url } => Pane::Leaf(self.make_web(url.clone(), cx).into()),
             PaneState::Split {
                 vertical,
                 ratio,
@@ -1514,6 +1509,9 @@ impl Workspace {
                                 e.set_style(style.clone(), cx);
                                 e.set_prefs(self.config.editor, cx);
                             }),
+                            PaneItem::Web(w) => {
+                                w.update(cx, |w, cx| w.set_style(style.clone(), cx))
+                            }
                         }
                     }
                 }
@@ -3158,6 +3156,25 @@ impl Render for Workspace {
         let mut tab_bar = self.tab_bar_shown().then(|| self.render_tab_bar(cx));
         let details = self.details.visible.then(|| self.render_details(cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
+        let overlays: Vec<AnyElement> = [
+            self.render_palette(window, cx)
+                .map(IntoElement::into_any_element),
+            self.render_open_quickly(window, cx)
+                .map(IntoElement::into_any_element),
+            self.render_global_search(window, cx)
+                .map(IntoElement::into_any_element),
+            self.render_theme_picker(window, cx)
+                .map(IntoElement::into_any_element),
+            self.render_recipe_dialog(window, cx)
+                .map(IntoElement::into_any_element),
+            self.render_welcome(window, cx)
+                .map(IntoElement::into_any_element),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // Web pages are native views over the window: they'd cover these.
+        crate::web_view::set_covered(window, !overlays.is_empty());
         let t = &self.theme;
         let c = &t.container;
         // A click into another pane moves focus without telling us.
@@ -3367,6 +3384,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_file_editor))
+            .on_action(cx.listener(Self::new_web_browser))
             .on_action(cx.listener(Self::toggle_inbox))
             .on_action(cx.listener(|this, _: &RenameTab, window, cx| {
                 this.start_rename(this.active, window, cx)
@@ -3610,12 +3628,7 @@ impl Render for Workspace {
             .children(titlebar_buttons)
             .children(details_button)
             .children(self.render_pills(window, cx))
-            .children(self.render_palette(window, cx))
-            .children(self.render_open_quickly(window, cx))
-            .children(self.render_global_search(window, cx))
-            .children(self.render_theme_picker(window, cx))
-            .children(self.render_recipe_dialog(window, cx))
-            .children(self.render_welcome(window, cx))
+            .children(overlays)
     }
 }
 
@@ -3647,6 +3660,9 @@ fn tab_state(
         cx: &App,
     ) -> PaneState {
         match pane {
+            Pane::Leaf(PaneItem::Web(web)) => PaneState::Web {
+                url: web.read(cx).url().map(str::to_owned),
+            },
             Pane::Leaf(PaneItem::File(editor)) => match editor.read(cx).path() {
                 Some(path) => PaneState::File {
                     path: path.to_owned(),

@@ -100,6 +100,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("Go", "Search Agent Conversations", SearchAgentConversations),
         Command::new("Go", "Show Next Unread Tab", ShowNextUnread),
         Command::new("File", "New File Editor", NewFileEditor),
+        Command::new("File", "New Web Browser", NewWebBrowser),
         Command::new("File", "Open File…", OpenFile),
         Command::new("File", "Open Config Folder", OpenConfigFolder),
         Command::new("Tab", "New Tab", NewTab),

@@ -41,6 +41,10 @@ impl Workspace {
                     let e = e.read(cx);
                     (e.opening_lines(4), e.folder())
                 }
+                crate::panes::PaneItem::Web(w) => (
+                    w.read(cx).url().map(str::to_owned).into_iter().collect(),
+                    None,
+                ),
             },
             Content::Search(s) => {
                 let s = s.read(cx);

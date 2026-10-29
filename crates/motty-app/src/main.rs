@@ -26,6 +26,7 @@ mod terminal_view;
 mod titlebar;
 mod tooltip;
 // Not shown anywhere yet.
+mod web_pane;
 #[allow(dead_code)]
 mod web_view;
 mod window_menu;

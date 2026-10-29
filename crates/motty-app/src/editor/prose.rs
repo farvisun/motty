@@ -67,6 +67,13 @@ impl FileEditor {
         self.buffer.text()
     }
 
+    /// Selects everything, so typing replaces it.
+    pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        self.anchor = Some(super::Pos::default());
+        self.cursor = self.buffer.end();
+        cx.notify();
+    }
+
     /// Replaces the whole text (an undo step), the cursor at its end.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.push_undo();

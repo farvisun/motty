@@ -14,6 +14,7 @@ use gpui::{
 
 use crate::editor::FileEditor;
 use crate::terminal_view::TerminalView;
+use crate::web_pane::WebPane;
 
 /// Panes never shrink below this along the split axis while dragging.
 const MIN_PANE: f32 = 48.;
@@ -57,6 +58,7 @@ impl Direction {
 pub enum PaneItem {
     Terminal(Entity<TerminalView>),
     File(Entity<FileEditor>),
+    Web(Entity<WebPane>),
 }
 
 impl PaneItem {
@@ -78,6 +80,7 @@ impl PaneItem {
         match self {
             PaneItem::Terminal(view) => view.entity_id(),
             PaneItem::File(editor) => editor.entity_id(),
+            PaneItem::Web(web) => web.entity_id(),
         }
     }
 
@@ -85,6 +88,7 @@ impl PaneItem {
         match self {
             PaneItem::Terminal(view) => view.focus_handle(cx),
             PaneItem::File(editor) => editor.focus_handle(cx),
+            PaneItem::Web(web) => web.focus_handle(cx),
         }
     }
 
@@ -92,6 +96,25 @@ impl PaneItem {
         match self {
             PaneItem::Terminal(view) => view.clone().into_any_element(),
             PaneItem::File(editor) => editor.clone().into_any_element(),
+            PaneItem::Web(web) => web.clone().into_any_element(),
+        }
+    }
+
+    /// What the pane shows, for tab titles and pane lists.
+    pub fn title(&self, cx: &App) -> String {
+        match self {
+            PaneItem::Terminal(view) => view.read(cx).display_title(),
+            PaneItem::File(editor) => editor.read(cx).title(),
+            PaneItem::Web(web) => web.read(cx).title(),
+        }
+    }
+
+    /// Where a terminal opened beside it should start.
+    pub fn folder(&self, cx: &App) -> Option<std::path::PathBuf> {
+        match self {
+            PaneItem::Terminal(view) => view.read(cx).cwd.clone(),
+            PaneItem::File(editor) => editor.read(cx).folder(),
+            PaneItem::Web(_) => None,
         }
     }
 }
@@ -99,6 +122,12 @@ impl PaneItem {
 impl From<Entity<TerminalView>> for PaneItem {
     fn from(view: Entity<TerminalView>) -> Self {
         PaneItem::Terminal(view)
+    }
+}
+
+impl From<Entity<WebPane>> for PaneItem {
+    fn from(web: Entity<WebPane>) -> Self {
+        PaneItem::Web(web)
     }
 }
 

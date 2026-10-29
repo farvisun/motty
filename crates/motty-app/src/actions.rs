@@ -60,7 +60,13 @@ actions!(
         Cut,
         Save,
         NewFileEditor,
+        NewWebBrowser,
         TogglePreview,
+        GoBack,
+        GoForward,
+        ReloadPage,
+        FocusAddress,
+        FindOnPage,
         ToggleSoftWrap,
         ReloadFile,
         ToggleInbox,
@@ -312,6 +318,7 @@ pub struct EditFiles {
 const TERMINAL: Option<&str> = Some("Terminal");
 const WORKSPACE: Option<&str> = Some("Workspace");
 const EDITOR: Option<&str> = Some("Editor");
+const WEB: Option<&str> = Some("WebPane");
 
 struct DefaultKey {
     keys: &'static str,
@@ -344,6 +351,11 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-e", TogglePreview, EDITOR),
         b("cmd-alt-w", ToggleSoftWrap, EDITOR),
         b("cmd-r", ReloadFile, EDITOR),
+        b("cmd-[", GoBack, WEB),
+        b("cmd-]", GoForward, WEB),
+        b("cmd-r", ReloadPage, WEB),
+        b("cmd-l", FocusAddress, WEB),
+        b("cmd-f", FindOnPage, WEB),
         b("cmd-s", SaveRecipe, TERMINAL),
         b("cmd-shift-s", ExportRecipe, TERMINAL),
         b("cmd-f", Find, TERMINAL),
