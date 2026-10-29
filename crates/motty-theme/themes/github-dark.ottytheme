@@ -1,0 +1,20 @@
+# GitHub Dark: written from the scheme's published palette (MIT). By GitHub.
+
+[meta]
+name        = "GitHub Dark"
+author      = "GitHub"
+mode        = "dark"
+description = "GitHub's dark default."
+
+[terminal]
+foreground           = "#E6EDF3"
+background           = "#0D1117"
+cursor               = "#E6EDF3"
+cursor-text          = "#0D1117"
+selection-background = "#264F78"
+palette = [
+    "#484F58", "#FF7B72", "#3FB950", "#D29922",
+    "#58A6FF", "#BC8CFF", "#39C5CF", "#B1BAC4",
+    "#6E7681", "#FFA198", "#56D364", "#E3B341",
+    "#79C0FF", "#D2A8FF", "#56D4DD", "#FFFFFF",
+]

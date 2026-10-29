@@ -1,0 +1,20 @@
+# Ayu Light: written from the scheme's published palette (MIT). By ayu-theme.
+
+[meta]
+name        = "Ayu Light"
+author      = "ayu-theme"
+mode        = "light"
+description = "Simple, bright and elegant."
+
+[terminal]
+foreground           = "#5C6166"
+background           = "#FCFCFC"
+cursor               = "#5C6166"
+cursor-text          = "#FCFCFC"
+selection-background = "#D1E4F4"
+palette = [
+    "#000000", "#EA6C6D", "#6CBF43", "#ECA944",
+    "#3199E1", "#9E75C7", "#46BA94", "#BABABA",
+    "#686868", "#F07171", "#86B300", "#F2AE49",
+    "#399EE6", "#A37ACC", "#4CBF99", "#D1D1D1",
+]

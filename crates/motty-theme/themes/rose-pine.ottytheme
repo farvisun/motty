@@ -1,0 +1,20 @@
+# Rosé Pine: written from the scheme's published palette (MIT). By Rosé Pine.
+
+[meta]
+name        = "Rosé Pine"
+author      = "Rosé Pine"
+mode        = "dark"
+description = "All natural pine, faux fur and a bit of soho vibes."
+
+[terminal]
+foreground           = "#E0DEF4"
+background           = "#191724"
+cursor               = "#E0DEF4"
+cursor-text          = "#191724"
+selection-background = "#403D52"
+palette = [
+    "#26233A", "#EB6F92", "#31748F", "#F6C177",
+    "#9CCFD8", "#C4A7E7", "#EBBCBA", "#E0DEF4",
+    "#6E6A86", "#EB6F92", "#31748F", "#F6C177",
+    "#9CCFD8", "#C4A7E7", "#EBBCBA", "#E0DEF4",
+]

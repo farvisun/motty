@@ -1,0 +1,20 @@
+# Catppuccin Latte: written from the scheme's published palette (MIT). By Catppuccin.
+
+[meta]
+name        = "Catppuccin Latte"
+author      = "Catppuccin"
+mode        = "light"
+description = "Soothing pastel, the light flavor."
+
+[terminal]
+foreground           = "#4C4F69"
+background           = "#EFF1F5"
+cursor               = "#4C4F69"
+cursor-text          = "#EFF1F5"
+selection-background = "#CCD0DA"
+palette = [
+    "#5C5F77", "#D20F39", "#40A02B", "#DF8E1D",
+    "#1E66F5", "#EA76CB", "#179299", "#ACB0BE",
+    "#6C6F85", "#D20F39", "#40A02B", "#DF8E1D",
+    "#1E66F5", "#EA76CB", "#179299", "#BCC0CC",
+]

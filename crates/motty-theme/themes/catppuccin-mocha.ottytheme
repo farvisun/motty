@@ -1,0 +1,20 @@
+# Catppuccin Mocha: written from the scheme's published palette (MIT). By Catppuccin.
+
+[meta]
+name        = "Catppuccin Mocha"
+author      = "Catppuccin"
+mode        = "dark"
+description = "Soothing pastel, the darkest flavor."
+
+[terminal]
+foreground           = "#CDD6F4"
+background           = "#1E1E2E"
+cursor               = "#CDD6F4"
+cursor-text          = "#1E1E2E"
+selection-background = "#45475A"
+palette = [
+    "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF",
+    "#89B4FA", "#F5C2E7", "#94E2D5", "#BAC2DE",
+    "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF",
+    "#89B4FA", "#F5C2E7", "#94E2D5", "#A6ADC8",
+]

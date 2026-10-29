@@ -1,0 +1,20 @@
+# Gruvbox Light: written from the scheme's published palette (MIT). By Pavel Pertsev.
+
+[meta]
+name        = "Gruvbox Light"
+author      = "Pavel Pertsev"
+mode        = "light"
+description = "Retro groove, warm and earthy."
+
+[terminal]
+foreground           = "#3C3836"
+background           = "#FBF1C7"
+cursor               = "#3C3836"
+cursor-text          = "#FBF1C7"
+selection-background = "#EBDBB2"
+palette = [
+    "#FBF1C7", "#CC241D", "#98971A", "#D79921",
+    "#458588", "#B16286", "#689D6A", "#7C6F64",
+    "#928374", "#9D0006", "#79740E", "#B57614",
+    "#076678", "#8F3F71", "#427B58", "#3C3836",
+]
