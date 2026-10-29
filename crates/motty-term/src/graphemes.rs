@@ -123,9 +123,9 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
         self.cluster.clear();
         self.term.move_down(a0);
     }
-    fn identify_terminal(&mut self, a0: Option<char>) {
+    // DA1/DA2 and the pixel size are answered as Motty by `crate::vt`.
+    fn identify_terminal(&mut self, _: Option<char>) {
         self.cluster.clear();
-        self.term.identify_terminal(a0);
     }
     fn device_status(&mut self, a0: usize) {
         self.cluster.clear();
@@ -325,7 +325,6 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn text_area_size_pixels(&mut self) {
         self.cluster.clear();
-        self.term.text_area_size_pixels();
     }
     fn text_area_size_chars(&mut self) {
         self.cluster.clear();

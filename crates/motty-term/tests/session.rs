@@ -129,3 +129,55 @@ fn password_prompt_is_seen() {
     assert_eq!(wait_for(&plain, 0, "plain"), "plain");
     assert!(!plain.reading_secret());
 }
+
+/// A program that leaves the kitty keyboard protocol or modifyOtherKeys on
+/// doesn't leave it to the shell; a prompt redrawn with them on keeps them.
+#[test]
+fn key_encodings_end_with_the_command() {
+    use motty_term::alacritty_terminal::term::TermMode;
+    let on = TermMode::DISAMBIGUATE_ESC_CODES | TermMode::MODIFY_OTHER_KEYS_2;
+    let mode_after = |script: &str| {
+        let config = SessionConfig {
+            command: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])),
+            vt: motty_term::vt::VtOptions::default(),
+            ..Default::default()
+        };
+        let size = GridSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 8.,
+            cell_height: 16.,
+        };
+        let s = Session::spawn(config, size).unwrap().0;
+        assert_eq!(wait_for(&s, 0, "done"), "done");
+        *s.term.lock().mode() & on
+    };
+    let keys = "\\033[>1u\\033[>4;2m";
+    // The command ran (C) and ended (D).
+    let ran = format!(
+        "printf '\\033]133;A\\007\\033]133;B\\007\\033]133;C\\007{keys}\\033]133;D;1\\007done'; sleep 3"
+    );
+    assert_eq!(mode_after(&ran), TermMode::empty());
+    // A shell that sends no D: the next prompt.
+    let no_end =
+        format!("printf '\\033]133;A\\007\\033]133;C\\007{keys}\\033]133;A\\007done'; sleep 3");
+    assert_eq!(mode_after(&no_end), TermMode::empty());
+    // The shell's own, at its prompt (fish 4), survive a redraw.
+    let shell_own =
+        format!("printf '\\033]133;A\\007{keys}\\033]133;A\\007\\033]133;B\\007done'; sleep 3");
+    assert_eq!(mode_after(&shell_own), on);
+}
+
+/// Replies reach the program in the order it asked, DA1 last.
+#[test]
+fn identification_replies_arrive_in_order() {
+    let version = format!("EP>|motty({})E\\", env!("CARGO_PKG_VERSION"));
+    let want = format!("{version}E[6;16;8tE[4;384;640tE[?62;4;22c");
+    let s = run(&format!(
+        "stty raw -echo; printf '\\033[>q\\033[16t\\033[14t\\033[c'; \
+         r=$(dd bs=1 count={} 2>/dev/null | tr '\\033' E); stty sane; \
+         printf '%s' \"$r\"; sleep 3",
+        want.len()
+    ));
+    assert_eq!(wait_for(&s, 0, &want), want);
+}

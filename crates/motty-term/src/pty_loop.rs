@@ -71,6 +71,8 @@ pub struct PtyLoop {
     /// chunk was written.
     pending: VecDeque<Cow<'static, [u8]>>,
     written: usize,
+    /// The grid and cell size, for XTWINOPS replies.
+    window: WindowSize,
 }
 
 impl PtyLoop {
@@ -79,6 +81,7 @@ impl PtyLoop {
         terminal: Arc<FairMutex<Terminal>>,
         proxy: EventProxy,
         shell: Arc<std::sync::Mutex<ShellState>>,
+        window: WindowSize,
     ) -> std::io::Result<(Self, LoopSender)> {
         let poller = Arc::new(Poller::new()?);
         let (tx, rx) = mpsc::channel();
@@ -100,6 +103,7 @@ impl PtyLoop {
             shell,
             pending: VecDeque::new(),
             written: 0,
+            window,
         };
         Ok((this, sender))
     }
@@ -143,7 +147,10 @@ impl PtyLoop {
                 messages = true;
                 match msg {
                     Msg::Input(bytes) => self.pending.push_back(bytes),
-                    Msg::Resize(size) => self.pty.on_resize(size),
+                    Msg::Resize(size) => {
+                        self.window = size;
+                        self.pty.on_resize(size);
+                    }
                     Msg::Shutdown => return Ok(()),
                 }
             }
@@ -231,6 +238,12 @@ impl PtyLoop {
                 if let Some(osc) = self.sniffer.take() {
                     record_osc(osc, term, &self.shell, &self.proxy);
                 }
+                for query in self.sniffer.take_queries() {
+                    let vt = self.proxy.vt();
+                    if let Some(reply) = crate::vt::reply(query, &vt, self.window, term.title()) {
+                        self.proxy.send_event(Event::PtyWrite(reply));
+                    }
+                }
             }
             processed += n;
             if processed >= MAX_LOCKED_READ {
@@ -269,10 +282,19 @@ impl PtyLoop {
 /// Applies a shell-integration OSC at the cursor and tells the UI.
 fn record_osc(
     osc: ShellOsc,
-    term: &Terminal,
+    term: &mut Terminal,
     shell: &std::sync::Mutex<ShellState>,
     proxy: &EventProxy,
 ) {
+    // Whatever turned on the kitty keyboard protocol or modifyOtherKeys is
+    // gone, cleaned up or not (a crash): the shell gets classic keys back.
+    if shell
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .ends_command(&osc)
+    {
+        term.reset_key_encodings();
+    }
     let event = match &osc {
         ShellOsc::Notify { title, body } => Some(SessionEvent::Notification {
             title: title.clone(),

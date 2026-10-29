@@ -30,6 +30,7 @@ pub mod search;
 pub mod shell;
 pub mod snapshot;
 pub mod system;
+pub mod vt;
 
 use pty_loop::{LoopSender, Msg, PtyLoop};
 
@@ -99,11 +100,17 @@ pub struct EventProxy {
     tx: async_channel::Sender<SessionEvent>,
     wakeup_pending: Arc<AtomicBool>,
     pty_tx: Arc<std::sync::OnceLock<LoopSender>>,
+    /// The session's VT options, which replies follow.
+    vt: Arc<std::sync::Mutex<vt::VtOptions>>,
 }
 
 impl EventProxy {
     fn send_session_event(&self, event: SessionEvent) {
         let _ = self.tx.try_send(event);
+    }
+
+    fn vt(&self) -> std::sync::MutexGuard<'_, vt::VtOptions> {
+        self.vt.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -129,7 +136,16 @@ impl EventListener for EventProxy {
             Event::Bell => SessionEvent::Bell,
             Event::ClipboardStore(_, s) => SessionEvent::ClipboardStore(s),
             Event::ClipboardLoad(_, f) => SessionEvent::ClipboardLoad(f),
-            Event::ColorRequest(i, f) => SessionEvent::ColorRequest(i, f),
+            Event::ColorRequest(i, f) => {
+                let report = self.vt().color_report;
+                if report == vt::ColorReport::None {
+                    return;
+                }
+                SessionEvent::ColorRequest(
+                    i,
+                    Arc::new(move |rgb| report.apply(f(rgb)).unwrap_or_default()),
+                )
+            }
             Event::TextAreaSizeRequest(f) => SessionEvent::TextAreaSizeRequest(f),
             Event::CursorBlinkingChange => SessionEvent::CursorBlinkingChange,
             Event::ChildExit(status) => SessionEvent::Exited(status.code()),
@@ -184,6 +200,20 @@ pub struct SessionConfig {
     pub cursor_style: CursorStyle,
     /// Output to show before the program's (restored scrollback).
     pub preload: Option<Vec<u8>>,
+    pub vt: vt::VtOptions,
+}
+
+/// The Term's config for Motty's options.
+fn term_config(cursor_style: CursorStyle, scrollback: usize, vt: &vt::VtOptions) -> term::Config {
+    term::Config {
+        scrolling_history: if scrollback == 0 { 10_000 } else { scrollback },
+        default_cursor_style: cursor_style,
+        // Both directions reach the app, which applies the clipboard
+        // privileges (read asks by default).
+        osc52: term::Osc52::CopyPaste,
+        kitty_keyboard: vt.kitty_keyboard,
+        ..Default::default()
+    }
 }
 
 pub struct Session {
@@ -195,6 +225,7 @@ pub struct Session {
     /// PTY master, kept for foreground-process queries. Owned by the event loop.
     master_fd: RawFd,
     shell: Arc<std::sync::Mutex<shell::ShellState>>,
+    vt: Arc<std::sync::Mutex<vt::VtOptions>>,
 }
 
 impl Session {
@@ -205,10 +236,12 @@ impl Session {
         let (tx, rx) = async_channel::unbounded();
         let wakeup_pending = Arc::new(AtomicBool::new(false));
         let pty_tx_cell = Arc::new(std::sync::OnceLock::new());
+        let vt = Arc::new(std::sync::Mutex::new(config.vt.clone()));
         let proxy = EventProxy {
             tx,
             wakeup_pending: wakeup_pending.clone(),
             pty_tx: pty_tx_cell.clone(),
+            vt: vt.clone(),
         };
 
         let mut env = config.env.clone();
@@ -238,18 +271,7 @@ impl Session {
         let pid = pty.child().id();
         let master_fd = pty.file().as_raw_fd();
 
-        let term_config = term::Config {
-            scrolling_history: if config.scrollback == 0 {
-                10_000
-            } else {
-                config.scrollback
-            },
-            default_cursor_style: config.cursor_style,
-            // Both directions reach the app, which applies the clipboard
-            // privileges (read asks by default).
-            osc52: term::Osc52::CopyPaste,
-            ..Default::default()
-        };
+        let term_config = term_config(config.cursor_style, config.scrollback, &config.vt);
         let mut terminal = Term::new(term_config, &size, proxy.clone());
         if let Some(bytes) = &config.preload {
             let mut parser: alacritty_terminal::vte::ansi::Processor =
@@ -258,7 +280,8 @@ impl Session {
         }
         let term = Arc::new(FairMutex::new(terminal));
         let shell = Arc::new(std::sync::Mutex::new(shell::ShellState::default()));
-        let (pty_loop, pty_tx) = PtyLoop::new(pty, term.clone(), proxy, shell.clone())?;
+        let (pty_loop, pty_tx) =
+            PtyLoop::new(pty, term.clone(), proxy, shell.clone(), size.window_size())?;
         let _ = pty_tx_cell.set(pty_tx.clone());
         pty_loop.spawn();
 
@@ -271,6 +294,7 @@ impl Session {
                 pid,
                 master_fd,
                 shell,
+                vt,
             },
             rx,
         ))
@@ -278,14 +302,23 @@ impl Session {
 
     /// Applies changed config to a running terminal; the cursor style only
     /// matters until a program sets its own.
-    pub fn set_options(&self, cursor_style: CursorStyle, scrollback: usize) {
-        let options = term::Config {
-            scrolling_history: if scrollback == 0 { 10_000 } else { scrollback },
-            default_cursor_style: cursor_style,
-            osc52: term::Osc52::CopyPaste,
-            ..Default::default()
-        };
+    pub fn set_options(&self, cursor_style: CursorStyle, scrollback: usize, vt: vt::VtOptions) {
+        let options = term_config(cursor_style, scrollback, &vt);
+        *self.vt.lock().unwrap_or_else(|e| e.into_inner()) = vt;
         self.term.lock().set_options(options);
+    }
+
+    /// The VT options this session follows.
+    pub fn vt(&self) -> vt::VtOptions {
+        self.vt.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The mode to encode keys in, or `None` while the program has locked
+    /// the keyboard (KAM).
+    pub fn key_mode(&self) -> Option<TermMode> {
+        let mode = *self.term.lock().mode();
+        let vt = self.vt.lock().unwrap_or_else(|e| e.into_inner());
+        (!vt.keyboard_locked(mode)).then(|| vt.key_mode(mode))
     }
 
     /// Re-arms content wakeups. Call before reading the terminal for a frame,

@@ -41,14 +41,20 @@ pub enum Progress {
 
 /// Collects one shell-integration OSC at a time; `terminated` stops the
 /// parser right after it so the caller can catch the VT parser up first.
+/// It also catches the queries [`crate::vt`] answers.
 #[derive(Default)]
 pub struct OscSniffer {
     pending: Option<ShellOsc>,
+    queries: Vec<crate::vt::Query>,
 }
 
 impl OscSniffer {
     pub fn take(&mut self) -> Option<ShellOsc> {
         self.pending.take()
+    }
+
+    pub fn take_queries(&mut self) -> Vec<crate::vt::Query> {
+        std::mem::take(&mut self.queries)
     }
 }
 
@@ -57,8 +63,25 @@ impl Perform for OscSniffer {
         self.pending = parse_osc(params);
     }
 
+    fn csi_dispatch(
+        &mut self,
+        params: &alacritty_terminal::vte::Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
+        self.queries
+            .extend(crate::vt::csi_query(params, intermediates, action));
+    }
+
+    fn execute(&mut self, byte: u8) {
+        if byte == 0x05 {
+            self.queries.push(crate::vt::Query::Enquiry);
+        }
+    }
+
     fn terminated(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || !self.queries.is_empty()
     }
 }
 
@@ -222,6 +245,17 @@ impl ShellState {
         None
     }
 
+    /// Whether `osc` (before it's applied) is the first sign that a command
+    /// that ran is over: its end, or the next prompt when the shell sent no
+    /// end. A prompt the shell merely redraws isn't, nor is an empty one.
+    pub fn ends_command(&self, osc: &ShellOsc) -> bool {
+        matches!(osc, ShellOsc::CommandEnd(_) | ShellOsc::PromptStart)
+            && self
+                .blocks
+                .back()
+                .is_some_and(|b| b.started.is_some() && b.finished.is_none())
+    }
+
     /// The last command that ran to completion.
     pub fn last_finished(&self) -> Option<&Block> {
         self.blocks.iter().rev().find(|b| b.finished.is_some())
@@ -296,5 +330,44 @@ mod tests {
             (1, Some(2), Some(1))
         );
         assert_eq!(state.last_finished().unwrap().end_row, Some(5));
+    }
+
+    #[test]
+    fn a_command_ends_once() {
+        let mut state = ShellState::default();
+        let end = ShellOsc::CommandEnd(Some(0));
+        // A bare prompt, and its redraws, end nothing.
+        state.apply(&ShellOsc::PromptStart, 0, 0);
+        assert!(!state.ends_command(&ShellOsc::PromptStart));
+        assert!(!state.ends_command(&end));
+        state.apply(&ShellOsc::InputStart, 0, 2);
+        state.apply(&ShellOsc::OutputStart, 1, 0);
+        assert!(state.ends_command(&end));
+        // A shell that sends no end: the next prompt ends it.
+        assert!(state.ends_command(&ShellOsc::PromptStart));
+        assert!(!state.ends_command(&ShellOsc::InputStart));
+        state.apply(&end, 2, 0);
+        assert!(!state.ends_command(&ShellOsc::PromptStart));
+    }
+
+    #[test]
+    fn stops_after_each_query() {
+        use crate::vt::Query;
+        let input = b"ab\x1b[>q\x1b[c\x05x";
+        let (mut parser, mut sniffer) = (Parser::new(), OscSniffer::default());
+        let mut pos = 0;
+        let mut found = Vec::new();
+        while pos < input.len() {
+            pos += parser.advance_until_terminated(&mut sniffer, &input[pos..]);
+            found.extend(sniffer.take_queries().into_iter().map(|q| (pos, q)));
+        }
+        assert_eq!(
+            found,
+            [
+                (6, Query::Version),
+                (9, Query::PrimaryAttributes),
+                (11, Query::Enquiry)
+            ]
+        );
     }
 }
