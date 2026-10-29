@@ -92,6 +92,27 @@ pub fn float_everywhere(window: &Window) {
     let _ = window;
 }
 
+/// The floating Composer: above other apps' windows, on every Space, and
+/// kept when Motty isn't the active app. GPUI's pop-up kind already makes
+/// it a non-activating panel that can become key, so it takes the keyboard
+/// without activating Motty or taking over the menu bar.
+pub fn float_panel(window: &Window) {
+    #[cfg(target_os = "macos")]
+    mac::float_panel(window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// Makes the window `height` points tall inside, its top edge staying put
+/// (AppKit's resize keeps the bottom). Done on the next turn of the run
+/// loop, as AppKit reports a resize back to GPUI while it happens.
+pub fn set_content_height(window: &Window, height: f32, cx: &gpui::App) {
+    #[cfg(target_os = "macos")]
+    mac::set_content_height(window, height, cx);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, height, cx);
+}
+
 /// View › Pin Window: keeps the window above other apps' windows.
 pub fn set_pinned(window: &Window, pinned: bool) {
     #[cfg(target_os = "macos")]
@@ -157,6 +178,51 @@ mod mac {
                 }
             }
         }
+    }
+
+    pub fn float_panel(window: &gpui::Window) {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) else {
+            return;
+        };
+        // GPUI puts pop-ups at the pop-up menu level, over other apps' menus.
+        ns_window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
+        ns_window
+            .setCollectionBehavior(B::CanJoinAllSpaces | B::FullScreenAuxiliary | B::IgnoresCycle);
+        // A panel hides when its app deactivates; this one is for drafting
+        // in other apps.
+        ns_window.setHidesOnDeactivate(false);
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            if let Some(button) = ns_window.standardWindowButton(kind) {
+                button.setHidden(true);
+            }
+        }
+    }
+
+    pub fn set_content_height(window: &gpui::Window, height: f32, cx: &gpui::App) {
+        let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) else {
+            return;
+        };
+        cx.foreground_executor()
+            .spawn(async move {
+                let Some(content) = ns_window.contentView().filter(|_| ns_window.isVisible())
+                else {
+                    return;
+                };
+                // GPUI's view fills the content view, titlebar and all.
+                let grow = height as f64 - content.frame().size.height;
+                let mut frame = ns_window.frame();
+                if grow.abs() >= 0.5 {
+                    frame.size.height += grow;
+                    frame.origin.y -= grow;
+                    ns_window.setFrame_display(frame, true);
+                }
+            })
+            .detach();
     }
 
     pub fn show_inactive(window: &gpui::Window) {

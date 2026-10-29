@@ -27,6 +27,7 @@ use crate::actions::*;
 mod autocomplete;
 mod behavior;
 mod composer;
+mod composer_panel;
 mod context_menu;
 mod copy_as;
 mod find;

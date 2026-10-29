@@ -2,18 +2,20 @@
 //! pane. The Composer is a roomy editor for a long prompt or command:
 //! ⌘↩ sends it, ⌥⌘↩ queues it, ⎋ closes it and keeps the draft. The queue
 //! sends one prompt at a time: an agent's when its turn ends, a shell's
-//! when it's back at an empty prompt.
+//! when it's back at an empty prompt. The Composer pops out into a floating
+//! panel (`composer_panel`) and docks back when it sends or closes.
 
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, BoxShadow, Context, Entity, Focusable, Hsla, KeyDownEvent, MouseButton,
-    SharedString, Window, div, point, prelude::*, px,
+    AnyElement, AnyWindowHandle, BoxShadow, Context, Entity, Focusable, Hsla, KeyDownEvent,
+    MouseButton, SharedString, Window, WindowHandle, div, point, prelude::*, px,
 };
 use motty_render::hsla;
 use motty_theme::Rgba;
 
 use super::TerminalView;
+use super::composer_panel::{self, ComposerPanel};
 use super::find::Colors;
 use crate::actions::Paste;
 use crate::editor::FileEditor;
@@ -68,6 +70,16 @@ pub(super) struct Composer {
     pub(super) editor: Entity<FileEditor>,
     pub(super) open: bool,
     chips: Vec<Chip>,
+    /// Popped out into a floating panel.
+    float: Option<Float>,
+}
+
+/// Where the Composer is while it floats.
+struct Float {
+    /// The pane's window, where it docks back.
+    home: AnyWindowHandle,
+    /// `None` until the panel has opened.
+    panel: Option<WindowHandle<ComposerPanel>>,
 }
 
 #[derive(Default)]
@@ -147,22 +159,118 @@ impl TerminalView {
                 editor,
                 open: false,
                 chips: Vec::new(),
+                float: None,
             });
         }
         if let Some(c) = &mut self.composer {
             c.open = true;
-            window.focus(&c.editor.focus_handle(cx), cx);
+            let focus = c.editor.focus_handle(cx);
+            match c.float.as_ref().map(|f| f.panel) {
+                None => window.focus(&focus, cx),
+                Some(Some(panel)) if window.window_handle() == panel.into() => {
+                    window.focus(&focus, cx)
+                }
+                // Floating: the panel takes the keyboard, Motty stays where
+                // it is.
+                Some(Some(panel)) => {
+                    let _ = panel.update(cx, |_, window, cx| {
+                        window.activate_window();
+                        window.focus(&focus, cx);
+                    });
+                }
+                Some(None) => {}
+            }
         }
         cx.notify();
     }
 
-    /// ⎋: closes it; the draft stays for next time.
+    /// ⎋: closes it; the draft stays for next time. A floating Composer
+    /// docks back into the pane instead.
     fn close_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composer_floating() {
+            return self.dock_composer(window, cx, |this, window, cx| {
+                this.open_composer(window, cx)
+            });
+        }
         if let Some(c) = &mut self.composer {
             c.open = false;
         }
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    fn composer_floating(&self) -> bool {
+        self.composer.as_ref().is_some_and(|c| c.float.is_some())
+    }
+
+    /// The pop-out button: the Composer, draft and chips, moves into a
+    /// panel over every app's windows.
+    fn float_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.composer.as_mut().filter(|c| c.float.is_none()) else {
+            return;
+        };
+        c.float = Some(Float {
+            home: window.window_handle(),
+            panel: None,
+        });
+        let editor = c.editor.clone();
+        let display = window.display(cx);
+        window.focus(&self.focus_handle, cx);
+        let view = cx.entity().downgrade();
+        // Deferred: the panel's first render reads this view.
+        cx.defer(move |cx| {
+            let panel = composer_panel::open(view.clone(), editor, display, cx);
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            view.update(cx, |this, cx| {
+                match (this.composer.as_mut().and_then(|c| c.float.as_mut()), panel) {
+                    (Some(float), Some(panel)) => float.panel = Some(panel),
+                    // Docked before the panel was up.
+                    (None, Some(panel)) => composer_panel::close(panel, cx),
+                    (_, None) => {
+                        if let Some(c) = &mut this.composer {
+                            c.float = None;
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        });
+        cx.notify();
+    }
+
+    /// Closes the panel, the Composer back in the pane, and runs `then` in
+    /// the pane's window: now, or next when this comes from the panel.
+    fn dock_composer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let Some(Float { home, panel }) = self.composer.as_mut().and_then(|c| c.float.take())
+        else {
+            return then(self, window, cx);
+        };
+        let here = window.window_handle();
+        match panel {
+            Some(panel) if here == panel.into() => window.remove_window(),
+            Some(panel) => composer_panel::close(panel, cx),
+            None => {}
+        }
+        cx.notify();
+        if here == home {
+            return then(self, window, cx);
+        }
+        let view = cx.entity();
+        cx.defer(move |cx| {
+            let docked = home.update(cx, |_, window, cx| {
+                view.update(cx, |this, cx| then(this, window, cx))
+            });
+            if docked.is_err() {
+                tracing::warn!("the pane's window closed while its Composer floated");
+            }
+        });
     }
 
     /// Pictures among the chips.
@@ -207,7 +315,8 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// ⌘↩ sends the draft; ⌥⌘↩ (`queue`) puts it on the queue.
+    /// ⌘↩ sends the draft; ⌥⌘↩ (`queue`) puts it on the queue. A floating
+    /// Composer docks first.
     fn send_composer(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = &mut self.composer else {
             return;
@@ -225,6 +334,11 @@ impl TerminalView {
         };
         if items.is_empty() {
             return window.play_system_bell();
+        }
+        if c.float.is_some() {
+            return self.dock_composer(window, cx, move |this, window, cx| {
+                this.send_composer(queue, window, cx)
+            });
         }
         c.chips.clear();
         c.open = false;
@@ -463,7 +577,10 @@ impl TerminalView {
 
     /// The queue and the Composer, stacked under the terminal.
     pub fn render_composer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let composer = self.composer.as_ref().filter(|c| c.open);
+        let composer = self
+            .composer
+            .as_ref()
+            .filter(|c| c.open && c.float.is_none());
         let queue = (!self.queue.items.is_empty() || self.queue.bar).then_some(&self.queue);
         if composer.is_none() && queue.is_none() {
             return None;
@@ -485,7 +602,9 @@ impl TerminalView {
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                 .on_scroll(|_, _, cx| cx.stop_propagation())
                 .children(queue.map(|q| self.render_queue(q, &c, cx)))
-                .children(composer.map(|composer| self.render_card(composer, &c, accent, cx)))
+                .children(
+                    composer.map(|composer| self.render_card(composer, &c, accent, false, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -589,11 +708,22 @@ impl TerminalView {
             .into_any_element()
     }
 
+    /// The Composer in its floating panel.
+    pub(super) fn render_floating_composer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let composer = self.composer.as_ref().filter(|c| c.float.is_some())?;
+        let c = Colors::new(self.style.panel_background, self.style.dark);
+        let accent = hsla(Rgba::rgb(ACCENT));
+        Some(self.render_card(composer, &c, accent, true, cx))
+    }
+
+    /// The Composer's card; `floating` in its panel, where the window
+    /// draws the shadow and the header moves it.
     fn render_card(
         &self,
         composer: &Composer,
         c: &Colors,
         accent: Hsla,
+        floating: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let pinned = is_pinned(cx);
@@ -656,7 +786,19 @@ impl TerminalView {
             .text_size(px(11.5))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(c.secondary)
-            .child(SharedString::from(title))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .child(SharedString::from(title))
+                    .when(floating, |d| {
+                        d.on_mouse_down(MouseButton::Left, |_, window, _| {
+                            window.start_window_move()
+                        })
+                    }),
+            )
             .child(
                 div()
                     .flex()
@@ -667,13 +809,33 @@ impl TerminalView {
                             cx.listener(|this, _, window, cx| this.send_composer(true, window, cx)),
                         ),
                     )
+                    .when(!floating, |d| {
+                        d.child(
+                            button("composer-pin", pin_icon(c.secondary, pinned), c)
+                                .when(pinned, |d| d.bg(c.toggle_border))
+                                .on_click(|_, _, cx| {
+                                    cx.set_global(Pinned(!is_pinned(cx)));
+                                    cx.refresh_windows();
+                                }),
+                        )
+                    })
                     .child(
-                        button("composer-pin", pin_icon(c.secondary, pinned), c)
-                            .when(pinned, |d| d.bg(c.toggle_border))
-                            .on_click(|_, _, cx| {
-                                cx.set_global(Pinned(!is_pinned(cx)));
-                                cx.refresh_windows();
-                            }),
+                        button("composer-float", float_icon(c.secondary, floating), c)
+                            .tooltip(move |_, cx| {
+                                let tip = if floating {
+                                    "Dock in the Pane"
+                                } else {
+                                    "Float Panel"
+                                };
+                                crate::tooltip::text(tip, cx)
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.composer_floating() {
+                                    this.close_composer(window, cx)
+                                } else {
+                                    this.float_composer(window, cx)
+                                }
+                            })),
                     )
                     .child(
                         button("composer-close", close_icon(c.secondary), c).on_click(
@@ -690,7 +852,11 @@ impl TerminalView {
             .justify_between()
             .text_size(px(11.))
             .text_color(c.secondary)
-            .child("⌘↩ Send   ⌥⌘↩ Queue   Esc Close")
+            .child(if floating {
+                "⌘↩ Send   ⌥⌘↩ Queue   Esc Dock"
+            } else {
+                "⌘↩ Send   ⌥⌘↩ Queue   Esc Close"
+            })
             .child(
                 div()
                     .id("composer-send")
@@ -710,6 +876,10 @@ impl TerminalView {
                     ),
             );
         card(c)
+            // Over another app's windows there's no pane to see through to.
+            .when(floating, |d| {
+                d.w_full().bg(Hsla { a: 1., ..c.card }).shadow(Vec::new())
+            })
             .id("composer")
             .capture_key_down(cx.listener(Self::on_composer_key))
             .capture_action(cx.listener(|this, action: &Paste, window, cx| {
@@ -864,6 +1034,34 @@ fn pin_icon(color: Hsla, on: bool) -> impl IntoElement {
                 p.line_to(at(12., 8.));
             });
         }
+    })
+}
+
+/// A box with an arrow out of it (Float Panel), or back in (`docking`).
+fn float_icon(color: Hsla, docking: bool) -> impl IntoElement {
+    icon(BUTTON, BUTTON, move |o, window| {
+        stroke(o, color, window, 1.2, |p, at| {
+            p.move_to(at(10., 6.5));
+            p.line_to(at(6.5, 6.5));
+            p.line_to(at(6.5, 15.5));
+            p.line_to(at(15.5, 15.5));
+            p.line_to(at(15.5, 12.));
+        });
+        stroke(o, color, window, 1.2, |p, at| {
+            p.move_to(at(10.5, 11.5));
+            p.line_to(at(15.5, 6.5));
+        });
+        stroke(o, color, window, 1.2, |p, at| {
+            if docking {
+                p.move_to(at(10.5, 8.5));
+                p.line_to(at(10.5, 11.5));
+                p.line_to(at(13.5, 11.5));
+            } else {
+                p.move_to(at(12.5, 6.5));
+                p.line_to(at(15.5, 6.5));
+                p.line_to(at(15.5, 9.5));
+            }
+        });
     })
 }
 
