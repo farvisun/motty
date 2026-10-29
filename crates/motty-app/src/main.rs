@@ -6,6 +6,8 @@ mod editor;
 mod file_search;
 mod folders;
 mod fonts;
+#[path = "editor/highlight.rs"]
+mod highlight;
 mod history;
 mod ipc;
 mod materials;
