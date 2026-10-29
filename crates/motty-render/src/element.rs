@@ -24,12 +24,14 @@ use motty_term::{GridSize, Terminal};
 use motty_theme::Rgba;
 
 use crate::box_drawing;
+use crate::motion::FrameMotion;
 use crate::style::{TerminalStyle, hsla};
 
 /// Geometry of the last painted frame, shared with the view for hit-testing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalLayout {
-    /// Top-left of cell (0, 0) in window coordinates.
+    /// Top-left of cell (0, 0) in window coordinates, where it's drawn this
+    /// frame (scrolling motion moves it).
     pub origin: gpui::Point<Pixels>,
     pub cell_width: Pixels,
     pub line_height: Pixels,
@@ -150,6 +152,8 @@ pub struct TerminalElement {
     underlines: Vec<(GridPoint, GridPoint)>,
     /// Hint labels: text drawn over the cells from the point rightwards.
     labels: Vec<(GridPoint, SharedString)>,
+    /// Smooth scrolling and the cursor's glide (see [`crate::motion`]).
+    motion: FrameMotion,
 }
 
 impl TerminalElement {
@@ -174,7 +178,14 @@ impl TerminalElement {
             highlights: Vec::new(),
             underlines: Vec::new(),
             labels: Vec::new(),
+            motion: FrameMotion::default(),
         }
+    }
+
+    /// Where scrolling and the cursor are this frame, between rows and cells.
+    pub fn motion(mut self, motion: FrameMotion) -> Self {
+        self.motion = motion;
+        self
     }
 
     /// Runs during paint with the element's bounds (e.g. to register an input handler).
@@ -231,6 +242,9 @@ pub struct Prepaint {
     preedit: Option<(PaintQuad, PaintQuad, TextSegment)>,
     ghost: Option<TextSegment>,
     line_height: Pixels,
+    /// While scrolling between rows, the rows' area, so a row half out of
+    /// it doesn't draw over the padding.
+    clip: Option<Bounds<Pixels>>,
 }
 
 #[derive(Clone)]
@@ -243,7 +257,10 @@ struct SnapCell {
 }
 
 struct Snapshot {
+    /// Rows from the top one drawn, which may be cut by the top edge.
     rows: Vec<Vec<SnapCell>>,
+    /// How much of the first row is above the top edge, in rows.
+    shift: f32,
     cursor: Option<(usize, usize, CursorShape, bool)>,
     /// Cursor cell even when the cursor itself is hidden (for IME placement).
     cursor_cell: Option<(usize, usize)>,
@@ -326,8 +343,12 @@ impl gpui::Element for TerminalElement {
             on_resize(grid, window, cx);
         }
         let snapshot = self.snapshot(&style);
+        let lh = metrics.line_height;
+        // The snapshot's rows start `shift` of a row above the top edge;
+        // the grid's rows (for hit-testing) sit `scroll` rows further down.
+        let rows_origin = point(origin.x, origin.y - lh * snapshot.shift);
         let layout = TerminalLayout {
-            origin,
+            origin: point(origin.x, origin.y + lh * self.motion.scroll),
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             cols,
@@ -335,13 +356,26 @@ impl gpui::Element for TerminalElement {
             cursor: snapshot.cursor_cell,
         };
         self.layout_sink.set(Some(layout));
-        let mut prepaint = build(&snapshot, &style, metrics, origin, window);
+        let mut prepaint = build(&snapshot, &style, metrics, rows_origin, window);
+        if self.motion.scroll != 0. {
+            prepaint.clip = Some(Bounds::new(
+                point(bounds.origin.x, origin.y),
+                size(bounds.size.width, lh * rows as f32),
+            ));
+        }
+        if let Some(quad) = prepaint.cursor.as_mut() {
+            quad.bounds = moved_cursor(quad.bounds, self.motion, metrics.cell_width);
+            // The glyph under a gliding block catches up when it lands.
+            if self.motion.cursor_dx != 0. {
+                prepaint.cursor_text = None;
+            }
+        }
         for &(row, col, width) in &snapshot.labels {
             prepaint.glyph_quads.push(outline(
                 Bounds::new(
                     point(
-                        origin.x + metrics.cell_width * col as f32,
-                        origin.y + metrics.line_height * row as f32,
+                        rows_origin.x + metrics.cell_width * col as f32,
+                        rows_origin.y + metrics.line_height * row as f32,
                     ),
                     size(metrics.cell_width * width as f32, metrics.line_height),
                 ),
@@ -390,7 +424,8 @@ impl gpui::Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+        let mask = prepaint.clip.map_or(bounds, |clip| clip.intersect(&bounds));
+        window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
             for quad in prepaint.backgrounds.drain(..) {
                 window.paint_quad(quad);
             }
@@ -458,7 +493,14 @@ impl TerminalElement {
         let selection = content.selection;
         let rows_n = term.screen_lines();
         let cols_n = term.columns();
-        let mut rows: Vec<Vec<SnapCell>> = Vec::with_capacity(rows_n);
+        // The grid line at the top edge, between rows while scrolling; one
+        // more row is drawn when the top one is cut.
+        let top = -(display_offset as f32 + self.motion.scroll);
+        let first = top.floor();
+        let shift = top - first;
+        let first = first as i32;
+        let count = rows_n + usize::from(shift > 0.);
+        let mut rows: Vec<Vec<SnapCell>> = Vec::with_capacity(count);
         let opaque_bg = if style.background.a > 0.5 {
             style.background
         } else {
@@ -478,8 +520,8 @@ impl TerminalElement {
             .labels
             .iter()
             .filter_map(|(p, text)| {
-                let row = p.line.0 + display_offset;
-                (0..rows_n as i32).contains(&row).then_some((
+                let row = p.line.0 - first;
+                (0..count as i32).contains(&row).then_some((
                     row as usize,
                     p.column.0,
                     text.chars().count(),
@@ -488,11 +530,18 @@ impl TerminalElement {
             .collect();
         let dark = motty_theme::theme::luminance(opaque_bg) < 0.5;
 
-        for indexed in content.display_iter {
-            let row = (indexed.point.line.0 + display_offset) as usize;
-            if row >= rows_n {
-                break;
-            }
+        let grid = term.grid();
+        let start = first.max(grid.topmost_line().0);
+        let end = (first + count as i32 - 1).min(grid.bottommost_line().0);
+        let cells = (start <= end)
+            .then(|| {
+                grid.iter_from(GridPoint::new(Line(start - 1), grid.last_column()))
+                    .take_while(move |c| c.point.line.0 <= end)
+            })
+            .into_iter()
+            .flatten();
+        for indexed in cells {
+            let row = (indexed.point.line.0 - first) as usize;
             while rows.len() <= row {
                 rows.push(Vec::with_capacity(cols_n));
             }
@@ -557,7 +606,7 @@ impl TerminalElement {
         }
 
         let cursor_point = content.cursor.point;
-        let cursor_row = cursor_point.line.0 + display_offset;
+        let cursor_row = cursor_point.line.0 - first;
         let vi = content.mode.contains(TermMode::VI);
         let shape = match content.cursor.shape {
             _ if !self.cursor_visible => CursorShape::Hidden,
@@ -568,7 +617,7 @@ impl TerminalElement {
             shape => shape,
         };
         let cursor = (shape != CursorShape::Hidden
-            && (0..rows_n as i32).contains(&cursor_row)
+            && (0..count as i32).contains(&cursor_row)
             && (vi || content.mode.contains(TermMode::SHOW_CURSOR)))
         .then(|| {
             let wide = term.grid()
@@ -578,10 +627,14 @@ impl TerminalElement {
             (cursor_row as usize, cursor_point.column.0, shape, wide)
         });
         let cursor_cell = (0..rows_n as i32)
-            .contains(&cursor_row)
-            .then_some((cursor_row as usize, cursor_point.column.0));
+            .contains(&(cursor_point.line.0 + display_offset))
+            .then_some((
+                (cursor_point.line.0 + display_offset) as usize,
+                cursor_point.column.0,
+            ));
         Snapshot {
             rows,
+            shift,
             cursor,
             cursor_cell,
             labels,
@@ -857,7 +910,23 @@ fn build(
         preedit: None,
         ghost: None,
         line_height: lh,
+        clip: None,
     }
+}
+
+/// The cursor's quad, offset along its row and grown about its center.
+fn moved_cursor(bounds: Bounds<Pixels>, motion: FrameMotion, cell_width: Pixels) -> Bounds<Pixels> {
+    let mut b = bounds;
+    b.origin.x += cell_width * motion.cursor_dx;
+    if motion.cursor_scale != 1. {
+        let center = b.center();
+        b.size = size(
+            b.size.width * motion.cursor_scale,
+            b.size.height * motion.cursor_scale,
+        );
+        b.origin = point(center.x - b.size.width / 2., center.y - b.size.height / 2.);
+    }
+    b
 }
 
 fn build_preedit(
