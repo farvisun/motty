@@ -124,6 +124,8 @@ pub struct Config {
     pub clipboard_write: Access,
     /// The `editor-*` keys: how file panes show text.
     pub editor: EditorPrefs,
+    /// Terminal identity and the VT requests honoured.
+    pub vt: VtPrefs,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -131,6 +133,48 @@ pub struct Config {
 
 /// What marks a tab and what posts a notification (Otty's `privilege-*`
 /// keys; all on except keeping the Mac awake).
+/// The `Terminal Identity & VT` keys, plus `kitty-keyboard`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VtPrefs {
+    /// `kitty-keyboard`: programs may turn on the kitty keyboard protocol.
+    pub kitty_keyboard: bool,
+    /// `vt-keypad-app-allowed`: DECKPAM is honoured.
+    pub keypad_app_allowed: bool,
+    /// `vt-kam-allowed`: KAM may lock the keyboard.
+    pub kam_allowed: bool,
+    /// `enquiry-response`: the reply to ENQ.
+    pub enquiry_response: String,
+    /// `osc-color-report-format`: `none`, `8-bit` or `16-bit`.
+    pub color_report: ColorReport,
+    /// `title-report`: programs may read the title (XTWINOPS 21t).
+    pub title_report: bool,
+    /// `terminal-identity`: `motty`, `kitty`, `ghostty` or text of your
+    /// own, for XTVERSION.
+    pub identity: String,
+}
+
+impl Default for VtPrefs {
+    fn default() -> Self {
+        Self {
+            kitty_keyboard: true,
+            keypad_app_allowed: true,
+            kam_allowed: true,
+            enquiry_response: String::new(),
+            color_report: ColorReport::Bits16,
+            title_report: false,
+            identity: "motty".into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorReport {
+    None,
+    Bits8,
+    #[default]
+    Bits16,
+}
+
 /// Settings › Editor: how file panes show text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditorPrefs {
@@ -1178,6 +1222,23 @@ impl Config {
                         .history_ignore
                         .extend(globs.into_iter().filter(|g| !g.is_empty()));
                 }
+                "kitty-keyboard" => out.vt.kitty_keyboard = value.as_bool().unwrap_or(true),
+                "vt-keypad-app-allowed" => {
+                    out.vt.keypad_app_allowed = value.as_bool().unwrap_or(true)
+                }
+                "vt-kam-allowed" => out.vt.kam_allowed = value.as_bool().unwrap_or(true),
+                "enquiry-response" => out.vt.enquiry_response = str_of(value).unwrap_or_default(),
+                "osc-color-report-format" => match value.as_str() {
+                    Some("none") => out.vt.color_report = ColorReport::None,
+                    Some("8-bit") => out.vt.color_report = ColorReport::Bits8,
+                    Some("16-bit") => out.vt.color_report = ColorReport::Bits16,
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "title-report" => out.vt.title_report = value.as_bool().unwrap_or(false),
+                "terminal-identity" => match str_of(value) {
+                    Some(name) if !name.trim().is_empty() => out.vt.identity = name,
+                    _ => out.vt.identity = VtPrefs::default().identity,
+                },
                 "keybind" => match value.as_str().and_then(Keybind::parse) {
                     Some(keybind) => out.keybinds.push(keybind),
                     None => unknown.push(format!("config.toml keybind: can't read {value}")),
@@ -2377,5 +2438,32 @@ mod tests {
         assert_eq!(c.working_dir(NewTerminal::Tab), WorkingDir::Inherit);
         assert_eq!(c.new_tab_position, NewTabPosition::AfterCurrent);
         assert!(!c.quit_after_last_window);
+    }
+
+    #[test]
+    fn vt_keys() {
+        assert_eq!(Config::parse("").vt, VtPrefs::default());
+        let c = Config::parse(
+            "kitty-keyboard = false\nvt-keypad-app-allowed = false\nvt-kam-allowed = false\n\
+             enquiry-response = \"hi\"\nosc-color-report-format = \"8-bit\"\n\
+             title-report = true\nterminal-identity = \"kitty\"\n",
+        );
+        assert_eq!(
+            c.vt,
+            VtPrefs {
+                kitty_keyboard: false,
+                keypad_app_allowed: false,
+                kam_allowed: false,
+                enquiry_response: "hi".into(),
+                color_report: ColorReport::Bits8,
+                title_report: true,
+                identity: "kitty".into(),
+            }
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let c = Config::parse("osc-color-report-format = \"24-bit\"\nterminal-identity = \"\"\n");
+        assert_eq!(c.vt.color_report, ColorReport::Bits16);
+        assert_eq!(c.vt.identity, "motty");
+        assert_eq!(c.warnings.len(), 1);
     }
 }

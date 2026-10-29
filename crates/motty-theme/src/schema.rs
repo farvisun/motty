@@ -267,6 +267,14 @@ pub const KEYS: &[KeySpec] = &[
     key("shell-integration-disabled-shells", Kind::Str, "", "", "Shell names (zsh, fish, …) shell integration leaves alone.").list(List::Inline),
     key("progress-bar-commands", Kind::Str, "(built-in list)", "", "Command prefixes that show a spinner while they run, matched as whole words. [] turns it off.").list(List::Inline),
     key("include", Kind::Path, "", "", "Another config file read before this one; later includes win and the main file wins over all.").list(List::Repeated),
+    // Terminal identity & VT
+    key("terminal-identity", Kind::Str, "motty", "Shell › Shell", "The name programs read when they ask which terminal this is (XTVERSION): motty, kitty, ghostty, or text of your own."),
+    bool("kitty-keyboard", "true", "Advanced › Keyboard", "Programs may turn on the kitty keyboard protocol (unambiguous keys, key releases)."),
+    bool("vt-keypad-app-allowed", "true", "", "Honour application keypad mode (DECKPAM); off, the keypad always types digits."),
+    bool("vt-kam-allowed", "true", "", "Programs may lock the keyboard (KAM)."),
+    key("enquiry-response", Kind::Str, "", "", "The reply to ENQ (0x05); empty sends none."),
+    key("osc-color-report-format", Kind::Enum { values: &["none", "8-bit", "16-bit"], also: &[], bools: false }, "16-bit", "", "How OSC 4/10/11 color queries are answered: not at all, rgb:rr/gg/bb or rgb:rrrr/gggg/bbbb."),
+    bool("title-report", "false", "", "Programs may read the title (XTWINOPS 21t)."),
     // Window
     key("unfocused-split-opacity", FLOAT_0_1, "0.6", "View › Splits", "How opaque unfocused split panes are drawn; 1.0 turns dimming off."),
     // Terminal colors

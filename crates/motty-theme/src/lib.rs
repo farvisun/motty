@@ -8,10 +8,10 @@ pub mod tab_rule;
 pub mod theme;
 
 pub use config::{
-    AcceptKey, Access, AutoHide, Autocomplete, Badges, Behavior, Config, ConfirmClose, CursorBlink,
-    CursorStyle, EditorPrefs, IconPlacement, LinkClick, LinkShiftClick, NewTabPosition,
-    NewTerminal, NotificationForeground, Replay, RightClick, WindowLayout, WorkingDir,
-    matches_prefix,
+    AcceptKey, Access, AutoHide, Autocomplete, Badges, Behavior, ColorReport, Config, ConfirmClose,
+    CursorBlink, CursorStyle, EditorPrefs, IconPlacement, LinkClick, LinkShiftClick,
+    NewTabPosition, NewTerminal, NotificationForeground, Replay, RightClick, VtPrefs, WindowLayout,
+    WorkingDir, matches_prefix,
 };
 pub use css::{Border, Edges, Rgba, Shadow};
 pub use details_view::{DetailsView, ViewKind};
