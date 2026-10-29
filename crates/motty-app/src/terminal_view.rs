@@ -923,6 +923,7 @@ impl Render for TerminalView {
             },
         )
         .motion(motion)
+        .graphics(self.session.graphics_handle())
         .preedit(self.marked_text.clone())
         .ghost(focused.then(|| self.ghost_text()).flatten())
         .highlights(self.find_highlights())
