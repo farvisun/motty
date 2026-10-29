@@ -362,9 +362,9 @@ pub fn log_path(roots: &Roots, agent: &str, id: &str) -> Option<PathBuf> {
         }
         // `sessions/<folder key>/<id>/agents/main/wire.jsonl`
         "kimi" => subdirs(&kimi_home(roots).join("sessions"))
-                .into_iter()
-                .map(|folder| folder.join(id).join("agents/main/wire.jsonl"))
-                .find(|p| p.is_file()),
+            .into_iter()
+            .map(|folder| folder.join(id).join("agents/main/wire.jsonl"))
+            .find(|p| p.is_file()),
         _ => None,
     }
 }

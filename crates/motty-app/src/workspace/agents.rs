@@ -8,7 +8,7 @@ use gpui::{
     AnyWindowHandle, App, AppContext, Context, Entity, EntityId, Global, PromptLevel, Window,
 };
 
-use super::Workspace;
+use super::{Tab, Workspace};
 use crate::actions::ResumeSession;
 use crate::agents::{self, sessions};
 use crate::native_menu::{self, Entry, Item};
