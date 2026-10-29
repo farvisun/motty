@@ -1,8 +1,39 @@
-# Motty
+<p align="center">
+  <img src="crates/motty-app/assets/icon/motty-256.png" width="128" height="128" alt="Motty icon">
+</p>
 
-A fast, GPU-accelerated terminal for macOS (Linux and Windows planned), built in Rust on
-[GPUI](https://gpui.rs) and [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal),
-with first-class support for coding agents.
+<h1 align="center">Motty</h1>
+
+<p align="center">
+  A fast, GPU-accelerated terminal for macOS (Linux and Windows planned), built in Rust on
+  <a href="https://gpui.rs">GPUI</a> and <a href="https://crates.io/crates/alacritty_terminal"><code>alacritty_terminal</code></a>,
+  with first-class support for coding agents.
+</p>
+
+<p align="center">
+  <a href="https://farvisun.github.io/motty/">Website</a> ·
+  <a href="https://github.com/farvisun/motty/releases/latest">Download</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/farvisun/motty/actions/workflows/ci.yml"><img src="https://github.com/farvisun/motty/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/farvisun/motty/releases/latest"><img src="https://img.shields.io/github/v/release/farvisun/motty?color=f4bf6a" alt="Latest release"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue" alt="License: MIT or Apache-2.0"></a>
+</p>
+
+![Motty with a tabs sidebar and three split panes](site/assets/shots/hero.webp)
+
+## Install
+
+Download **Motty.dmg** from the [latest release](https://github.com/farvisun/motty/releases/latest),
+open it and drag Motty to Applications. It's one universal build for Apple silicon and Intel Macs
+on macOS 13 or later.
+
+The build is signed ad hoc but not notarized yet, so the first launch needs a confirmation:
+right-click Motty in Applications and choose **Open**, or run
+`xattr -dr com.apple.quarantine /Applications/Motty.app`.
 
 ## Build and run
 

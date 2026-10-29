@@ -8,6 +8,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/farvisun/motty"
+homepage = "https://farvisun.github.io/motty/"
 
 [workspace.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.10" }
