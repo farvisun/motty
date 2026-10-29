@@ -664,7 +664,7 @@ impl SettingsWindow {
         new: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) {
-        let result = motty_theme::config::edit(|src| {
+        let result = motty_theme::config::edit_key("keybind", |src| {
             let mut out = String::new();
             let mut replaced = false;
             for line in src.lines() {
@@ -3617,7 +3617,8 @@ impl SettingsWindow {
                                     return cx.notify();
                                 }
                                 this.confirm_reset = false;
-                                match motty_theme::config::edit(
+                                match motty_theme::config::edit_key(
+                                    "keybind",
                                     motty_theme::config::reset_keybinds_in,
                                 ) {
                                     Ok(_) => {

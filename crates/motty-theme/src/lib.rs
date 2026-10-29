@@ -2,6 +2,8 @@ pub mod config;
 pub mod css;
 pub mod details_view;
 pub mod import;
+pub mod schema;
+pub mod store;
 pub mod tab_rule;
 pub mod theme;
 

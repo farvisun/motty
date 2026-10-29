@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::css::{self, Rgba};
 use crate::details_view::DetailsView;
+use crate::schema;
+use crate::store::Files;
 use crate::tab_rule::TabRule;
 use crate::theme::{self, Mode, ParsedTheme, Theme};
 
@@ -34,9 +36,12 @@ pub struct Config {
     pub shell_integration: bool,
     /// Shell names (`zsh`, `fish`) to leave alone.
     pub shell_integration_disabled_shells: Vec<String>,
+    /// `command` (or `shell`): what new terminals run.
     pub shell: Option<String>,
     /// `term`: the `$TERM` shells get; `None` for `auto` (xterm-256color).
     pub term: Option<String>,
+    /// `env = NAME=value` lines, in file order.
+    pub env: Vec<(String, String)>,
     /// `cursor-style`: the shape programs get until they ask for another.
     pub cursor_style: CursorStyle,
     pub cursor_blink: CursorBlink,
@@ -752,18 +757,13 @@ impl Config {
     /// Motty's own config wins; otherwise an existing Otty config is read as-is.
     /// `config.local.toml` beside it (machine-local settings) applies on top.
     pub fn load() -> Self {
-        for dir in [motty_dir(), otty_dir()] {
-            let path = dir.join("config.toml");
-            if let Ok(src) = std::fs::read_to_string(&path) {
-                let local =
-                    std::fs::read_to_string(dir.join("config.local.toml")).unwrap_or_default();
-                let read = |p: &Path| std::fs::read_to_string(p).ok();
-                let mut cfg = Self::from_entries(layered(&src, &local, &dir, &read));
-                cfg.path = Some(path);
-                return cfg;
-            }
-        }
-        Self::parse("")
+        Self::load_with(&[])
+    }
+
+    /// [`Config::load`], with `overrides` (`motty config set --transient`)
+    /// in place of the files' values for the same keys.
+    pub fn load_with(overrides: &[(String, toml::Value)]) -> Self {
+        Files::current().load(overrides)
     }
 
     /// Defaults follow Otty's: ligatures on, Option is not Alt, no blinking.
@@ -771,7 +771,9 @@ impl Config {
         Self::from_entries(parse_entries(src))
     }
 
-    fn from_entries((entries, mut warnings): (Vec<(String, toml::Value)>, Vec<String>)) -> Self {
+    pub(crate) fn from_entries(
+        (entries, mut warnings): (Vec<(String, toml::Value)>, Vec<String>),
+    ) -> Self {
         let mut out = Config {
             ligatures: true,
             sidebar_visible: true,
@@ -849,8 +851,14 @@ impl Config {
                 "scrollback" | "scrollback-lines" => {
                     out.scrollback = value.as_integer().map(|i| i.max(0) as usize)
                 }
-                "shell" => out.shell = str_of(value),
+                "command" | "shell" => out.shell = str_of(value),
                 "term" => out.term = str_of(value).filter(|t| t != "auto"),
+                "env" => match value.as_str().and_then(|v| v.split_once('=')) {
+                    Some((name, v)) if !name.trim().is_empty() => {
+                        out.env.push((name.trim().to_owned(), v.to_owned()))
+                    }
+                    _ => unknown.push(format!("config.toml env: expected NAME=value, got {value}")),
+                },
                 "shell-integration" => out.shell_integration = value.as_bool().unwrap_or(true),
                 "shell-integration-disabled-shells" => {
                     out.shell_integration_disabled_shells = value
@@ -1252,7 +1260,8 @@ impl Config {
 
 /// Splits the file into `(key, value)` entries in order, keeping repeats.
 /// A value may span lines while brackets are open (multi-line arrays).
-fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
+/// Keys come out under their real names (`shell` reads as `command`).
+pub(crate) fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
     let mut lines = src.lines().enumerate();
@@ -1289,7 +1298,11 @@ fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
             }
         }
         match toml::from_str::<toml::Table>(&stmt) {
-            Ok(table) => entries.extend(table.into_iter().map(|(k, v)| (k, expand(v)))),
+            Ok(table) => entries.extend(
+                table
+                    .into_iter()
+                    .map(|(k, v)| (schema::canonical(&k).to_owned(), expand(v))),
+            ),
             // Otty's reader is lenient: `theme = Nord`, `ligatures = on`.
             Err(e) => match lenient(&stmt) {
                 Some(entry) => entries.push(entry),
@@ -1298,6 +1311,12 @@ fn parse_entries(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
         }
     }
     (entries, warnings)
+}
+
+/// The `(key, value)` entries of config lines, keys under their real
+/// names, with what couldn't be read.
+pub fn parse_lines(src: &str) -> (Vec<(String, toml::Value)>, Vec<String>) {
+    parse_entries(src)
 }
 
 /// `key = bare value` that isn't TOML: `on` / `off` as booleans, anything
@@ -1321,7 +1340,7 @@ fn lenient(stmt: &str) -> Option<(String, toml::Value)> {
         "off" => toml::Value::Boolean(false),
         _ => expand(toml::Value::String(value.to_owned())),
     };
-    Some((key.to_owned(), value))
+    Some((schema::canonical(key).to_owned(), value))
 }
 
 /// `~` and `$VAR` (or `${VAR}`) expanded in a string value, and in the
@@ -1375,7 +1394,7 @@ fn expand_str(s: &str) -> String {
 /// order, so later ones win and `main` wins over all), then `local`
 /// (config.local.toml): a key it sets, or resets with a `# key = …
 /// (reset to default)` line, comes only from it, lists included.
-fn layered(
+pub(crate) fn layered(
     main: &str,
     local: &str,
     dir: &Path,
@@ -1415,7 +1434,10 @@ fn layered(
     local_keys.extend(local.lines().filter_map(|l| {
         let rest = l.trim().strip_prefix('#')?.trim();
         rest.ends_with("(reset to default)")
-            .then(|| rest.split_once('=').map(|(k, _)| k.trim().to_owned()))
+            .then(|| {
+                rest.split_once('=')
+                    .map(|(k, _)| schema::canonical(k.trim()).to_owned())
+            })
             .flatten()
     }));
     entries.retain(|(k, _)| !local_keys.contains(k));
@@ -1423,28 +1445,10 @@ fn layered(
     (entries, warnings)
 }
 
-/// `src` with `key = value` set: the last line for `key` is replaced (so
-/// comments and everything else stay as they were), or the line appended.
+/// `src` with `key = value` set where its last line (or an alias's) was,
+/// else where it was reset, else appended (see [`crate::store::set_in`]).
 pub fn set_in(src: &str, key: &str, value: &toml::Value) -> String {
-    let line = format!("{key} = {value}");
-    let is_key = |l: &str| {
-        l.trim_start()
-            .strip_prefix(key)
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
-    };
-    let mut lines: Vec<String> = src.lines().map(str::to_owned).collect();
-    match lines.iter().rposition(|l| is_key(l)) {
-        Some(i) => lines[i] = line,
-        None => {
-            while lines.last().is_some_and(|l| l.trim().is_empty()) {
-                lines.pop();
-            }
-            lines.push(line);
-        }
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+    crate::store::set_in(src, key, value)
 }
 
 /// `src` without any `key = …` line (back to the default).
@@ -1521,7 +1525,9 @@ pub fn save_keybinds(
     defaults: &[String],
     chords: &[String],
 ) -> std::io::Result<PathBuf> {
-    edit(|src| set_keybinds_in(src, action, defaults, chords))
+    edit_key("keybind", |src| {
+        set_keybinds_in(src, action, defaults, chords)
+    })
 }
 
 /// `src` with every `keybind` line removed: all shortcuts back to default.
@@ -1532,20 +1538,13 @@ pub fn reset_keybinds_in(src: &str) -> String {
 /// Rewrites Motty's config.toml through `f`, starting from Otty's (or a
 /// header) when Motty has none yet.
 pub fn edit(f: impl FnOnce(&str) -> String) -> std::io::Result<PathBuf> {
-    let path = motty_dir().join("config.toml");
-    let src = match std::fs::read_to_string(&path) {
-        Ok(src) => src,
-        Err(_) => match std::fs::read_to_string(otty_dir().join("config.toml")) {
-            Ok(otty) => format!("# Started from Otty's config.toml.\n{otty}"),
-            Err(_) => "# Motty settings: https://docs.otty.sh/reference/configuration\n".into(),
-        },
-    };
-    let out = f(&src);
-    std::fs::create_dir_all(motty_dir())?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, out)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(path)
+    Files::current().edit_main(f)
+}
+
+/// Rewrites the file `key` is kept in: config.local.toml when its value
+/// comes from there, else config.toml.
+pub fn edit_key(key: &str, f: impl FnOnce(&str) -> String) -> std::io::Result<PathBuf> {
+    Files::current().edit_key(key, f)
 }
 
 /// Writes `pairs` into Motty's own config.toml. The first time, an Otty
@@ -1556,12 +1555,10 @@ pub fn save_values(pairs: &[(&str, toml::Value)]) -> std::io::Result<PathBuf> {
     save(&changes)
 }
 
-/// Sets each key to its value, or removes it for `None`, in Motty's own
-/// config.toml (see [`save_values`]).
 /// Replaces every `tab-rule` line with `rules`, in order, where the first
 /// one was (or at the end).
 pub fn save_tab_rules(rules: &[TabRule]) -> std::io::Result<PathBuf> {
-    edit(|src| replace_tab_rules(src, rules))
+    edit_key("tab-rule", |src| replace_tab_rules(src, rules))
 }
 
 fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
@@ -1582,7 +1579,7 @@ fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
 
 /// Replaces every `agent-quota-off` line with one per agent in `agents`.
 pub fn save_quota_off(agents: &[String]) -> std::io::Result<PathBuf> {
-    edit(|src| replace_quota_off(src, agents))
+    edit_key("agent-quota-off", |src| replace_quota_off(src, agents))
 }
 
 fn replace_quota_off(src: &str, agents: &[String]) -> String {
@@ -1626,7 +1623,9 @@ fn replace_repeated(src: &str, key: &str, lines: &str) -> String {
 /// Sets `agent`'s `agent-command` in Motty's config.toml; an empty
 /// `command` goes back to the built-in one.
 pub fn save_agent_command(agent: &str, command: &str) -> std::io::Result<PathBuf> {
-    edit(|src| set_agent_command_in(src, agent, command))
+    edit_key("agent-command", |src| {
+        set_agent_command_in(src, agent, command)
+    })
 }
 
 /// `src` with `agent`'s `agent-command` lines replaced by one for `command`,
@@ -1670,17 +1669,10 @@ fn set_agent_command_in(src: &str, agent: &str, command: &str) -> String {
     out
 }
 
+/// Sets each key, or resets it for `None` (commented out as `# key = …
+/// (reset to default)`), in the file its value comes from.
 pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf> {
-    edit(|src| {
-        let mut src = src.to_owned();
-        for (key, value) in changes {
-            src = match value {
-                Some(value) => set_in(&src, key, value),
-                None => remove_in(&src, key),
-            };
-        }
-        src
-    })
+    Files::current().save(changes)
 }
 
 const MOTTY_DARK: &str = include_str!("../themes/motty-dark.ottytheme");
@@ -1749,15 +1741,26 @@ pub fn files_fingerprint() -> u64 {
             .ok()
             .hash(&mut hasher);
     };
+    let files = Files::current();
+    stamp(&files.main);
+    stamp(&files.local);
+    if let Some((path, _)) = files.source() {
+        stamp(&path);
+        stamp(&path.with_file_name("config.local.toml"));
+    }
+    // Saving an included file reloads too.
+    for path in files.includes() {
+        stamp(&path);
+    }
+    // So does a font dropped into the fonts folder.
     for dir in [motty_dir(), otty_dir()] {
-        stamp(&dir.join("config.toml"));
-        stamp(&dir.join("config.local.toml"));
-        // Saving an included file reloads too.
-        let src = std::fs::read_to_string(dir.join("config.toml")).unwrap_or_default();
-        for (key, value) in parse_entries(&src).0 {
-            if let (true, Some(path)) = (key == "include", value.as_str()) {
-                stamp(&dir.join(path));
-            }
+        let Ok(entries) = std::fs::read_dir(dir.join("fonts")) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            stamp(&path);
         }
     }
     for dir in theme_dirs() {
@@ -2108,6 +2111,88 @@ mod tests {
         assert_eq!(
             expand_str("/opt/${MOTTY_TEST_EXPAND}/bin/$MOTTY_TEST_EXPAND"),
             "/opt/fish/bin/fish"
+        );
+    }
+
+    /// The keys `from_entries` reads, from its source: quoted kebab-case
+    /// words that aren't compared as values (`Some("bar")`, `v != "false"`).
+    fn keys_the_parser_reads() -> std::collections::BTreeSet<String> {
+        let src = include_str!("config.rs");
+        let start = src.find("pub(crate) fn from_entries(").unwrap();
+        let end = start + src[start..].find("\n    /// The theme name").unwrap();
+        let mut keys = std::collections::BTreeSet::new();
+        let mut rest = &src[start..end];
+        while let Some(i) = rest.find('"') {
+            let after = &rest[i + 1..];
+            let Some(j) = after.find('"') else { break };
+            let word = &after[..j];
+            let kebab = word
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            let value = rest[..i].ends_with("Some(") || rest[..i].ends_with("!= ");
+            if !value && !word.is_empty() && kebab {
+                keys.insert(word.to_owned());
+            }
+            rest = &after[j + 1..];
+        }
+        keys
+    }
+
+    #[test]
+    fn schema_lists_every_key_the_parser_reads_and_no_other() {
+        let read = keys_the_parser_reads();
+        assert!(read.contains("font-size") && read.contains("keybind"));
+        for key in &read {
+            let known = key == "palette-" || crate::schema::lookup(key).is_some();
+            assert!(known, "the parser reads {key:?}, which the schema lacks");
+        }
+        for spec in crate::schema::KEYS {
+            // `include` is read by `layered`, the palette by its prefix.
+            let read = read.contains(spec.key)
+                || spec.key == "include"
+                || spec.key.starts_with("palette-");
+            assert!(
+                read,
+                "the schema has {:?}, which the parser ignores",
+                spec.key
+            );
+            // Every key, written with its default, reads without warnings.
+            if let Some(value) = spec.default_value().filter(|_| spec.list.is_none())
+                && !matches!(
+                    spec.kind,
+                    crate::schema::Kind::Theme | crate::schema::Kind::Color
+                )
+            {
+                let line = crate::schema::line(spec.key, &value);
+                let c = Config::parse(&line);
+                assert!(c.warnings.is_empty(), "{line}: {:?}", c.warnings);
+            }
+        }
+    }
+
+    #[test]
+    fn command_env_and_aliases() {
+        let c = Config::parse(
+            "shell = \"/bin/zsh\"\nenv = \"EDITOR=nvim\"\nenv = A=b=c\nscrollback = 7\n",
+        );
+        assert_eq!(c.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(
+            c.env,
+            vec![("EDITOR".into(), "nvim".into()), ("A".into(), "b=c".into())]
+        );
+        assert_eq!(c.scrollback, Some(7));
+        let c = Config::parse("command = /opt/homebrew/bin/fish\n");
+        assert_eq!(c.shell.as_deref(), Some("/opt/homebrew/bin/fish"));
+        // An alias in config.local.toml replaces the real key from config.toml.
+        let (entries, _) = layered(
+            "command = \"a\"\n",
+            "shell = \"b\"\n",
+            Path::new("/"),
+            &|_| None,
+        );
+        assert_eq!(
+            entries,
+            vec![("command".into(), toml::Value::String("b".into()))]
         );
     }
 
