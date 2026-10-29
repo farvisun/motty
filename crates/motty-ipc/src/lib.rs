@@ -55,6 +55,17 @@ pub mod method {
     pub const LIST_ACTIONS: &str = "list-actions";
     pub const AGENT_STATE: &str = "agent-state";
     pub const OPEN: &str = "open";
+    /// Re-read the config files now.
+    pub const CONFIG_RELOAD: &str = "config-reload";
+    /// Apply config lines to the running app only ([`super::ConfigSetParams`]).
+    pub const CONFIG_SET: &str = "config-set";
+}
+
+/// `motty config set --transient`: config.toml lines that take the place
+/// of the files' values for the same keys until Motty quits.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConfigSetParams {
+    pub lines: String,
 }
 
 /// What a coding agent is doing, as its hooks report it.

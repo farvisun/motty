@@ -1,6 +1,8 @@
 //! Bundled fonts, user font folders, and choosing the terminal font family.
 
 use std::borrow::Cow;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use gpui::App;
 use motty_theme::{Config, Theme};
@@ -22,9 +24,23 @@ pub const BUNDLED_FILES: [(&str, &[u8], u16, bool); 4] = [
     ("JetBrainsMono-BoldItalic.ttf", BUNDLED[3], 700, true),
 ];
 
+/// The user font files registered so far.
+static LOADED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
 /// Registers bundled fonts plus any files in `~/.config/{motty,otty}/fonts`.
 pub fn load(cx: &mut App) {
-    let mut fonts: Vec<Cow<'static, [u8]>> = BUNDLED.iter().map(|b| Cow::Borrowed(*b)).collect();
+    let fonts = BUNDLED.iter().map(|b| Cow::Borrowed(*b)).collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        tracing::warn!("failed to register fonts: {e:#}");
+    }
+    load_user(cx);
+}
+
+/// Registers font files added to the fonts folders since the last call
+/// (`motty font import`, or a file dropped in), on config reload.
+pub fn load_user(cx: &mut App) {
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut fonts: Vec<Cow<'static, [u8]>> = Vec::new();
     for dir in [
         motty_theme::config::motty_dir(),
         motty_theme::config::otty_dir(),
@@ -38,13 +54,17 @@ pub fn load(cx: &mut App) {
                 .and_then(|e| e.to_str())
                 .map(str::to_ascii_lowercase);
             if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc"))
+                && !loaded.contains(&path)
                 && let Ok(bytes) = std::fs::read(&path)
             {
                 fonts.push(Cow::Owned(bytes));
+                loaded.push(path);
             }
         }
     }
-    if let Err(e) = cx.text_system().add_fonts(fonts) {
+    if !fonts.is_empty()
+        && let Err(e) = cx.text_system().add_fonts(fonts)
+    {
         tracing::warn!("failed to register fonts: {e:#}");
     }
 }

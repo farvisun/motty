@@ -165,10 +165,34 @@ fn main() {
     });
 }
 
+/// Values from `motty config set --transient`, in place of the files'
+/// until Motty quits.
+static TRANSIENT: std::sync::Mutex<Vec<(String, toml::Value)>> = std::sync::Mutex::new(Vec::new());
+
+/// Adds config lines to the transient values; a key set again replaces
+/// what it had.
+pub fn set_transient(lines: &str) -> anyhow::Result<()> {
+    let (entries, warnings) = motty_theme::config::parse_lines(lines);
+    if let Some(w) = warnings.first() {
+        anyhow::bail!("{w}");
+    }
+    if let Some((key, _)) = entries
+        .iter()
+        .find(|(k, _)| motty_theme::schema::lookup(k).is_none())
+    {
+        anyhow::bail!("unknown key {key:?}");
+    }
+    let mut transient = TRANSIENT.lock().unwrap_or_else(|e| e.into_inner());
+    transient.retain(|(k, _)| !entries.iter().any(|(e, _)| e == k));
+    transient.extend(entries);
+    Ok(())
+}
+
 /// The config files with command-line overrides applied: `--theme NAME`
 /// replaces the configured theme for both appearances.
 pub fn load_config() -> Config {
-    let mut config = Config::load();
+    let transient = TRANSIENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut config = Config::load_with(&transient);
     if let Some(name) = flag_value("--theme") {
         config.theme = Some(name.clone());
         config.theme_dark = Some(name);

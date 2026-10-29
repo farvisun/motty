@@ -22,7 +22,15 @@ struct Entry {
     last: u64,
 }
 
-static DB: Mutex<Option<HashMap<PathBuf, Entry>>> = Mutex::new(None);
+/// The list, and the file's modification time when it was read or saved:
+/// a newer file (`motty import zoxide`) is read again.
+type Loaded = (Option<SystemTime>, HashMap<PathBuf, Entry>);
+
+static DB: Mutex<Option<Loaded>> = Mutex::new(None);
+
+fn modified() -> Option<SystemTime> {
+    std::fs::metadata(file()).and_then(|m| m.modified()).ok()
+}
 
 fn file() -> PathBuf {
     dirs::data_dir()
@@ -38,13 +46,16 @@ fn now() -> u64 {
 
 fn with_db<T>(f: impl FnOnce(&mut HashMap<PathBuf, Entry>) -> T) -> T {
     let mut db = DB.lock().unwrap_or_else(|e| e.into_inner());
-    let db = db.get_or_insert_with(|| {
-        std::fs::read(file())
+    let stamp = modified();
+    if db.as_ref().is_none_or(|(read, _)| *read != stamp) {
+        let list = std::fs::read(file())
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    });
-    f(db)
+            .unwrap_or_default();
+        *db = Some((stamp, list));
+    }
+    let (_, list) = db.as_mut().expect("just filled");
+    f(list)
 }
 
 /// Counts a visit to `path` (home doesn't count: it's where shells start).
@@ -85,6 +96,12 @@ fn save(snapshot: serde_json::Result<Vec<u8>>) {
         std::fs::write(&tmp, json)?;
         std::fs::rename(tmp, path)
     });
+    // Our own write isn't news.
+    if result.is_ok()
+        && let Some((read, _)) = DB.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+    {
+        *read = modified();
+    }
     if let Err(e) = result {
         tracing::warn!("couldn't save frequent folders: {e}");
     }

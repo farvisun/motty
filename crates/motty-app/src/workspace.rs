@@ -342,6 +342,10 @@ fn spawn_shell(
     } else {
         Default::default()
     };
+    // `env` lines; the variables shell integration and Motty need win.
+    for (name, value) in &config.env {
+        env.entry(name.clone()).or_insert_with(|| value.clone());
+    }
     // Programs (and agents) in the pane can drive Motty through `motty`.
     env.insert(motty_ipc::PANE_ENV.into(), pane_id.to_string());
     if let Some(term) = config.term.as_deref() {
@@ -1489,6 +1493,7 @@ impl Workspace {
 
     /// Re-reads config.toml and the themes after one of them changed on disk.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        crate::fonts::load_user(cx);
         let config = crate::load_config();
         for w in &config.warnings {
             tracing::warn!("{w}");

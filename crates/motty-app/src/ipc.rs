@@ -143,6 +143,15 @@ fn dispatch(request: Request, reply: Reply, cx: &mut App) {
         method::LIST_ACTIONS => Ok(json!(action_names(cx))),
         method::AGENT_STATE => parse(request.params).and_then(|p| agent_state(p, cx)),
         method::OPEN => parse(request.params).and_then(|p| open(p, cx)),
+        method::CONFIG_RELOAD => {
+            crate::workspace::reload_all(cx);
+            Ok(Value::Null)
+        }
+        method::CONFIG_SET => parse(request.params).and_then(|p: motty_ipc::ConfigSetParams| {
+            crate::set_transient(&p.lines)?;
+            crate::workspace::reload_all(cx);
+            Ok(Value::Null)
+        }),
         method::RUN => match parse(request.params).and_then(|p| run(p, id, &reply, cx)) {
             // Answered when the command finishes.
             Ok(None) => return,
