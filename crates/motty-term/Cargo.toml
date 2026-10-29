@@ -14,3 +14,9 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 polling = "3.8"
 regex = "1"
+# Inline images: decoding, kitty's zlib and base64 payloads, scanning.
+base64 = "0.22"
+flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+memchr = "2"
+parking_lot = "0.12"

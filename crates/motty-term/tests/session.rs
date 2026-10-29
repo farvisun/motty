@@ -181,3 +181,21 @@ fn identification_replies_arrive_in_order() {
     ));
     assert_eq!(wait_for(&s, 0, &want), want);
 }
+
+#[test]
+fn images_from_the_pty_are_placed_at_the_cursor() {
+    // A 1 × 1 RGB kitty image after "ab", then a one-pixel sixel after "cd".
+    let s =
+        run("printf 'ab\\033_Ga=T,f=24,s=1,v=1,q=2;AAAA\\033\\\\cd\\033Pq#1~\\033\\\\ef'; sleep 2");
+    assert_eq!(wait_for(&s, 1, "     ef"), "     ef");
+    assert_eq!(line_text(&s, 0), "ab cd");
+    let _term = s.term.lock();
+    let graphics = s.graphics();
+    let at: Vec<_> = graphics
+        .placements(false)
+        .iter()
+        .map(|p| (p.row, p.col))
+        .collect();
+    // The sixel moved the cursor below itself, where "ef" went.
+    assert_eq!(at, vec![(0, 2), (0, 5)]);
+}

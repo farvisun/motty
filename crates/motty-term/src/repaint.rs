@@ -156,36 +156,40 @@ impl Repaint {
 
     /// Drops the stale copy once the pass has pushed enough new rows to
     /// compare; called after each batch of output (and before a new pass).
-    pub fn settle<T: EventListener>(&mut self, term: &mut Term<T>) {
-        self.settle_at(term, Instant::now());
+    /// Returns the stable row (`lines_pushed` + line) of the first removed
+    /// row and how many went, so images on later rows can follow.
+    pub fn settle<T: EventListener>(&mut self, term: &mut Term<T>) -> Option<(u64, u64)> {
+        self.settle_at(term, Instant::now())
     }
 
-    fn settle_at<T: EventListener>(&mut self, term: &mut Term<T>, now: Instant) {
-        let Some(pass) = self.pending else {
-            return;
-        };
+    fn settle_at<T: EventListener>(
+        &mut self,
+        term: &mut Term<T>,
+        now: Instant,
+    ) -> Option<(u64, u64)> {
+        let pass = self.pending?;
         if !self.enabled.load(Ordering::Relaxed)
             || term.mode().contains(TermMode::ALT_SCREEN)
             || (term.columns(), term.screen_lines()) != pass.size
         {
             self.pending = None;
-            return;
+            return None;
         }
         let grid = term.grid();
         let Some(pushed) = grid.lines_pushed().checked_sub(pass.anchor) else {
             self.pending = None;
-            return;
+            return None;
         };
         if pushed < pass.reach as u64 {
             if now.duration_since(pass.started) > PASS_TIMEOUT {
                 self.pending = None;
             }
-            return;
+            return None;
         }
         self.pending = None;
         let history = grid.history_size();
         if pass.reach < MIN_BLOCK || pushed + pass.reach as u64 > history as u64 {
-            return;
+            return None;
         }
         let new_top = -(pushed as i32);
         let old_top = new_top - pass.reach as i32;
@@ -196,9 +200,10 @@ impl Repaint {
         });
         let blank = (0..pass.reach as i32).all(|i| grid[Line(old_top + i)].is_clear());
         if !same || blank {
-            return;
+            return None;
         }
         tracing::trace!(rows = pass.reach, "dropping a repaint's stale copy");
+        let first = (grid.lines_pushed() as i64 + i64::from(old_top)) as u64;
         // The removed copy equals the one below it, so a selection in it
         // moves onto that one; older rows move down with the history.
         let range = Line(term.topmost_line().0)..Line(new_top);
@@ -208,6 +213,7 @@ impl Repaint {
             .and_then(|s| s.rotate(&*term, &range, -(pass.reach as i32)));
         term.grid_mut()
             .remove_history_lines(Line(old_top), pass.reach);
+        Some((first, pass.reach as u64))
     }
 }
 
@@ -252,6 +258,7 @@ mod tests {
                     cluster: &mut Cluster::default(),
                     pointer: &mut None,
                     repaint: &mut self.repaint,
+                    graphics: &mut crate::graphics::Graphics::default(),
                 },
                 bytes.as_bytes(),
             );

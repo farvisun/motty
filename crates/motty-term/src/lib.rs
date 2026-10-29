@@ -19,6 +19,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 mod graphemes;
+pub mod graphics;
 /// Pointer shapes programs ask for with OSC 22.
 pub use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 pub mod input;
@@ -242,6 +243,7 @@ pub struct Session {
     /// `dedup-repaint-scrollback`.
     dedup_repaints: Arc<AtomicBool>,
     wide_ambiguous: Vec<std::ops::RangeInclusive<char>>,
+    graphics: Arc<std::sync::Mutex<graphics::Graphics>>,
 }
 
 impl Session {
@@ -303,13 +305,18 @@ impl Session {
         let shell = Arc::new(std::sync::Mutex::new(shell::ShellState::default()));
         let repaint = repaint::Repaint::default();
         let (redraws, dedup_repaints) = (repaint.redraws(), repaint.enabled());
+        let mut images = graphics::Graphics::default();
+        let window = size.window_size();
+        images.set_cell_size(window.cell_width, window.cell_height);
+        let graphics = Arc::new(std::sync::Mutex::new(images));
         let (pty_loop, pty_tx) = PtyLoop::new(
             pty,
             term.clone(),
             proxy,
             shell.clone(),
-            size.window_size(),
+            window,
             repaint,
+            graphics.clone(),
         )?;
         let _ = pty_tx_cell.set(pty_tx.clone());
         pty_loop.spawn();
@@ -327,6 +334,7 @@ impl Session {
                 redraws,
                 dedup_repaints,
                 wide_ambiguous: config.wide_ambiguous,
+                graphics,
             },
             rx,
         ))
@@ -391,6 +399,16 @@ impl Session {
         self.size = size;
         self.term.lock().resize(size);
         self.pty_tx.send(Msg::Resize(size.window_size()));
+    }
+
+    /// Inline images. Lock the terminal first when holding both.
+    pub fn graphics(&self) -> std::sync::MutexGuard<'_, graphics::Graphics> {
+        self.graphics.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The images, shared, for the terminal element.
+    pub fn graphics_handle(&self) -> Arc<std::sync::Mutex<graphics::Graphics>> {
+        self.graphics.clone()
     }
 
     pub fn pid(&self) -> u32 {

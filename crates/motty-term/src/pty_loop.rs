@@ -7,19 +7,21 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, OnResize, WindowSize};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::tty::{self, EventedPty, EventedReadWrite};
 use alacritty_terminal::vte::ansi;
+use parking_lot::MutexGuard as FairMutexGuard;
 use polling::{Event as PollEvent, Events, PollMode, Poller};
 
 use alacritty_terminal::term::TermMode;
 
 use crate::graphemes::{Cluster, Graphemes};
+use crate::graphics::{Graphics, Scanner, Sequence, Step, Work};
 use crate::repaint::Repaint;
 use crate::shell::{OscSniffer, ShellOsc, ShellState};
 use crate::{EventProxy, SessionEvent, Terminal};
@@ -69,6 +71,9 @@ pub struct PtyLoop {
     sniffer: OscSniffer,
     repaint: Repaint,
     shell: Arc<std::sync::Mutex<ShellState>>,
+    /// Cuts image sequences out of the output for `graphics`.
+    scanner: Scanner,
+    graphics: Arc<Mutex<Graphics>>,
     /// Input waiting for the PTY to accept it, and how much of the front
     /// chunk was written.
     pending: VecDeque<Cow<'static, [u8]>>,
@@ -85,6 +90,7 @@ impl PtyLoop {
         shell: Arc<std::sync::Mutex<ShellState>>,
         window: WindowSize,
         repaint: Repaint,
+        graphics: Arc<Mutex<Graphics>>,
     ) -> std::io::Result<(Self, LoopSender)> {
         let poller = Arc::new(Poller::new()?);
         let (tx, rx) = mpsc::channel();
@@ -105,6 +111,8 @@ impl PtyLoop {
             sniffer: OscSniffer::default(),
             repaint,
             shell,
+            scanner: Scanner::default(),
+            graphics,
             pending: VecDeque::new(),
             written: 0,
             window,
@@ -154,6 +162,9 @@ impl PtyLoop {
                     Msg::Resize(size) => {
                         self.window = size;
                         self.pty.on_resize(size);
+                        // Images are sized with the cell programs are told
+                        // about (TIOCGWINSZ, CSI 16 t).
+                        lock(&self.graphics).set_cell_size(size.cell_width, size.cell_height);
                     }
                     Msg::Shutdown => return Ok(()),
                 }
@@ -208,6 +219,7 @@ impl PtyLoop {
     /// Reads and parses until the PTY would block (or a lock's worth).
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
         let mut processed = 0;
+        let shared = self.terminal.clone();
         let mut terminal = None;
         loop {
             let n = match self.pty.reader().read(buf) {
@@ -218,36 +230,24 @@ impl PtyLoop {
                 }
                 Err(e) => return Err(e),
             };
-            let term = terminal.get_or_insert_with(|| self.terminal.lock_unfair());
-            // Feed the VT parser up to each shell-integration OSC, so that is
-            // recorded where the cursor is at that point.
+            // Image sequences are cut out and handled where they are in the
+            // stream; everything else goes to the VT parser.
             let mut pos = 0;
             while pos < n {
-                let end = pos
-                    + self
-                        .osc_parser
-                        .advance_until_terminated(&mut self.sniffer, &buf[pos..n]);
-                let mut handler = Graphemes {
-                    term: &mut **term,
-                    cluster: &mut self.cluster,
-                    pointer: &mut self.pointer,
-                    repaint: &mut self.repaint,
-                };
-                self.parser.advance(&mut handler, &buf[pos..end]);
-                pos = end;
-                if let Some(icon) = self.pointer.take()
-                    && let Ok(mut shell) = self.shell.lock()
-                {
-                    shell.pointer = Some(icon);
-                }
-                if let Some(osc) = self.sniffer.take() {
-                    record_osc(osc, term, &self.shell, &self.proxy);
-                }
-                for query in self.sniffer.take_queries() {
-                    let vt = self.proxy.vt();
-                    if let Some(reply) = crate::vt::reply(query, &vt, self.window, term.title()) {
-                        self.proxy.send_event(Event::PtyWrite(reply));
+                let (used, step) = self.scanner.next(&buf[pos..n]);
+                let bytes = &buf[pos..pos + used];
+                pos += used;
+                match step {
+                    Step::Pass => {
+                        let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+                        self.feed(term, bytes);
                     }
+                    Step::PassHeld(held) => {
+                        let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+                        self.feed(term, &held);
+                    }
+                    Step::Sequence(seq) => self.image(&mut terminal, &shared, seq),
+                    Step::Pending => {}
                 }
             }
             processed += n;
@@ -256,7 +256,11 @@ impl PtyLoop {
             }
         }
         if let Some(term) = terminal.as_mut() {
-            self.repaint.settle(term);
+            let mut graphics = lock(&self.graphics);
+            if let Some((first, count)) = self.repaint.settle(term) {
+                graphics.rows_removed(false, first, count);
+            }
+            graphics.prune(term);
         }
         drop(terminal);
         // Output held back by a synchronized update shows when it ends.
@@ -264,6 +268,86 @@ impl PtyLoop {
             self.proxy.send_event(Event::Wakeup);
         }
         Ok(())
+    }
+
+    /// Feeds plain output to the VT parser, stopping at each
+    /// shell-integration OSC so it's recorded where the cursor is then.
+    fn feed(&mut self, term: &mut Terminal, bytes: &[u8]) {
+        let mut graphics = lock(&self.graphics);
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let end = pos
+                + self
+                    .osc_parser
+                    .advance_until_terminated(&mut self.sniffer, &bytes[pos..]);
+            let mut handler = Graphemes {
+                term,
+                cluster: &mut self.cluster,
+                pointer: &mut self.pointer,
+                repaint: &mut self.repaint,
+                graphics: &mut graphics,
+            };
+            self.parser.advance(&mut handler, &bytes[pos..end]);
+            pos = end;
+            if let Some(icon) = self.pointer.take()
+                && let Ok(mut shell) = self.shell.lock()
+            {
+                shell.pointer = Some(icon);
+            }
+            if let Some(osc) = self.sniffer.take() {
+                record_osc(osc, term, &self.shell, &self.proxy);
+            }
+            for query in self.sniffer.take_queries() {
+                let vt = self.proxy.vt();
+                if let Some(reply) = crate::vt::reply(query, &vt, self.window, term.title()) {
+                    self.proxy.send_event(Event::PtyWrite(reply));
+                }
+            }
+        }
+    }
+
+    /// Handles an image sequence. Decoding runs with the terminal unlocked
+    /// so a big image doesn't stall drawing; nothing else writes to the
+    /// terminal meanwhile, so the cursor stays put.
+    fn image<'a>(
+        &mut self,
+        terminal: &mut Option<FairMutexGuard<'a, Terminal>>,
+        shared: &'a FairMutex<Terminal>,
+        seq: Sequence,
+    ) {
+        let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+        // Text held back by a synchronized update (DEC 2026) goes first, so
+        // the image lands where the program put it; the update resumes after.
+        let synced = self.parser.sync_timeout().sync_timeout().is_some();
+        if synced {
+            let mut graphics = lock(&self.graphics);
+            self.parser.stop_sync(&mut Graphemes {
+                term: &mut **term,
+                cluster: &mut self.cluster,
+                pointer: &mut self.pointer,
+                repaint: &mut self.repaint,
+                graphics: &mut graphics,
+            });
+        }
+        let work = lock(&self.graphics).begin(seq, term);
+        self.send_replies();
+        if let Work::Decode(job) = work {
+            *terminal = None;
+            let decoded = job.run();
+            let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+            lock(&self.graphics).finish(decoded, term);
+            self.send_replies();
+        }
+        if synced {
+            let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+            self.feed(term, b"\x1b[?2026h");
+        }
+    }
+
+    fn send_replies(&self) {
+        for reply in lock(&self.graphics).take_replies() {
+            self.proxy.send_event(Event::PtyWrite(reply));
+        }
     }
 
     fn write(&mut self) -> std::io::Result<()> {
@@ -285,6 +369,10 @@ impl PtyLoop {
         }
         Ok(())
     }
+}
+
+fn lock(graphics: &Mutex<Graphics>) -> MutexGuard<'_, Graphics> {
+    graphics.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Applies a shell-integration OSC at the cursor and tells the UI.

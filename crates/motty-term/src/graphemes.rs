@@ -8,6 +8,8 @@
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::EventListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 use alacritty_terminal::vte::ansi::{
@@ -15,8 +17,11 @@ use alacritty_terminal::vte::ansi::{
     KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, PrivateMode, Rgb,
     ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
+use std::ops::Range;
+
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::graphics::Graphics;
 use crate::repaint::Repaint;
 
 /// The grapheme cluster most recently written at the cursor; anything but
@@ -37,9 +42,40 @@ pub struct Graphemes<'a, T: EventListener> {
     pub pointer: &'a mut Option<CursorIcon>,
     /// In-place redraws, and repaints that leave copies in scrollback.
     pub repaint: &'a mut Repaint,
+    /// Images that text output and erasing affect.
+    pub graphics: &'a mut Graphics,
 }
 
 impl<T: EventListener> Graphemes<'_, T> {
+    /// Wipes sixel and iTerm2 images under screen `lines` × `cols`.
+    fn wipe(&mut self, lines: Range<i32>, cols: Range<usize>) {
+        if self.graphics.has_cell_images() {
+            self.graphics.wipe(self.term, lines, cols);
+        }
+    }
+
+    /// Wipes images under the cell(s) `c` is about to be written to.
+    fn wipe_for_input(&mut self, c: char) {
+        let width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+        if width == 0 {
+            return;
+        }
+        let cursor = &self.term.grid().cursor;
+        let (line, col) =
+            if cursor.input_needs_wrap && self.term.mode().contains(TermMode::LINE_WRAP) {
+                (cursor.point.line.0 + 1, 0)
+            } else {
+                (cursor.point.line.0, cursor.point.column.0)
+            };
+        self.wipe(line..line + 1, col..col + width);
+    }
+
+    /// The cursor's screen line and column.
+    fn cursor(&self) -> (i32, usize) {
+        let point = self.term.grid().cursor.point;
+        (point.line.0, point.column.0)
+    }
+
     /// Adds `c` to the wide cell just before the cursor, where alacritty
     /// puts zero-width characters. False if that cell isn't wide.
     fn extend_wide_cell(&mut self, c: char) -> bool {
@@ -70,6 +106,9 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
         if c.is_ascii() {
             self.cluster.0.clear();
             self.cluster.0.push(c);
+            if self.graphics.has_cell_images() {
+                self.wipe_for_input(c);
+            }
             return self.term.input(c);
         }
         let continues = !self.cluster.0.is_empty() && {
@@ -89,6 +128,9 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
             self.cluster.0.clear();
         }
         self.cluster.0.push(c);
+        if self.graphics.has_cell_images() {
+            self.wipe_for_input(c);
+        }
         self.term.input(c);
     }
 
@@ -126,6 +168,8 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn insert_blank(&mut self, a0: usize) {
         self.cluster.clear();
+        let (line, col) = self.cursor();
+        self.wipe(line..line + 1, col..self.term.columns());
         self.term.insert_blank(a0);
     }
     fn move_up(&mut self, a0: usize) {
@@ -220,10 +264,14 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn erase_chars(&mut self, a0: usize) {
         self.cluster.clear();
+        let (line, col) = self.cursor();
+        self.wipe(line..line + 1, col..col.saturating_add(a0.max(1)));
         self.term.erase_chars(a0);
     }
     fn delete_chars(&mut self, a0: usize) {
         self.cluster.clear();
+        let (line, col) = self.cursor();
+        self.wipe(line..line + 1, col..self.term.columns());
         self.term.delete_chars(a0);
     }
     fn move_backward_tabs(&mut self, a0: u16) {
@@ -244,10 +292,20 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn clear_line(&mut self, a0: LineClearMode) {
         self.cluster.clear();
+        let (line, col) = self.cursor();
+        let cols = match a0 {
+            LineClearMode::Right => col..self.term.columns(),
+            LineClearMode::Left => 0..col + 1,
+            LineClearMode::All => 0..self.term.columns(),
+        };
+        self.wipe(line..line + 1, cols);
         self.term.clear_line(a0);
     }
     fn clear_screen(&mut self, a0: ClearMode) {
         self.cluster.clear();
+        let (line, col) = self.cursor();
+        let (lines, cols) = (self.term.screen_lines() as i32, self.term.columns());
+        let (all, saved) = (matches!(a0, ClearMode::All), matches!(a0, ClearMode::Saved));
         // Clearing below the cursor is part of a repaint; the rest moves
         // or drops rows.
         if matches!(a0, ClearMode::Below) {
@@ -255,7 +313,27 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
         } else {
             self.repaint.reset();
         }
+        match a0 {
+            ClearMode::Below => {
+                self.wipe(line..line + 1, col..cols);
+                self.wipe(line + 1..lines, 0..cols);
+            }
+            ClearMode::Above => {
+                self.wipe(0..line, 0..cols);
+                self.wipe(line..line + 1, 0..col + 1);
+            }
+            // Kitty images on screen go with it.
+            ClearMode::All => self.graphics.clear_screen(self.term),
+            ClearMode::Saved => {}
+        }
         self.term.clear_screen(a0);
+        if all {
+            // The main screen's text moves into the scrollback, and cell
+            // images with it; whatever is left on screen is wiped.
+            self.wipe(0..lines, 0..cols);
+        } else if saved {
+            self.graphics.prune(self.term);
+        }
     }
     fn clear_tabs(&mut self, a0: TabulationClearMode) {
         self.cluster.clear();
@@ -269,6 +347,7 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
         self.cluster.clear();
         self.repaint.reset();
         self.term.reset_state();
+        self.graphics.reset();
     }
     fn reverse_index(&mut self) {
         self.cluster.clear();
@@ -293,7 +372,12 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn set_private_mode(&mut self, a0: PrivateMode) {
         self.cluster.clear();
+        let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
         self.term.set_private_mode(a0);
+        // A fresh alternate screen has no images, as it has no text.
+        if !alt && self.term.mode().contains(TermMode::ALT_SCREEN) {
+            self.graphics.clear_alt();
+        }
     }
     fn unset_private_mode(&mut self, a0: PrivateMode) {
         self.cluster.clear();
@@ -431,6 +515,7 @@ mod tests {
                 cluster: &mut cluster,
                 pointer: &mut None,
                 repaint: &mut Repaint::default(),
+                graphics: &mut Graphics::default(),
             },
             text.as_bytes(),
         );
@@ -458,6 +543,7 @@ mod tests {
                 cluster: &mut Cluster::default(),
                 pointer: &mut pointer,
                 repaint: &mut Repaint::default(),
+                graphics: &mut Graphics::default(),
             },
             b"\x1b]22;pointer\x07ab",
         );
