@@ -46,8 +46,13 @@ impl Workspace {
         let style = terminal_style(&self.config, &self.theme, cx);
         let prefs = self.config.editor;
         let editor = cx.new(|cx| {
+            let file = path.is_some();
             let mut editor = FileEditor::new(path, style, cx);
             editor.set_prefs(prefs, cx);
+            // Settings › Editor › Default to Preview / Read-Only.
+            if file && prefs.preview_readonly {
+                editor.set_read_only(true, cx);
+            }
             editor
         });
         self.watch_editor(&editor, cx);

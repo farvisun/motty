@@ -6,8 +6,10 @@
 //! any length cost only what's on screen.
 
 mod buffer;
+pub mod highlight;
 mod prose;
 mod rows;
+mod toolbar;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -31,7 +33,6 @@ use rows::{DisplayRow, Rows};
 use crate::actions::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 
 /// The toolbar above the text.
-const TOOLBAR: f32 = 32.;
 /// Space between the gutter's numbers and the text.
 const GUTTER_PAD_LEFT: f32 = 12.;
 const GUTTER_PAD_RIGHT: f32 = 7.;
@@ -112,7 +113,11 @@ pub struct FileEditor {
     reveal: bool,
     selecting: bool,
     read_only: bool,
+    /// Whether the file may be edited at all: not too big, readable.
+    can_edit: bool,
     error: Option<String>,
+    /// Syntax colors, for a file in a known language.
+    highlighter: Option<highlight::Highlighter>,
     style: Rc<TerminalStyle>,
     layout: Rc<RefCell<Layout>>,
     /// A text field rather than a file (see `prose`).
@@ -159,7 +164,9 @@ impl FileEditor {
             reveal: false,
             selecting: false,
             read_only: false,
+            can_edit: true,
             error: None,
+            highlighter: None,
             style: Rc::new(style),
             layout: Rc::default(),
             prose: None,
@@ -184,13 +191,17 @@ impl FileEditor {
                 self.saved = text;
                 self.revision += 1;
                 self.read_only = !editable;
+                self.can_edit = editable;
                 self.error = None;
             }
             Err(e) => {
                 self.read_only = true;
+                self.can_edit = false;
                 self.error = Some(e);
             }
         }
+        let language = highlight::detect(Some(&path), self.buffer.line(0));
+        self.highlighter = language.map(|l| highlight::Highlighter::new(Some(l)));
         self.path = Some(path);
     }
 
@@ -322,6 +333,13 @@ impl FileEditor {
         if !joins {
             self.push_undo();
         }
+        let (first, removed) = match selection {
+            Some((a, b)) => (a.line, b.line - a.line + 1),
+            None => (self.cursor.line, 1),
+        };
+        if let Some(h) = &mut self.highlighter {
+            h.edit(first, removed, 1 + text.matches('\n').count());
+        }
         if let Some((a, b)) = selection {
             self.buffer.delete(a, b);
             self.cursor = a;
@@ -343,6 +361,9 @@ impl FileEditor {
             return;
         }
         self.push_undo();
+        if let Some(h) = &mut self.highlighter {
+            h.edit(a.line, b.line - a.line + 1, 1);
+        }
         self.buffer.delete(a, b);
         self.cursor = a;
         self.anchor = None;
@@ -627,6 +648,7 @@ impl FileEditor {
             self.cursor = self.buffer.clamp(step.cursor);
             self.anchor = None;
             self.typing_at = None;
+            self.rehighlight();
             self.changed(cx);
         }
     }
@@ -640,6 +662,7 @@ impl FileEditor {
             self.cursor = self.buffer.clamp(step.cursor);
             self.anchor = None;
             self.typing_at = None;
+            self.rehighlight();
             self.changed(cx);
         }
     }
@@ -695,6 +718,7 @@ impl FileEditor {
         self.push_undo();
         self.buffer = Buffer::from_text(&self.saved);
         self.revision += 1;
+        self.rehighlight();
         self.cursor = self.buffer.clamp(self.cursor);
         self.anchor = None;
         self.changed(cx);
@@ -822,9 +846,67 @@ impl FileEditor {
         cx.notify();
     }
 
-    /// Syntax colors for the lines about to be drawn.
+    /// Colors everything again, after the whole text was replaced.
+    fn rehighlight(&mut self) {
+        if let Some(h) = &mut self.highlighter {
+            h.invalidate_from(0);
+        }
+    }
+
+    /// The language the file is colored as.
+    #[allow(dead_code)]
+    pub fn language(&self) -> Option<&'static str> {
+        self.highlighter.as_ref().and_then(|h| h.language())
+    }
+
+    /// Colors the file as `language`, or plain with `None`.
+    #[allow(dead_code)]
+    pub fn set_language(&mut self, language: Option<&str>, cx: &mut Context<Self>) {
+        self.highlighter = language.map(|l| highlight::Highlighter::new(Some(l)));
+        cx.notify();
+    }
+
+    /// Syntax colors for the lines about to be drawn: those the last paint
+    /// showed, with a screen's margin either side for scrolling.
     fn line_colors(&mut self) -> LineColors {
-        LineColors::default()
+        let Some(h) = &mut self.highlighter else {
+            return LineColors::default();
+        };
+        let count = self.buffer.line_count();
+        let (first, last) = {
+            let layout = self.layout.borrow();
+            let lh = layout.line_height.max(px(1.));
+            let screen = ((layout.bounds.size.height / lh).ceil() as usize).max(60);
+            let top = (self.scroll.y / lh).max(0.) as usize;
+            let row = |r: usize| {
+                if layout.rows.lines() == count {
+                    layout
+                        .rows
+                        .locate(r.min(layout.rows.total().saturating_sub(1)))
+                        .0
+                } else {
+                    r
+                }
+            };
+            (row(top.saturating_sub(screen)), row(top + screen * 2) + 1)
+        };
+        let (first, last) = (first.min(count), last.min(count));
+        let spans = h.highlight(|i| self.buffer.line(i), first..last);
+        let style = &self.style;
+        spans
+            .into_iter()
+            .enumerate()
+            .filter_map(|(ix, spans)| {
+                let colored: Vec<_> = spans
+                    .into_iter()
+                    .filter_map(|span| {
+                        let (color, italic) = highlight::token_color(span.token, style)?;
+                        Some((span.range, hsla(color), italic))
+                    })
+                    .collect();
+                (!colored.is_empty()).then_some((first + ix, colored))
+            })
+            .collect()
     }
 
     fn foreground(&self) -> Rgba {
@@ -903,104 +985,7 @@ impl Render for FileEditor {
             hsla(c)
         };
         let accent = hsla(Rgba::rgb(0x047afe));
-        let dirty = self.is_dirty();
-        let button = |id: &'static str, glyph: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .h(px(24.))
-                .px(px(6.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .rounded(px(6.))
-                .text_size(px(13.))
-                .text_color(ink(0.85))
-                .hover(move |s| s.bg(ink(0.07)))
-                .child(div().text_size(px(12.)).child(glyph))
-                .child(label)
-        };
-        let toolbar = div()
-            .flex_none()
-            .h(px(TOOLBAR))
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_size(px(12.))
-                    .text_color(ink(0.5))
-                    .when(self.lockable, |d| {
-                        let locked = self.read_only;
-                        d.child(
-                            div()
-                                .id("editor-lock")
-                                .h(px(24.))
-                                .px(px(6.))
-                                .flex()
-                                .items_center()
-                                .gap(px(5.))
-                                .rounded(px(6.))
-                                .hover(move |s| s.bg(ink(0.07)))
-                                .child(
-                                    gpui::svg()
-                                        .path(if locked {
-                                            "icons/lock.svg"
-                                        } else {
-                                            "icons/lock-open.svg"
-                                        })
-                                        .size(px(13.))
-                                        .text_color(ink(0.6)),
-                                )
-                                .child(if locked { "Read Only" } else { "Editing" })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.read_only = !this.read_only;
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .when(
-                        self.read_only && !self.lockable && self.name.is_none(),
-                        |d| d.child("Read Only"),
-                    )
-                    .children(self.error.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .children(
-                        self.buttons
-                            .iter()
-                            .enumerate()
-                            .map(|(ix, (label, action))| {
-                                let action = action.boxed_clone();
-                                button_row(
-                                    ("editor-button", ix),
-                                    label.clone(),
-                                    ink(0.85),
-                                    ink(0.07),
-                                )
-                                .on_click(move |_, window, cx| {
-                                    window.dispatch_action(action.boxed_clone(), cx)
-                                })
-                            }),
-                    )
-                    .when(dirty && !self.read_only, |d| {
-                        d.child(
-                            button("save", "✓", "Save")
-                                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
-                        )
-                        .child(
-                            button("discard", "✕", "Discard")
-                                .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
-                        )
-                    }),
-            );
+        let toolbar = self.render_toolbar(window, cx);
 
         let focused = self.focus.is_focused(window);
         let reveal = std::mem::take(&mut self.reveal);

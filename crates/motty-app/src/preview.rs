@@ -18,7 +18,7 @@ use motty_theme::Rgba;
 use motty_theme::theme::mix;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use crate::highlight::{Highlighter, palette_color, token_bold};
+use crate::editor::highlight::{Highlighter, palette_color, token_bold};
 
 /// Mermaid 11.17.2 (MIT, see `assets/preview/LICENSE.mermaid`).
 pub const MERMAID_JS: &str = include_str!("../assets/preview/mermaid.min.js");

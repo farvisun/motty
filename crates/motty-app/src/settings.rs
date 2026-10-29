@@ -86,7 +86,27 @@ impl AssetSource for Assets {
             "monitor-smartphone",
             "pin",
             "lock",
-            "lock-open"
+            "lock-open",
+            "message-square",
+            "share",
+            "x",
+            "arrow-up",
+            "arrow-right-to-line",
+            "eye",
+            "eye-off",
+            "chevron-left",
+            "chevron-right",
+            "rotate-cw",
+            "folder",
+            "file",
+            "globe",
+            "image",
+            "file-diff",
+            "grip-horizontal",
+            "maximize-2",
+            "picture-in-picture-2",
+            "square-split-horizontal",
+            "square-split-vertical"
         )
         .map(Cow::Borrowed))
     }

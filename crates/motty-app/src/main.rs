@@ -6,8 +6,6 @@ mod editor;
 mod file_search;
 mod folders;
 mod fonts;
-#[path = "editor/highlight.rs"]
-mod highlight;
 mod history;
 mod ipc;
 mod materials;
@@ -21,10 +19,12 @@ mod recipes;
 mod recovery;
 mod secure_input;
 mod settings;
+mod share;
 mod shell_integration;
 mod tab_icons;
 mod terminal_view;
 mod titlebar;
+mod tooltip;
 // Not shown anywhere yet.
 #[allow(dead_code)]
 mod web_view;
