@@ -24,6 +24,8 @@ mod notifications;
 mod panes;
 mod pasteboard;
 mod preview;
+#[allow(dead_code)]
+mod quick_look;
 mod recipes;
 mod recovery;
 mod secure_input;
