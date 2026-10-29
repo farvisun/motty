@@ -4,6 +4,8 @@ mod dock;
 mod dock_click;
 mod editor;
 mod file_search;
+#[allow(dead_code)]
+mod folder_view;
 mod folders;
 mod fonts;
 mod history;
