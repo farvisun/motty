@@ -38,9 +38,10 @@ sha2 = "0.10"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "NSGlassEffectView", "NSResponder", "NSColor", "NSGraphics", "NSAppearance", "NSWindow", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSImage", "NSEvent", "NSCell", "NSApplication", "NSRunningApplication", "NSSegmentedControl", "NSTextField", "NSFont", "NSTextAttachment", "NSAttributedString", "NSPasteboard", "NSParagraphStyle", "NSText", "NSStringDrawing", "NSWorkspace"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSBundle", "NSString", "NSError", "NSArray", "NSAttributedString", "NSRange", "NSDictionary", "NSURL"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSBundle", "NSString", "NSError", "NSArray", "NSAttributedString", "NSRange", "NSDictionary", "NSURL", "NSURLRequest", "NSKeyValueCoding", "NSValue"] }
 objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotification", "block2"] }
 block2 = "0.6"
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebpagePreferences", "WKNavigation", "WKNavigationAction", "WKUIDelegate", "WKWindowFeatures", "WKFindConfiguration", "WKFindResult"] }
 
 [features]
 default = ["runtime-shaders"]

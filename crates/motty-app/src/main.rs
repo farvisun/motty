@@ -22,6 +22,9 @@ mod shell_integration;
 mod tab_icons;
 mod terminal_view;
 mod titlebar;
+// Not shown anywhere yet.
+#[allow(dead_code)]
+mod web_view;
 mod window_menu;
 mod workspace;
 
