@@ -252,6 +252,7 @@ pub const KEYS: &[KeySpec] = &[
     // Cursor
     key("cursor-style", Kind::Enum { values: &["block", "bar", "underline", "block_hollow"], also: &[], bools: false }, "block", "Appearance › Cursor", "Cursor shape programs get until they ask for another."),
     key("cursor-style-blink", BLINK, "default_off", "Appearance › Cursor", "default_* set the starting blink and let programs change it; always_* pin it.").alias(&["cursor-blink"]),
+    key("cursor-animation", Kind::Enum { values: &["off", "smooth"], also: &[], bools: false }, "off", "Appearance › Cursor", "Cursor motion: smooth glides the caret on same-row moves and adds a small overshoot on click and focus."),
     color("cursor-color", "Cursor color, for themes that don't set one."),
     color("cursor-text", "Text color under the cursor, for themes that don't set one."),
     // Shell & environment
@@ -263,6 +264,7 @@ pub const KEYS: &[KeySpec] = &[
     key("tab-working-directory", Kind::Dir, "inherit", "Shell › Working Directory", "Where a new tab starts."),
     key("split-working-directory", Kind::Dir, "inherit", "Shell › Working Directory", "Where a new split starts."),
     key("scrollback-lines", Kind::Int { min: 0, max: 100_000_000 }, "10000", "Shell › Shell", "Lines of scrollback kept per pane.").alias(&["scrollback"]),
+    bool("dedup-repaint-scrollback", "true", "Advanced › All Settings", "Drop the stale copies programs that repaint a region taller than the window (Claude Code's classic renderer) leave in scrollback. Legitimate repeats are never removed."),
     bool("shell-integration", "true", "Shell › Shell", "Inject prompt marks and cwd reporting into zsh, bash and fish."),
     key("shell-integration-disabled-shells", Kind::Str, "", "", "Shell names (zsh, fish, …) shell integration leaves alone.").list(List::Inline),
     key("progress-bar-commands", Kind::Str, "(built-in list)", "", "Command prefixes that show a spinner while they run, matched as whole words. [] turns it off.").list(List::Inline),
@@ -385,6 +387,13 @@ pub const KEYS: &[KeySpec] = &[
     bool("editor-show-line-numbers", "true", "Editor › Editor", "The line-number gutter."),
     bool("editor-default-to-preview-readonly", "true", "Editor › Editor", "Markdown, SVG and HTML open as previews, and files open read-only."),
     bool("editor-scroll-past-end", "true", "Editor › Editor", "The last line can scroll up to the top."),
+    // Terminal scrolling
+    key("terminal-scroll-past-end", Kind::Enum { values: &["disabled", "last-line-with-content", "last-line-in-middle", "cursor-line"], also: &[], bools: false }, "disabled", "Controls › Scroll", "Scroll past the last line: where the last row with text (or the cursor's) can be scrolled to. Always off on the alternate screen."),
+    key("terminal-scroll-past-first-line", Kind::Enum { values: &["disabled", "same-as-last-line", "first-line-with-content", "first-line-in-middle"], also: &[], bools: false }, "disabled", "Controls › Scroll", "Scroll past the first scrollback line, pushing it down into the view."),
+    bool("terminal-scroll-past-end-sticky", "false", "", "Keep the past-end offset when output arrives instead of using it up."),
+    bool("terminal-scroll-smooth", "true", "Controls › Scroll", "Pixel-granular scrolling; snaps to the nearest row when the gesture ends."),
+    key("output-scroll-animation", Kind::Enum { values: &["auto", "off", "smooth"], also: &[], bools: false }, "auto", "Advanced › All Settings", "How the view follows the scrolling the terminal does to itself: auto follows terminal-scroll-smooth."),
+    bool("terminal-scrollbar-hide-on-auto-scroll", "false", "Advanced › All Settings", "Show the scrollbar only while the view is parked away from the live output, not while it follows output."),
     // Dock icon
     bool("dock-icon-animate-progress", "false", "Appearance › Dock Icon", "A progress bar on the Dock icon while a command reports progress."),
     bool("dock-icon-error-badge", "true", "Appearance › Dock Icon", "A red Dock icon after a failure in a tab you haven't looked at."),

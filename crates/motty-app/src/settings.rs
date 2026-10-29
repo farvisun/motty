@@ -18,8 +18,8 @@ use gpui::{
 };
 use motty_render::hsla;
 use motty_theme::{
-    AcceptKey, Config, ConfirmClose, CursorBlink, CursorStyle, LinkClick, LinkShiftClick, Mode,
-    Rgba, RightClick,
+    AcceptKey, Config, ConfirmClose, CursorAnimation, CursorBlink, CursorStyle, LinkClick,
+    LinkShiftClick, Mode, OutputAnimation, Rgba, RightClick, ScrollPastEnd, ScrollPastFirst,
 };
 use toml::Value;
 
@@ -1533,6 +1533,64 @@ impl SettingsWindow {
             },
         ));
 
+        // Controls › Scroll
+        let m = &c.motion;
+        rows.push(row(
+            Controls,
+            "Scroll",
+            "Smooth Scroll",
+            Some("Scroll by the pixel, snapping to a row when the gesture ends; output slides in too"),
+            Control::Toggle {
+                key: "terminal-scroll-smooth",
+                on: m.smooth_scroll,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Controls,
+            "Scroll",
+            "Scroll Past Last Line",
+            Some(
+                "Keep scrolling after the prompt reaches the bottom (not in full-screen programs)",
+            ),
+            choice(
+                "terminal-scroll-past-end",
+                &[
+                    ("Disabled", "disabled"),
+                    ("Last Line With Content", "last-line-with-content"),
+                    ("Last Line In Middle", "last-line-in-middle"),
+                    ("Cursor Line", "cursor-line"),
+                ],
+                match m.past_end {
+                    ScrollPastEnd::Disabled => "Disabled",
+                    ScrollPastEnd::LastLineWithContent => "Last Line With Content",
+                    ScrollPastEnd::LastLineInMiddle => "Last Line In Middle",
+                    ScrollPastEnd::CursorLine => "Cursor Line",
+                },
+            ),
+        ));
+        rows.push(row(
+            Controls,
+            "Scroll",
+            "Scroll Past First Line",
+            Some("Push the oldest row of scrollback down into the view"),
+            choice(
+                "terminal-scroll-past-first-line",
+                &[
+                    ("Disabled", "disabled"),
+                    ("Same as Scroll Past Last Line", "same-as-last-line"),
+                    ("First Line With Content", "first-line-with-content"),
+                    ("First Line In Middle", "first-line-in-middle"),
+                ],
+                match m.past_first_line {
+                    ScrollPastFirst::Disabled => "Disabled",
+                    ScrollPastFirst::SameAsLastLine => "Same as Scroll Past Last Line",
+                    ScrollPastFirst::FirstLineWithContent => "First Line With Content",
+                    ScrollPastFirst::FirstLineInMiddle => "First Line In Middle",
+                },
+            ),
+        ));
+
         let b = &c.behavior;
         let toggle = |key: &'static str, on: bool| Control::Toggle {
             key,
@@ -1998,6 +2056,20 @@ impl SettingsWindow {
                 },
             ),
         ));
+        rows.push(row(
+            Appearance,
+            "Cursor",
+            "Cursor Animation",
+            Some("Smooth glides the caret along its row and adds a small overshoot on click and focus"),
+            choice(
+                "cursor-animation",
+                &[("Off", "off"), ("Smooth", "smooth")],
+                match c.motion.cursor_animation {
+                    CursorAnimation::Off => "Off",
+                    CursorAnimation::Smooth => "Smooth",
+                },
+            ),
+        ));
         let opacity = c.unfocused_split_opacity.unwrap_or(0.6);
         let steps = [1.0f32, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4];
         rows.push(row(
@@ -2355,6 +2427,43 @@ impl SettingsWindow {
             Control::Toggle {
                 key: "kitty-keyboard",
                 on: c.vt.kitty_keyboard,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Advanced,
+            "All Settings",
+            "Output Scroll Animation",
+            Some("How the view follows the scrolling the terminal does itself; Auto follows Smooth Scroll"),
+            choice(
+                "output-scroll-animation",
+                &[("Auto", "auto"), ("Off", "off"), ("Smooth", "smooth")],
+                match c.motion.output_animation {
+                    OutputAnimation::Auto => "Auto",
+                    OutputAnimation::Off => "Off",
+                    OutputAnimation::Smooth => "Smooth",
+                },
+            ),
+        ));
+        rows.push(row(
+            Advanced,
+            "All Settings",
+            "Hide Scrollbar While Following Output",
+            Some("The scrollbar shows only once you scroll away from the live output"),
+            Control::Toggle {
+                key: "terminal-scrollbar-hide-on-auto-scroll",
+                on: c.motion.hide_scrollbar_following,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Advanced,
+            "All Settings",
+            "Dedup Repaint Scrollback",
+            Some("Drop the stale copies apps that repaint more than the window (Claude Code) leave in scrollback"),
+            Control::Toggle {
+                key: "dedup-repaint-scrollback",
+                on: c.motion.dedup_repaints,
                 invert: false,
             },
         ));

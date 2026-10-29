@@ -45,6 +45,9 @@ pub struct Config {
     /// `cursor-style`: the shape programs get until they ask for another.
     pub cursor_style: CursorStyle,
     pub cursor_blink: CursorBlink,
+    /// Smooth scrolling, the output slide, the cursor glide, scrolling past
+    /// the ends, the scrollbar and repaint de-duplication.
+    pub motion: Motion,
     /// `cursor-color` and `cursor-text`, for themes that don't set them.
     pub cursor_color: Option<Rgba>,
     pub cursor_text: Option<Rgba>,
@@ -789,6 +792,161 @@ impl CursorBlink {
     }
 }
 
+/// How a terminal pane moves: Otty's `terminal-scroll-*`,
+/// `output-scroll-animation`, `cursor-animation`,
+/// `terminal-scrollbar-hide-on-auto-scroll` and `dedup-repaint-scrollback`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Motion {
+    /// `terminal-scroll-smooth`: pixel-granular scrolling that snaps to a
+    /// row when the gesture ends.
+    pub smooth_scroll: bool,
+    /// `output-scroll-animation`: how the view follows output.
+    pub output_animation: OutputAnimation,
+    /// `cursor-animation`
+    pub cursor_animation: CursorAnimation,
+    /// `terminal-scroll-past-end`
+    pub past_end: ScrollPastEnd,
+    /// `terminal-scroll-past-first-line`
+    pub past_first_line: ScrollPastFirst,
+    /// `terminal-scroll-past-end-sticky`: new output leaves the past-end
+    /// offset alone instead of using it up.
+    pub past_end_sticky: bool,
+    /// `terminal-scrollbar-hide-on-auto-scroll`: the scrollbar shows only
+    /// while the view is parked away from the live output.
+    pub hide_scrollbar_following: bool,
+    /// `dedup-repaint-scrollback`
+    pub dedup_repaints: bool,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self {
+            smooth_scroll: true,
+            output_animation: OutputAnimation::Auto,
+            cursor_animation: CursorAnimation::Off,
+            past_end: ScrollPastEnd::Disabled,
+            past_first_line: ScrollPastFirst::Disabled,
+            past_end_sticky: false,
+            hide_scrollbar_following: false,
+            dedup_repaints: true,
+        }
+    }
+}
+
+impl Motion {
+    /// Whether the view slides when the terminal scrolls itself.
+    pub fn slides_output(&self) -> bool {
+        match self.output_animation {
+            OutputAnimation::Auto => self.smooth_scroll,
+            OutputAnimation::Off => false,
+            OutputAnimation::Smooth => true,
+        }
+    }
+}
+
+/// `output-scroll-animation`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputAnimation {
+    /// Follows `terminal-scroll-smooth`.
+    #[default]
+    Auto,
+    Off,
+    Smooth,
+}
+
+/// `cursor-animation`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorAnimation {
+    #[default]
+    Off,
+    Smooth,
+}
+
+/// `terminal-scroll-past-end`: where scrolling down stops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollPastEnd {
+    /// At the bottom of the buffer.
+    #[default]
+    Disabled,
+    /// The last row with text lands at the top.
+    LastLineWithContent,
+    /// …in the middle.
+    LastLineInMiddle,
+    /// The cursor's row lands at the top.
+    CursorLine,
+}
+
+/// `terminal-scroll-past-first-line`: where scrolling up stops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollPastFirst {
+    /// At the top of scrollback.
+    #[default]
+    Disabled,
+    /// The mirror of `terminal-scroll-past-end`.
+    SameAsLastLine,
+    /// The first row of history lands at the bottom.
+    FirstLineWithContent,
+    /// …in the middle.
+    FirstLineInMiddle,
+}
+
+impl OutputAnimation {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "auto" => Self::Auto,
+            "off" => Self::Off,
+            "smooth" => Self::Smooth,
+            _ => return None,
+        })
+    }
+}
+
+impl CursorAnimation {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "off" => Self::Off,
+            "smooth" => Self::Smooth,
+            _ => return None,
+        })
+    }
+}
+
+impl ScrollPastEnd {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "disabled" => Self::Disabled,
+            "last-line-with-content" => Self::LastLineWithContent,
+            "last-line-in-middle" => Self::LastLineInMiddle,
+            "cursor-line" => Self::CursorLine,
+            _ => return None,
+        })
+    }
+}
+
+impl ScrollPastFirst {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "disabled" => Self::Disabled,
+            "same-as-last-line" => Self::SameAsLastLine,
+            "first-line-with-content" => Self::FirstLineWithContent,
+            "first-line-in-middle" => Self::FirstLineInMiddle,
+            _ => return None,
+        })
+    }
+
+    /// What it amounts to, `SameAsLastLine` read through `past_end` (the
+    /// cursor line has no mirror; its nearest is the first line at the
+    /// bottom).
+    pub fn resolve(self, past_end: ScrollPastEnd) -> Self {
+        match (self, past_end) {
+            (Self::SameAsLastLine, ScrollPastEnd::Disabled) => Self::Disabled,
+            (Self::SameAsLastLine, ScrollPastEnd::LastLineInMiddle) => Self::FirstLineInMiddle,
+            (Self::SameAsLastLine, _) => Self::FirstLineWithContent,
+            (other, _) => other,
+        }
+    }
+}
+
 pub fn motty_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".config/motty")
 }
@@ -930,6 +1088,38 @@ impl Config {
                     (_, Some("always_off")) => out.cursor_blink = CursorBlink::AlwaysOff,
                     _ => unknown.push(format!("config.toml {key}: unknown blink policy {value}")),
                 },
+                "cursor-animation" => match value.as_str().and_then(CursorAnimation::parse) {
+                    Some(a) => out.motion.cursor_animation = a,
+                    None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "terminal-scroll-smooth" => {
+                    out.motion.smooth_scroll = value.as_bool().unwrap_or(true)
+                }
+                "output-scroll-animation" => {
+                    match value.as_str().and_then(OutputAnimation::parse) {
+                        Some(a) => out.motion.output_animation = a,
+                        None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                    }
+                }
+                "terminal-scroll-past-end" => match value.as_str().and_then(ScrollPastEnd::parse) {
+                    Some(p) => out.motion.past_end = p,
+                    None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "terminal-scroll-past-first-line" => {
+                    match value.as_str().and_then(ScrollPastFirst::parse) {
+                        Some(p) => out.motion.past_first_line = p,
+                        None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                    }
+                }
+                "terminal-scroll-past-end-sticky" => {
+                    out.motion.past_end_sticky = value.as_bool().unwrap_or(false)
+                }
+                "terminal-scrollbar-hide-on-auto-scroll" => {
+                    out.motion.hide_scrollbar_following = value.as_bool().unwrap_or(false)
+                }
+                "dedup-repaint-scrollback" => {
+                    out.motion.dedup_repaints = value.as_bool().unwrap_or(true)
+                }
                 "cursor-color" => out.cursor_color = color_of(key, value),
                 "cursor-text" => out.cursor_text = color_of(key, value),
                 "privilege-badge-exit-status"
@@ -2229,6 +2419,50 @@ mod tests {
                 assert!(c.warnings.is_empty(), "{line}: {:?}", c.warnings);
             }
         }
+    }
+
+    #[test]
+    fn motion_keys() {
+        let d = Config::parse("").motion;
+        assert_eq!(d, Motion::default());
+        assert!(d.smooth_scroll && d.dedup_repaints && d.slides_output());
+        let c = Config::parse(concat!(
+            "terminal-scroll-smooth = false\n",
+            "cursor-animation = \"smooth\"\n",
+            "terminal-scroll-past-end = \"last-line-in-middle\"\n",
+            "terminal-scroll-past-first-line = \"same-as-last-line\"\n",
+            "terminal-scrollbar-hide-on-auto-scroll = true\n",
+            "dedup-repaint-scrollback = false\n",
+        ));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let m = c.motion;
+        assert!(!m.smooth_scroll && !m.dedup_repaints && m.hide_scrollbar_following);
+        assert_eq!(m.cursor_animation, CursorAnimation::Smooth);
+        assert_eq!(m.past_end, ScrollPastEnd::LastLineInMiddle);
+        assert_eq!(
+            m.past_first_line.resolve(m.past_end),
+            ScrollPastFirst::FirstLineInMiddle
+        );
+        // auto follows smooth scroll; off and smooth override it.
+        assert!(!m.slides_output());
+        let c =
+            Config::parse("terminal-scroll-smooth = false\noutput-scroll-animation = \"smooth\"\n");
+        assert!(c.motion.slides_output());
+        let c = Config::parse("output-scroll-animation = \"off\"\n");
+        assert!(c.motion.smooth_scroll && !c.motion.slides_output());
+        assert!(
+            !Config::parse("cursor-animation = \"bouncy\"\n")
+                .warnings
+                .is_empty()
+        );
+        assert_eq!(
+            ScrollPastFirst::SameAsLastLine.resolve(ScrollPastEnd::Disabled),
+            ScrollPastFirst::Disabled
+        );
+        assert_eq!(
+            ScrollPastFirst::SameAsLastLine.resolve(ScrollPastEnd::CursorLine),
+            ScrollPastFirst::FirstLineWithContent
+        );
     }
 
     #[test]

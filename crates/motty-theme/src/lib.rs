@@ -9,9 +9,10 @@ pub mod theme;
 
 pub use config::{
     AcceptKey, Access, AutoHide, Autocomplete, Badges, Behavior, ColorReport, Config, ConfirmClose,
-    CursorBlink, CursorStyle, EditorPrefs, IconPlacement, LinkClick, LinkShiftClick,
-    NewTabPosition, NewTerminal, NotificationForeground, Replay, RightClick, VtPrefs, WindowLayout,
-    WorkingDir, matches_prefix,
+    CursorAnimation, CursorBlink, CursorStyle, EditorPrefs, IconPlacement, LinkClick,
+    LinkShiftClick, Motion, NewTabPosition, NewTerminal, NotificationForeground, OutputAnimation,
+    Replay, RightClick, ScrollPastEnd, ScrollPastFirst, VtPrefs, WindowLayout, WorkingDir,
+    matches_prefix,
 };
 pub use css::{Border, Edges, Rgba, Shadow};
 pub use details_view::{DetailsView, ViewKind};
