@@ -353,6 +353,10 @@ impl TerminalView {
     }
 
     /// The program's title, else the cwd with `~` for home.
+    pub fn style(&self) -> Rc<TerminalStyle> {
+        self.style.clone()
+    }
+
     pub fn display_title(&self) -> String {
         if let Some(t) = self.title.as_deref().filter(|t| !t.is_empty()) {
             return t.to_owned();

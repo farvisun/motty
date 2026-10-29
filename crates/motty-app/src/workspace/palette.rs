@@ -102,6 +102,17 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("File", "New File Editor", NewFileEditor),
         Command::new("File", "New Web Browser", NewWebBrowser),
         Command::new("File", "New File Browser", NewFileBrowser),
+        Command::new(
+            "View",
+            "Picture in Picture: Current Pane",
+            PictureInPictureCurrentPane,
+        ),
+        Command::new(
+            "View",
+            "Picture in Picture: Follow Active Pane",
+            PictureInPictureFollowActive,
+        ),
+        Command::new("View", "Close Picture in Picture", ClosePictureInPicture),
         Command::new("View", "Switch to Terminal", SwitchToTerminal),
         Command::new("View", "Switch to File Browser", SwitchToFileBrowser),
         Command::new("File", "Open File…", OpenFile),

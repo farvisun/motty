@@ -2339,6 +2339,7 @@ impl Workspace {
     pub(crate) fn snapshot_for_menus(&self, cx: &App) -> crate::menus::Snapshot {
         let mut s = crate::menus::Snapshot {
             pinned: self.pinned,
+            pip: crate::pip::is_open(cx),
             theme: self.theme.meta.name.clone(),
             secure: crate::secure_input::manual(cx),
             ..Default::default()
@@ -3428,6 +3429,19 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_file_editor))
             .on_action(cx.listener(Self::new_web_browser))
             .on_action(cx.listener(Self::new_file_browser))
+            .on_action(
+                cx.listener(|this, _: &PictureInPictureCurrentPane, window, cx| {
+                    match this.focused_pane() {
+                        Some(view) => crate::pip::open(crate::pip::Source::Pane(view), cx),
+                        None => window.play_system_bell(),
+                    }
+                }),
+            )
+            .on_action(cx.listener(|_, _: &PictureInPictureFollowActive, _, cx| {
+                let ws = cx.entity().downgrade();
+                crate::pip::open(crate::pip::Source::Follow(ws), cx)
+            }))
+            .on_action(cx.listener(|_, _: &ClosePictureInPicture, _, cx| crate::pip::close(cx)))
             .on_action(cx.listener(Self::switch_to_file_browser))
             .on_action(cx.listener(Self::switch_to_terminal))
             .on_action(cx.listener(Self::toggle_inbox))

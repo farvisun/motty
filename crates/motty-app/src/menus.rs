@@ -20,6 +20,8 @@ use crate::actions::*;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub pinned: bool,
+    /// Picture in Picture is open.
+    pub pip: bool,
     /// Secure Keyboard Entry turned on by hand.
     pub secure: bool,
     pub pane: Option<u64>,
@@ -538,6 +540,7 @@ fn view_menu(s: &Snapshot, live: &Live) -> Menu {
             MenuItem::action("File Browser", SwitchToFileBrowser),
         ])),
         MenuItem::submenu(Menu::new("Theme").items(themes)),
+        MenuItem::submenu(Menu::new("Picture in Picture").items(pip_items(s))),
         MenuItem::separator(),
         MenuItem::action("Increase Font Size", IncreaseFontSize),
         MenuItem::action("Decrease Font Size", DecreaseFontSize),
@@ -545,6 +548,21 @@ fn view_menu(s: &Snapshot, live: &Live) -> Menu {
         MenuItem::separator(),
         MenuItem::action("Pin Window", PinWindow).checked(s.pinned),
     ])
+}
+
+fn pip_items(s: &Snapshot) -> Vec<MenuItem> {
+    let mut items = vec![
+        MenuItem::action("Current Pane", PictureInPictureCurrentPane),
+        MenuItem::action("Follow Active Pane", PictureInPictureFollowActive),
+    ];
+    if s.pip {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action(
+            "Close Picture in Picture",
+            ClosePictureInPicture,
+        ));
+    }
+    items
 }
 
 /// `~/code/motty`: a path as the menus show it.

@@ -83,6 +83,15 @@ pub fn show_inactive(window: &Window) {
     let _ = window;
 }
 
+/// Picture in Picture: above other apps' windows, on every Space and over
+/// full-screen apps.
+pub fn float_everywhere(window: &Window) {
+    #[cfg(target_os = "macos")]
+    mac::float_everywhere(window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 /// View › Pin Window: keeps the window above other apps' windows.
 pub fn set_pinned(window: &Window, pinned: bool) {
     #[cfg(target_os = "macos")]
@@ -127,6 +136,26 @@ mod mac {
             } else {
                 objc2_app_kit::NSNormalWindowLevel
             });
+        }
+    }
+
+    pub fn float_everywhere(window: &gpui::Window) {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        if let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) {
+            ns_window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
+            ns_window.setCollectionBehavior(B::CanJoinAllSpaces | B::FullScreenAuxiliary);
+            ns_window.setHidesOnDeactivate(false);
+            // Like the system PiP window: hover controls instead of the
+            // traffic lights.
+            for kind in [
+                NSWindowButton::CloseButton,
+                NSWindowButton::MiniaturizeButton,
+                NSWindowButton::ZoomButton,
+            ] {
+                if let Some(button) = ns_window.standardWindowButton(kind) {
+                    button.setHidden(true);
+                }
+            }
         }
     }
 

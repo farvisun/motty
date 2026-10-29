@@ -18,6 +18,7 @@ mod native_menu;
 mod notifications;
 mod panes;
 mod pasteboard;
+mod pip;
 mod preview;
 // Opening another file in place (`open`) isn't used yet.
 #[allow(dead_code)]
