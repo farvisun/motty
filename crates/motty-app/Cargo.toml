@@ -38,6 +38,7 @@ sha2 = "0.10"
 # superset of syntect's defaults), so syntect's own dump isn't linked.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "dump-load", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

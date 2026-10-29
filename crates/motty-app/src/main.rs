@@ -16,6 +16,7 @@ mod native_menu;
 mod notifications;
 mod panes;
 mod pasteboard;
+mod preview;
 mod recipes;
 mod recovery;
 mod secure_input;
