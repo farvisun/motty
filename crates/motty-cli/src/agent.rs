@@ -106,7 +106,7 @@ fn send(
     let mut client = Client::connect()?;
     client.set_timeout(Some(TIMEOUT))?;
     let params = AgentStateParams {
-        pane: PaneRef { pane },
+        pane: PaneRef::id(pane),
         agent: agent.to_owned(),
         state,
         // The hook's parent is the agent.

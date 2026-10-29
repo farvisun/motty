@@ -2,186 +2,171 @@
 //!
 //! Inside a Motty pane, `$MOTTY_SOCKET` and `$MOTTY_PANE_ID` are set, so
 //! commands act on the pane they run in unless `--pane` says otherwise.
+//! The commands follow Otty's (`motty window|tab|pane <verb>`, `view`,
+//! `watch`, `jump`, ...); the flat verbs from before stay as hidden aliases
+//! (see `legacy`).
 
 mod agent;
+mod catalog;
 mod config_cmd;
 mod export;
+mod features;
+mod folders;
 mod fonts;
 mod import;
+mod keys;
+mod legacy;
 mod mcp;
+mod open;
+mod output;
 mod themes;
+mod tree;
+mod watch;
 
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
-use motty_ipc::{
-    ActionParams, Client, Created, Direction, FindParams, FindResult, NewTabParams, OpenParams,
-    PaneInfo, PaneMode, PaneRef, Place, ReadParams, RunParams, RunResult, SendTextParams,
-    SetModeParams, SplitParams, Submit, TextRange, method, skills,
-};
-use serde_json::Value;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use motty_ipc::{IpcError, skills};
+use serde_json::{Value, json};
+
+use output::Ctx;
+
+/// `0.1.0 (1a2b3c4)`: the version and the commit it was built from.
+pub const VERSION: &str = env!("MOTTY_VERSION");
+
+/// The config file `--config-file` points the config commands at.
+pub const CONFIG_FILE_ENV: &str = "MOTTY_CONFIG_FILE";
 
 #[derive(Parser)]
-#[command(name = "motty", version, about = "Control a running Motty terminal")]
+#[command(name = "motty", version = VERSION, about = "Control a running Motty terminal")]
 struct Cli {
-    /// Print JSON instead of text.
+    /// Output format.
+    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
+    format: Format,
+    /// Same as --format json.
     #[arg(long, global = true)]
     json: bool,
+    /// Leave the header row out of tables.
+    #[arg(long, global = true)]
+    no_headers: bool,
+    /// Print nothing on success but what was asked for.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+    /// Talk to the Motty at this socket instead of $MOTTY_SOCKET's.
+    #[arg(long, global = true, value_name = "PATH")]
+    socket: Option<PathBuf>,
+    /// Use this config file instead of Motty's.
+    #[arg(long, global = true, value_name = "PATH")]
+    config_file: Option<PathBuf>,
+    /// How long to wait for the app to answer, in milliseconds (0: forever).
+    #[arg(long, global = true, value_name = "MS", default_value_t = 3000)]
+    timeout: u64,
+    /// Don't ask before destructive actions (and close what Motty would ask
+    /// about).
+    #[arg(short = 'y', long, global = true)]
+    yes: bool,
     #[command(subcommand)]
     command: Command,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Format {
+    Text,
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// List panes in every window.
-    List,
-    /// Print a pane's text.
-    Read {
-        #[arg(long)]
-        pane: Option<u64>,
-        /// The last N lines, scrollback included.
-        #[arg(long, conflicts_with = "last_command")]
-        lines: Option<usize>,
-        /// The output of the last finished command (needs shell integration).
-        #[arg(long)]
-        last_command: bool,
+    /// Motty's windows: list, show, new, close, focus, rename.
+    Window {
+        #[command(subcommand)]
+        cmd: tree::WindowCmd,
     },
-    /// Type text into a pane (add \n yourself to press Return, or use
-    /// --submit). Needs `ipc-allow-send-keys = true`.
-    Send {
-        #[arg(long)]
-        pane: Option<u64>,
-        /// Press Return too: `--submit` when it's the pane's turn (after the
-        /// agent's turn, or at an empty shell prompt), `--submit=now` at once.
-        #[arg(long, value_enum, num_args = 0..=1, require_equals = true, default_missing_value = "queue")]
-        submit: Option<SubmitWhen>,
-        text: String,
+    /// Same as `window list`.
+    Windows,
+    /// Tabs: list, show, new, close, focus, rename, move, badge.
+    Tab {
+        #[command(subcommand)]
+        cmd: tree::TabCmd,
     },
-    /// Block until a pane is done: its agent finished its turn, or its
-    /// shell is back at the prompt, with nothing left in its prompt queue.
-    /// Exits 124 on timeout, 3 when the pane can't tell.
-    Wait {
-        #[arg(long, required_unless_present = "session")]
-        pane: Option<u64>,
-        /// The pane running this agent session.
-        #[arg(long, conflicts_with = "pane")]
-        session: Option<String>,
-        /// Every other pane of that pane's tab.
-        #[arg(long)]
-        tab: bool,
-        #[arg(long)]
-        timeout_secs: Option<f64>,
+    /// Same as `tab list`.
+    Tabs(tree::WindowSel),
+    /// Panes: list, show, split, close, focus, zoom, resize, send-keys,
+    /// send-text, run, exec, wait, capture, link, ...
+    Pane {
+        #[command(subcommand)]
+        cmd: tree::PaneCmd,
     },
-    /// Open a file (in an editor tab), a folder (a shell there) or a URL
-    /// (in the browser).
-    Open {
-        #[arg(long)]
-        pane: Option<u64>,
-        /// A folder in a split beside the pane.
-        #[arg(long, value_enum, conflicts_with_all = ["tab", "window"])]
-        split: Option<Dir>,
-        /// In a new tab (the default).
-        #[arg(long, conflicts_with = "window")]
-        tab: bool,
-        #[arg(long)]
-        window: bool,
-        target: String,
+    /// Same as `pane list`.
+    Panes(tree::TabSel),
+    /// Open a new window, in a folder (default: here); a file or URL opens
+    /// in an editor tab or the browser.
+    Open(open::Open),
+    /// Open a file or an http(s) URL as a pane, read-only.
+    View(open::View),
+    /// Open a file (or URL) as a pane, editable.
+    Edit(open::View),
+    /// Run a command with a spinner on its tab, then a badge and a
+    /// notification (unless -q); exits with its status. `motty
+    /// watch:<agent> <session-id>` instead waits for an agent session.
+    Watch {
+        #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
+    /// Go to the best-ranked folder matching the query (no query: home and
+    /// back).
+    Jump {
+        query: Option<String>,
+        /// Only print the folder.
+        #[arg(long)]
+        no_cd: bool,
+        /// Print `cd:<path>` for the shell integration's `motty` function.
+        #[arg(long, hide = true)]
+        shell_cd: bool,
+    },
+    /// Record a visit to a folder (default: here) for `jump`.
+    Learn { path: Option<String> },
+    /// Forget a folder for `jump`, and stop recording it.
+    Ignore { path: String },
+    /// Key bindings.
+    Keybind {
+        #[command(subcommand)]
+        cmd: catalog::KeybindCmd,
+    },
+    /// Saved recipes: list, apply.
+    Recipe {
+        #[command(subcommand)]
+        cmd: catalog::RecipeCmd,
+    },
+    /// Terminal feature demos: `features list`, `features try <name>` or
+    /// `features <name>`.
+    Features { args: Vec<String> },
+    /// Print a shell completion script.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the version, build and protocol.
+    Version,
     /// The skills Settings › Agents › Skills installs into coding agents.
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
     },
-    /// Run a command line in a pane's shell, wait for it, print its output
-    /// and exit with its status (needs shell integration).
-    Run {
-        #[arg(long)]
-        pane: Option<u64>,
-        /// Give up after this many seconds.
-        #[arg(long)]
-        timeout: Option<f64>,
-        #[arg(trailing_var_arg = true, required = true)]
-        command: Vec<String>,
-    },
-    /// Split a pane; prints the new pane's id.
-    Split {
-        #[arg(long)]
-        pane: Option<u64>,
-        #[arg(long, short, value_enum, default_value = "right")]
-        direction: Dir,
-        #[arg(long)]
-        cwd: Option<String>,
-        /// Keep focus on the current pane.
-        #[arg(long)]
-        no_focus: bool,
-        /// Program and arguments to run instead of a shell.
-        #[arg(trailing_var_arg = true)]
-        command: Vec<String>,
-    },
-    /// Open a tab; prints the new pane's id.
-    NewTab {
-        #[arg(long)]
-        window: Option<usize>,
-        #[arg(long)]
-        cwd: Option<String>,
-        /// Reopen the last closed tab (⇧⌘T) instead.
-        #[arg(long, conflicts_with_all = ["cwd", "command"])]
-        reopen: bool,
-        #[arg(trailing_var_arg = true)]
-        command: Vec<String>,
-    },
-    /// Search a pane's screen and scrollback; prints `line:column: text`
-    /// (negative lines are scrollback). Exits 1 when nothing matches.
-    Find {
-        #[arg(long)]
-        pane: Option<u64>,
-        /// Match case exactly.
-        #[arg(long, short = 'c')]
-        case_sensitive: bool,
-        /// Match whole words only.
-        #[arg(long, short = 'w')]
-        word: bool,
-        /// The query is a regular expression (Rust syntax).
-        #[arg(long, short = 'e')]
-        regex: bool,
-        /// Matches to print.
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-        /// Also open the pane's find bar with the query.
-        #[arg(long)]
-        show: bool,
-        query: String,
-    },
-    /// Put a pane in vi mode, read-only mode, or back to normal.
-    Mode {
-        #[arg(long)]
-        pane: Option<u64>,
-        #[arg(value_enum)]
-        mode: Mode,
-    },
-    /// Quit Motty (saving the session, as ⌘Q does).
-    Quit,
-    /// Focus a pane (and its tab and window).
-    Focus {
-        #[arg(long)]
-        pane: Option<u64>,
-    },
-    /// Run one of Motty's actions in a pane, as its key would (e.g.
-    /// `split_right`, `command_palette`); `--list` prints their names.
-    Action {
-        #[arg(long)]
-        pane: Option<u64>,
-        #[arg(long, conflicts_with = "name")]
-        list: bool,
-        #[arg(required_unless_present = "list")]
-        name: Option<String>,
-    },
-    /// Close a pane.
-    Close {
-        #[arg(long)]
-        pane: Option<u64>,
+    /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
+    /// `claude mcp add motty -- motty mcp`.
+    Mcp,
+    /// Report a coding agent's hook event to Motty (what Motty's installed
+    /// hooks run). Custom agents use `motty state:<name> state=…`.
+    #[command(hide = true)]
+    Hook {
+        agent: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Read and change settings: config.toml and config.local.toml.
     Config {
@@ -203,17 +188,8 @@ enum Command {
     Import(import::ImportArgs),
     /// Write your config for another terminal (ghostty, kitty, alacritty).
     Export(export::ExportArgs),
-    /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
-    /// `claude mcp add motty -- motty mcp`.
-    Mcp,
-    /// Report a coding agent's hook event to Motty (what Motty's installed
-    /// hooks run). Custom agents use `motty state:<name> state=…`.
-    #[command(hide = true)]
-    Hook {
-        agent: String,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    #[command(flatten)]
+    Legacy(legacy::Legacy),
 }
 
 #[derive(Subcommand)]
@@ -224,346 +200,131 @@ enum SkillCommand {
     Show { name: String },
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum SubmitWhen {
-    Queue,
-    Now,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Mode {
-    Normal,
-    Vi,
-    ReadOnly,
-    Hints,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Dir {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-/// `--pane`, else the pane this command runs in.
-fn pane(pane: Option<u64>) -> PaneRef {
-    PaneRef {
-        pane: pane.or_else(|| std::env::var(motty_ipc::PANE_ENV).ok()?.parse().ok()),
+/// The global flags for commands parsed outside clap (`watch:<agent>`).
+fn default_ctx() -> Ctx {
+    Ctx {
+        json: false,
+        no_headers: false,
+        quiet: false,
+        yes: false,
+        socket: None,
+        timeout: Some(Duration::from_millis(3000)),
     }
-}
-
-fn direction(dir: Dir) -> Direction {
-    match dir {
-        Dir::Left => Direction::Left,
-        Dir::Right => Direction::Right,
-        Dir::Up => Direction::Up,
-        Dir::Down => Direction::Down,
-    }
-}
-
-fn argv(command: Vec<String>) -> Option<Vec<String>> {
-    (!command.is_empty()).then_some(command)
 }
 
 fn main() -> ExitCode {
-    // `motty state:myagent state=processing …`, as Otty spells it.
     let args: Vec<String> = std::env::args().collect();
+    // `motty state:myagent state=processing …` and `motty watch:claude
+    // <id>`, as Otty spells them.
     if let Some(name) = args.get(1).and_then(|a| a.strip_prefix("state:")) {
         return agent::state(name, &args[2..]);
     }
-    let cli = Cli::parse();
+    if let Some(name) = args.get(1).and_then(|a| a.strip_prefix("watch:")) {
+        return watch::watch_agent(&default_ctx(), name, &args[2..]);
+    }
+    let cli = Cli::parse_from(legacy::rewrite(args));
+    if let Some(path) = &cli.config_file {
+        // SAFETY: nothing else runs yet; the config commands read it.
+        unsafe { std::env::set_var(CONFIG_FILE_ENV, path) };
+    }
     if let Command::Hook { agent, args } = &cli.command {
         return agent::hook(agent, args);
     }
-    match run(cli) {
+    let ctx = Ctx {
+        json: cli.json || cli.format == Format::Json,
+        no_headers: cli.no_headers,
+        quiet: cli.quiet,
+        yes: cli.yes,
+        socket: cli.socket,
+        timeout: (cli.timeout > 0).then(|| Duration::from_millis(cli.timeout)),
+    };
+    match run(&ctx, cli.command) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("motty: {e:#}");
-            ExitCode::from(2)
+            ExitCode::from(exit_status(&e))
         }
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    match &cli.command {
+/// The status the app asked for (4 when a selector named nothing, as in
+/// Otty), else 2.
+fn exit_status(e: &anyhow::Error) -> u8 {
+    e.downcast_ref::<IpcError>()
+        .and_then(|e| e.code)
+        .map_or(2, |code| code.clamp(1, 255) as u8)
+}
+
+fn run(ctx: &Ctx, command: Command) -> anyhow::Result<ExitCode> {
+    match command {
+        Command::Window { cmd } => tree::window(ctx, cmd),
+        Command::Windows => tree::window(ctx, tree::WindowCmd::List),
+        Command::Tab { cmd } => tree::tab(ctx, cmd),
+        Command::Tabs(sel) => tree::tab(ctx, tree::TabCmd::List(sel)),
+        Command::Pane { cmd } => tree::pane(ctx, cmd),
+        Command::Panes(sel) => tree::pane(ctx, tree::PaneCmd::List { sel }),
+        Command::Open(o) => open::open(ctx, o),
+        Command::View(v) => open::view(ctx, v, false),
+        Command::Edit(v) => open::view(ctx, v, true),
+        Command::Watch { command } => watch::watch(ctx, &command),
+        Command::Jump {
+            query,
+            no_cd,
+            shell_cd,
+        } => folders::jump(ctx, query, no_cd, shell_cd),
+        Command::Learn { path } => folders::learn(ctx, path, false),
+        Command::Ignore { path } => folders::learn(ctx, Some(path), true),
+        Command::Keybind { cmd } => catalog::keybind(ctx, cmd),
+        Command::Recipe { cmd } => catalog::recipe(ctx, cmd),
+        Command::Features { args } => features(ctx, &args),
+        Command::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "motty", &mut std::io::stdout());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Version => catalog::version(ctx),
+        Command::Skill { command } => skill(&command),
         Command::Mcp => {
             mcp::serve()?;
-            return Ok(ExitCode::SUCCESS);
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Skill { command } => return skill(command),
-        Command::Config { command } => return config_cmd::run(command, cli.json),
-        Command::Theme { command } => return themes::run(command, cli.json),
-        Command::Font { command } => return fonts::run(command, cli.json),
-        Command::Import(args) => return import::run(args, cli.json),
-        Command::Export(args) => return export::run(args, cli.json),
-        _ => {}
+        Command::Config { command } => config_cmd::run(&command, ctx.json),
+        Command::Theme { command } => themes::run(&command, ctx.json),
+        Command::Font { command } => fonts::run(&command, ctx.json),
+        Command::Import(args) => import::run(&args, ctx.json),
+        Command::Export(args) => export::run(&args, ctx.json),
+        Command::Hook { .. } => unreachable!("handled in main"),
+        Command::Legacy(cmd) => legacy::run(ctx, cmd),
     }
-    let mut client = Client::connect()?;
-    let json = cli.json;
-    let print = |value: &Value| {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(value).unwrap_or_default()
-        )
+}
+
+/// `features`, `features list`, `features try <name>`, `features <name>`.
+fn features(ctx: &Ctx, args: &[String]) -> anyhow::Result<ExitCode> {
+    let name = match args {
+        [] => None,
+        [list] if list == "list" => None,
+        [try_, name] if try_ == "try" => Some(name),
+        [name] => Some(name),
+        _ => anyhow::bail!("usage: motty features [list | try <name> | <name>]"),
     };
-    match cli.command {
-        Command::List => {
-            let panes: Vec<PaneInfo> = client.call(method::LIST_PANES, &Value::Null)?;
-            if json {
-                print(&serde_json::to_value(&panes)?);
-            } else {
-                for p in panes {
-                    // `[claude: awaiting] Approve Bash: rm -rf target/`
-                    let state = match (&p.agent, &p.badge) {
-                        (Some(a), Some(b)) => format!("  [{a}: {b}]"),
-                        (Some(a), None) => format!("  [{a}]"),
-                        (None, Some(b)) => format!("  [{b}]"),
-                        (None, None) => String::new(),
-                    };
-                    let status = p
-                        .status
-                        .as_deref()
-                        .map(|s| format!(" {s}"))
-                        .unwrap_or_default();
-                    println!(
-                        "{:>4}  w{} t{}  {}{:<10}  {}{state}{status}",
-                        p.id,
-                        p.window,
-                        p.tab,
-                        if p.focused { "*" } else { " " },
-                        p.process.as_deref().unwrap_or("-"),
-                        p.cwd.as_deref().unwrap_or(&p.title),
-                    );
-                }
-            }
-        }
-        Command::Read {
-            pane: id,
-            lines,
-            last_command,
-        } => {
-            let range = match (lines, last_command) {
-                (_, true) => TextRange::LastCommand,
-                (Some(n), _) => TextRange::Lines(n),
-                _ => TextRange::Screen,
-            };
-            let out: Value = client.call(
-                method::READ,
-                &ReadParams {
-                    pane: pane(id),
-                    range,
-                },
-            )?;
-            if json {
-                print(&out);
-            } else {
-                println!("{}", out["text"].as_str().unwrap_or_default());
-            }
-        }
-        Command::Send {
-            pane: id,
-            submit,
-            text,
-        } => {
-            let submit = submit.map(|s| match s {
-                SubmitWhen::Queue => Submit::Queue,
-                SubmitWhen::Now => Submit::Now,
-            });
-            let _: Value = client.call(
-                method::SEND_TEXT,
-                &SendTextParams {
-                    pane: pane(id),
-                    text,
-                    submit,
-                },
-            )?;
-        }
-        Command::Wait {
-            pane: id,
-            session,
-            tab,
-            timeout_secs,
-        } => {
-            let deadline = timeout_secs.map(|s| Instant::now() + Duration::from_secs_f64(s));
-            return wait(&mut client, id, session.as_deref(), tab, deadline);
-        }
-        Command::Open {
-            pane: id,
-            split,
-            tab: _,
-            window,
-            target,
-        } => {
-            let target = if target.contains("://") || target.starts_with("mailto:") {
-                target
-            } else {
-                let path = std::path::absolute(&target)?;
-                anyhow::ensure!(path.exists(), "no such file or folder: {target}");
-                path.display().to_string()
-            };
-            let place = match (split, window) {
-                (Some(dir), _) => Place::Split(direction(dir)),
-                (None, true) => Place::Window,
-                (None, false) => Place::Tab,
-            };
-            let created: Option<Created> = client.call(
-                method::OPEN,
-                &OpenParams {
-                    pane: pane(id),
-                    target,
-                    place,
-                },
-            )?;
-            if let Some(created) = created {
-                println!("{}", created.pane);
-            }
-        }
-        Command::Run {
-            pane: id,
-            timeout,
-            command,
-        } => {
-            let timeout_ms = timeout.map(|s| (s * 1000.) as u64);
-            if let Some(ms) = timeout_ms {
-                // The app answers with a timeout error; this is a backstop.
-                client.set_timeout(Some(Duration::from_millis(ms + 2000)))?;
-            }
-            let params = RunParams {
-                pane: pane(id),
-                command: command.join(" "),
-                timeout_ms,
-            };
-            let result: RunResult = client.call(method::RUN, &params).context("run")?;
-            if json {
-                print(&serde_json::to_value(&result)?);
-            } else if !result.output.is_empty() {
-                println!("{}", result.output);
-            }
-            return Ok(ExitCode::from(result.exit.unwrap_or(0).clamp(0, 255) as u8));
-        }
-        Command::Split {
-            pane: id,
-            direction: direction_arg,
-            cwd,
-            no_focus,
-            command,
-        } => {
-            let params = SplitParams {
-                pane: pane(id),
-                direction: direction(direction_arg),
-                command: argv(command),
-                cwd,
-                no_focus,
-            };
-            let created: Created = client.call(method::SPLIT, &params)?;
-            println!("{}", created.pane);
-        }
-        Command::NewTab {
-            window,
-            cwd,
-            reopen,
-            command,
-        } => {
-            let created: Created = client.call(
-                method::NEW_TAB,
-                &NewTabParams {
-                    window,
-                    command: argv(command),
-                    cwd,
-                    reopen,
-                },
-            )?;
-            println!("{}", created.pane);
-        }
-        Command::Find {
-            pane: id,
-            case_sensitive,
-            word,
-            regex,
-            limit,
-            show,
-            query,
-        } => {
-            let params = FindParams {
-                pane: pane(id),
-                query,
-                case_sensitive,
-                whole_word: word,
-                regex,
-                limit: Some(limit),
-                show,
-            };
-            let result: FindResult = client.call(method::FIND, &params)?;
-            if json {
-                print(&serde_json::to_value(&result)?);
-            } else {
-                for m in &result.matches {
-                    println!("{}:{}: {}", m.line, m.column + 1, m.line_text);
-                }
-                if result.total > result.matches.len() {
-                    eprintln!("({} more)", result.total - result.matches.len());
-                }
-            }
-            if result.total == 0 {
-                return Ok(ExitCode::from(1));
-            }
-        }
-        Command::Mode { pane: id, mode } => {
-            let mode = match mode {
-                Mode::Normal => PaneMode::Normal,
-                Mode::Vi => PaneMode::Vi,
-                Mode::ReadOnly => PaneMode::ReadOnly,
-                Mode::Hints => PaneMode::Hints,
-            };
-            let params = SetModeParams {
-                pane: pane(id),
-                mode,
-            };
-            let _: Value = client.call(method::SET_MODE, &params)?;
-        }
-        Command::Quit => {
-            let _: Value = client.call(method::QUIT, &Value::Null)?;
-        }
-        Command::Focus { pane: id } => {
-            let _: Value = client.call(method::FOCUS, &pane(id))?;
-        }
-        Command::Action {
-            pane: id,
-            list: true,
-            ..
-        } => {
-            let _ = id;
-            let names: Vec<String> = client.call(method::LIST_ACTIONS, &Value::Null)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&names)?);
-            } else {
-                for name in names {
-                    println!("{name}");
-                }
-            }
-        }
-        Command::Action { pane: id, name, .. } => {
-            let params = ActionParams {
-                pane: pane(id),
-                name: name.unwrap_or_default(),
-            };
-            let _: Value = client.call(method::ACTION, &params)?;
-        }
-        Command::Close { pane: id } => {
-            let _: Value = client.call(method::CLOSE, &pane(id))?;
-        }
-        Command::Mcp
-        | Command::Hook { .. }
-        | Command::Skill { .. }
-        | Command::Config { .. }
-        | Command::Theme { .. }
-        | Command::Font { .. }
-        | Command::Import(_)
-        | Command::Export(_) => {
-            unreachable!("handled above")
-        }
-    }
+    let Some(name) = name else {
+        let list: Vec<Value> = features::FEATURES
+            .iter()
+            .map(|f| json!({ "name": f.name, "description": f.description }))
+            .collect();
+        ctx.print(&list, || {
+            let rows: Vec<Vec<String>> = features::FEATURES
+                .iter()
+                .map(|f| vec![f.name.to_owned(), f.description.to_owned()])
+                .collect();
+            ctx.table(&["NAME", "DESCRIPTION"], &rows);
+        });
+        return Ok(ExitCode::SUCCESS);
+    };
+    let feature = features::find(name)
+        .with_context(|| format!("no feature {name:?} (see `motty features list`)"))?;
+    let mut out = std::io::stdout().lock();
+    features::play(feature, &mut out, false)?;
+    out.flush()?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -585,64 +346,108 @@ fn skill(command: &SkillCommand) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Polls the panes until every one waited on is done (or gone).
-fn wait(
-    client: &mut Client,
-    pane_id: Option<u64>,
-    session: Option<&str>,
-    tab: bool,
-    deadline: Option<Instant>,
-) -> anyhow::Result<ExitCode> {
-    let me: Option<u64> = std::env::var(motty_ipc::PANE_ENV)
-        .ok()
-        .and_then(|p| p.parse().ok());
-    let mut first = true;
-    loop {
-        let panes: Vec<PaneInfo> = client.call(method::LIST_PANES, &Value::Null)?;
-        let target = panes.iter().find(|p| match session {
-            Some(s) => p.session.as_deref() == Some(s),
-            None => Some(p.id) == pane_id,
-        });
-        let Some(target) = target else {
-            anyhow::ensure!(
-                !first,
-                "no such {}",
-                if session.is_some() { "session" } else { "pane" }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cli_is_well_formed() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn flat_verbs_are_hidden_and_still_parse() {
+        let help = Cli::command().render_long_help().to_string();
+        for verb in ["window", "pane", "tab", "watch", "jump", "features"] {
+            assert!(help.contains(verb), "{verb} missing from help");
+        }
+        for hidden in ["new-tab", "  send ", "  quit "] {
+            assert!(!help.contains(hidden), "{hidden} shows in help");
+        }
+        for line in [
+            "motty list",
+            "motty read --pane 3 --lines 20",
+            "motty send --pane 3 --submit hi",
+            "motty run --pane 3 --timeout 5 make test",
+            "motty split --direction down htop",
+            "motty new-tab --cwd /tmp",
+            "motty wait --pane 3 --tab --timeout-secs 1",
+            "motty find -e foo.*",
+            "motty mode vi",
+            "motty quit",
+            "motty focus --pane 2",
+            "motty action --list",
+            "motty close --pane 2",
+            "motty open README.md --split right",
+        ] {
+            let args = legacy::rewrite(line.split(' ').map(str::to_owned).collect());
+            assert!(Cli::try_parse_from(args).is_ok(), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_tree_parses() {
+        for line in [
+            "motty --json panes",
+            "motty pane split --direction right --command htop --size 30",
+            "motty pane resize --right 10 --down 5",
+            "motty pane send-keys --pane 3 -- echo-hi key:Enter",
+            "motty pane capture --pane 2 --lines 50",
+            "motty tab badge --kind awaiting-input",
+            "motty tab badge --clear",
+            "motty pane wait --tab",
+            "motty pane wait --tab t_4 --timeout-secs 300",
+            "motty pane link 12 --line 1204",
+            "motty pane focus motty://pane/12?line=4",
+            "motty window rename --window title:api API",
+            "motty tab move --tab 2 --to-window w_1 --index 1",
+            "motty view --right tail.log",
+            "motty edit src/lib.rs --mode view",
+            "motty watch -q cargo test",
+            "motty watch -- make -j4",
+            "motty jump api --no-cd",
+            "motty recipe apply Dev --new-window --cwd /tmp",
+            "motty keybind list --action split",
+            "motty features try true-color",
+            "motty completions zsh",
+            "motty --timeout 500 --socket /tmp/s.sock version",
+            "motty open . --command vim --title Editor",
+            // The README's examples.
+            "motty pane exec -- cargo test",
+            "motty pane capture --last-command",
+            "motty pane split -d down --command htop",
+            "motty pane send-keys --pane 3 -- q key:Enter",
+            "motty pane wait --pane 3 --tab",
+            "motty pane mode read-only --pane 3",
+            "motty pane find -e error",
+            "motty pane link --last-command",
+            "motty tab new --cwd /tmp",
+            "motty tab close --tab t_4",
+            "motty window list",
+            "motty view --right build.log",
+            "motty edit src/main.rs",
+            "motty watch -- cargo build",
+            "motty pane action split_right",
+            "motty pane action --list",
+        ] {
+            assert!(
+                Cli::try_parse_from(line.split(' ')).is_ok(),
+                "{line}: {}",
+                Cli::try_parse_from(line.split(' '))
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default()
             );
-            // It closed: nothing left to wait for.
-            return Ok(ExitCode::SUCCESS);
-        };
-        let waited: Vec<&PaneInfo> = if tab {
-            panes
-                .iter()
-                .filter(|p| p.window == target.window && p.tab == target.tab)
-                .filter(|p| Some(p.id) != me)
-                .collect()
-        } else {
-            vec![target]
-        };
-        let mut done = true;
-        for p in waited {
-            match p.idle() {
-                Some(idle) => done &= idle,
-                None => {
-                    eprintln!(
-                        "motty: pane {} can't report when it's done: it runs no coding agent \
-                         Motty knows of and its shell has no shell integration",
-                        p.id
-                    );
-                    return Ok(ExitCode::from(3));
-                }
-            }
         }
-        if done {
-            return Ok(ExitCode::SUCCESS);
-        }
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            eprintln!("motty: timed out");
-            return Ok(ExitCode::from(124));
-        }
-        first = false;
-        std::thread::sleep(Duration::from_millis(250));
+        assert!(Cli::try_parse_from("motty pane split --size 95".split(' ')).is_err());
+        assert!(Cli::try_parse_from("motty tab badge --kind shiny".split(' ')).is_err());
+    }
+
+    #[test]
+    fn no_match_exits_4() {
+        let e: anyhow::Error = IpcError::no_match("pane", "p_9").into();
+        assert_eq!(exit_status(&e), 4);
+        assert_eq!(e.to_string(), "No pane matched selector p_9");
+        assert_eq!(exit_status(&anyhow::anyhow!("other")), 2);
     }
 }

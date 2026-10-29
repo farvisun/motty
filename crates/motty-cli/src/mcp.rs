@@ -170,13 +170,11 @@ fn caller_pane() -> Option<u64> {
 fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
     let mut client = Client::connect()?;
     let pane = || -> anyhow::Result<PaneRef> {
-        Ok(PaneRef {
-            pane: Some(
-                args["pane"]
-                    .as_u64()
-                    .context("`pane` (an id from list_panes) is required")?,
-            ),
-        })
+        Ok(PaneRef::id(Some(
+            args["pane"]
+                .as_u64()
+                .context("`pane` (an id from list_panes) is required")?,
+        )))
     };
     let strings = |v: &Value| -> Option<Vec<String>> {
         v.as_array().map(|a| {
@@ -282,23 +280,22 @@ fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
                 _ => Direction::Right,
             };
             let params = SplitParams {
-                pane: PaneRef {
-                    pane: args["pane"].as_u64().or_else(caller_pane),
-                },
+                pane: PaneRef::id(args["pane"].as_u64().or_else(caller_pane)),
                 direction,
                 command: strings(&args["command"]).filter(|c| !c.is_empty()),
                 cwd: args["cwd"].as_str().map(str::to_owned),
                 no_focus: args["focus"].as_bool() != Some(true),
+                size: None,
+                line: None,
             };
             let created: Created = client.call(method::SPLIT, &params)?;
             Ok(format!("new pane {}", created.pane))
         }
         "new_tab" => {
             let params = NewTabParams {
-                window: None,
                 command: strings(&args["command"]).filter(|c| !c.is_empty()),
                 cwd: args["cwd"].as_str().map(str::to_owned),
-                reopen: false,
+                ..Default::default()
             };
             let created: Created = client.call(method::NEW_TAB, &params)?;
             Ok(format!("new pane {}", created.pane))

@@ -12,9 +12,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 dirs.workspace = true
 # Reads font files for `motty font` (already in the tree through the app).
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
+libc = "0.2"
 motty-ipc.workspace = true
 motty-theme.workspace = true
 serde.workspace = true
