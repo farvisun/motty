@@ -19,6 +19,8 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 mod graphemes;
+/// Pointer shapes programs ask for with OSC 22.
+pub use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 pub mod input;
 pub mod links;
 mod pty_loop;

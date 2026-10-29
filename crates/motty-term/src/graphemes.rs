@@ -31,6 +31,8 @@ impl Cluster {
 pub struct Graphemes<'a, T: EventListener> {
     pub term: &'a mut Term<T>,
     pub cluster: &'a mut Cluster,
+    /// The pointer shape a program asked for (OSC 22), until taken.
+    pub pointer: &'a mut Option<CursorIcon>,
 }
 
 impl<T: EventListener> Graphemes<'_, T> {
@@ -335,7 +337,7 @@ impl<T: EventListener> Handler for Graphemes<'_, T> {
     }
     fn set_mouse_cursor_icon(&mut self, a0: CursorIcon) {
         self.cluster.clear();
-        self.term.set_mouse_cursor_icon(a0);
+        *self.pointer = Some(a0);
     }
     fn report_keyboard_mode(&mut self) {
         self.cluster.clear();
@@ -391,6 +393,7 @@ mod tests {
             &mut Graphemes {
                 term: &mut term,
                 cluster: &mut cluster,
+                pointer: &mut None,
             },
             text.as_bytes(),
         );
@@ -399,6 +402,28 @@ mod tests {
 
     fn cursor_column(term: &Term<VoidListener>) -> usize {
         term.grid().cursor.point.column.0
+    }
+
+    #[test]
+    fn osc_22_sets_the_pointer() {
+        let size = GridSize {
+            cols: 20,
+            rows: 2,
+            cell_width: 8.,
+            cell_height: 16.,
+        };
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut pointer = None;
+        let mut parser: Processor = Processor::new();
+        parser.advance(
+            &mut Graphemes {
+                term: &mut term,
+                cluster: &mut Cluster::default(),
+                pointer: &mut pointer,
+            },
+            b"\x1b]22;pointer\x07ab",
+        );
+        assert_eq!(pointer, Some(CursorIcon::Pointer));
     }
 
     #[test]

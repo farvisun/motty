@@ -906,7 +906,10 @@ impl Render for TerminalView {
             .cursor(if self.hovered_link.is_some() {
                 gpui::CursorStyle::PointingHand
             } else {
-                gpui::CursorStyle::IBeam
+                self.session
+                    .shell()
+                    .pointer
+                    .map_or(gpui::CursorStyle::IBeam, pointer_style)
             })
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
@@ -1148,4 +1151,33 @@ pub fn shell_escape(text: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// The macOS pointer for a shape a program set with OSC 22 (CSS names).
+fn pointer_style(icon: motty_term::CursorIcon) -> gpui::CursorStyle {
+    use gpui::CursorStyle as S;
+    use motty_term::CursorIcon as I;
+    match icon {
+        I::Text => S::IBeam,
+        I::VerticalText => S::IBeamCursorForVerticalLayout,
+        I::Pointer => S::PointingHand,
+        I::Crosshair | I::Cell => S::Crosshair,
+        I::Grab | I::Move | I::AllScroll => S::OpenHand,
+        I::Grabbing => S::ClosedHand,
+        I::NotAllowed | I::NoDrop => S::OperationNotAllowed,
+        I::Alias => S::DragLink,
+        I::Copy => S::DragCopy,
+        I::ContextMenu => S::ContextualMenu,
+        I::EResize => S::ResizeRight,
+        I::WResize => S::ResizeLeft,
+        I::NResize => S::ResizeUp,
+        I::SResize => S::ResizeDown,
+        I::EwResize => S::ResizeLeftRight,
+        I::NsResize => S::ResizeUpDown,
+        I::NwseResize | I::NwResize | I::SeResize => S::ResizeUpLeftDownRight,
+        I::NeswResize | I::NeResize | I::SwResize => S::ResizeUpRightDownLeft,
+        I::ColResize => S::ResizeColumn,
+        I::RowResize => S::ResizeRow,
+        _ => S::Arrow,
+    }
 }

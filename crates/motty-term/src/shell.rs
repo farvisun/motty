@@ -166,6 +166,8 @@ pub struct ShellState {
     /// Whether the shell has sent any OSC 133 mark.
     pub integrated: bool,
     pub progress: Option<Progress>,
+    /// The pointer shape a program set (OSC 22); a new prompt clears it.
+    pub pointer: Option<alacritty_terminal::vte::ansi::cursor_icon::CursorIcon>,
 }
 
 impl ShellState {
@@ -176,6 +178,7 @@ impl ShellState {
             ShellOsc::Cwd(path) => self.cwd = Some(path.clone()),
             ShellOsc::PromptStart => {
                 self.integrated = true;
+                self.pointer = None;
                 if self.blocks.len() == MAX_BLOCKS {
                     self.blocks.pop_front();
                 }

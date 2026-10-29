@@ -61,6 +61,8 @@ pub struct PtyLoop {
     proxy: EventProxy,
     parser: ansi::Processor,
     cluster: Cluster,
+    /// OSC 22's pointer shape, on its way to `shell`.
+    pointer: Option<alacritty_terminal::vte::ansi::cursor_icon::CursorIcon>,
     /// Runs beside `parser` to catch the shell-integration OSCs it drops.
     osc_parser: alacritty_terminal::vte::Parser,
     sniffer: OscSniffer,
@@ -92,6 +94,7 @@ impl PtyLoop {
             proxy,
             parser: ansi::Processor::new(),
             cluster: Cluster::default(),
+            pointer: None,
             osc_parser: alacritty_terminal::vte::Parser::new(),
             sniffer: OscSniffer::default(),
             shell,
@@ -216,9 +219,15 @@ impl PtyLoop {
                 let mut handler = Graphemes {
                     term: &mut **term,
                     cluster: &mut self.cluster,
+                    pointer: &mut self.pointer,
                 };
                 self.parser.advance(&mut handler, &buf[pos..end]);
                 pos = end;
+                if let Some(icon) = self.pointer.take()
+                    && let Ok(mut shell) = self.shell.lock()
+                {
+                    shell.pointer = Some(icon);
+                }
                 if let Some(osc) = self.sniffer.take() {
                     record_osc(osc, term, &self.shell, &self.proxy);
                 }
