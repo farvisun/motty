@@ -431,7 +431,15 @@ impl Session {
         while bottom > cursor && term.grid()[bottom].is_clear() {
             bottom -= 1;
         }
-        let top = Line((bottom.0 - n as i32 + 1).max(term.topmost_line().0));
+        // Saturating, so `usize::MAX` means everything.
+        let n = i32::try_from(n).unwrap_or(i32::MAX);
+        let top = Line(
+            bottom
+                .0
+                .saturating_sub(n)
+                .saturating_add(1)
+                .max(term.topmost_line().0),
+        );
         text_between(&term, top, bottom)
             .trim_end_matches('\n')
             .to_owned()
@@ -524,6 +532,25 @@ impl Session {
     /// Working directory of the foreground process.
     pub fn foreground_cwd(&self) -> Option<PathBuf> {
         process_cwd(self.foreground_pid()?)
+    }
+
+    /// The PTY's device, e.g. `/dev/ttys003`.
+    #[cfg(target_os = "macos")]
+    pub fn tty(&self) -> Option<String> {
+        let mut name = [0 as libc::c_char; 128];
+        // SAFETY: TIOCPTYGNAME writes a NUL-terminated name of at most 128
+        // bytes into the buffer.
+        if unsafe { libc::ioctl(self.master_fd, libc::TIOCPTYGNAME as _, name.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: the kernel NUL-terminated it.
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        Some(name.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn tty(&self) -> Option<String> {
+        None
     }
 }
 
