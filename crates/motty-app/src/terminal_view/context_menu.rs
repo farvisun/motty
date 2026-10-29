@@ -286,7 +286,11 @@ impl TerminalView {
         if let Some(block) = self.block_at(at) {
             let mut about = Vec::new();
             let text = block.command.unwrap_or_else(|| "Command".into());
-            about.push(Item::new(truncate(&text, 60)).enabled(false).into());
+            let label = match &block.ran_at {
+                Some(at) => format!("{} — {at}", truncate(&text, 50)),
+                None => truncate(&text, 60),
+            };
+            about.push(Item::new(label).enabled(false).into());
             picks.push(Pick::Copy(String::new()));
             about.push(Item::new(block.status).enabled(false).into());
             picks.push(Pick::Copy(String::new()));
@@ -351,6 +355,8 @@ impl TerminalView {
 /// The command under a right-click, for About This Line.
 struct BlockInfo {
     command: Option<String>,
+    /// `14:32:05`: when it started.
+    ran_at: Option<String>,
     status: String,
     output: Option<String>,
 }
@@ -383,6 +389,7 @@ impl TerminalView {
         drop(shell);
         Some(BlockInfo {
             command: self.session.block_command(&block),
+            ran_at: block.started.map(crate::workspace::clock_time),
             status,
             output: self.session.block_output(&block),
         })

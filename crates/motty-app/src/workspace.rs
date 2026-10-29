@@ -2184,6 +2184,7 @@ impl Workspace {
                     exit: b.exit,
                     duration: b.duration(),
                     running: b.started.is_some() && b.finished.is_none(),
+                    ran_at: b.started.map(clock_time),
                 })
             });
             s.agent = v
@@ -2355,6 +2356,21 @@ fn restore_banner(
         banner_time(restored)
     ));
     out.into_bytes()
+}
+
+/// `14:32:05`, local time, for a moment in this run.
+pub(crate) fn clock_time(at: std::time::Instant) -> String {
+    let when = std::time::SystemTime::now() - at.elapsed();
+    let secs = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as libc::time_t);
+    // SAFETY: localtime_r writes into the struct we pass.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&secs, &mut tm);
+        tm
+    };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 /// `Wed Oct 29 14:32`, local time.

@@ -48,6 +48,8 @@ pub struct LastCommand {
     pub exit: Option<i32>,
     pub duration: Option<Duration>,
     pub running: bool,
+    /// `14:32:05`: when it started.
+    pub ran_at: Option<String>,
 }
 
 /// What's looked up in the background: the repository and the ports.
@@ -560,10 +562,11 @@ fn shell_menu(s: &Snapshot, live: &Live) -> Menu {
 fn about_line(s: &Snapshot) -> Menu {
     let mut items = Vec::new();
     if let Some(last) = &s.last {
-        items.push(MenuItem::action(
-            truncate(&last.text, 60),
-            RevealRow { row: last.row },
-        ));
+        let label = match &last.ran_at {
+            Some(at) => format!("{} — {at}", truncate(&last.text, 50)),
+            None => truncate(&last.text, 60),
+        };
+        items.push(MenuItem::action(label, RevealRow { row: last.row }));
         let status = if last.running {
             "Running".to_owned()
         } else {
