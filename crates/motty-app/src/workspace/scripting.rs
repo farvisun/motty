@@ -5,7 +5,7 @@
 use gpui::{App, Context, Entity, Window};
 
 use super::tabs::TabName;
-use super::{Tab, Workspace, tab_title};
+use super::{Tab, Workspace};
 use crate::terminal_view::TerminalView;
 
 /// A tab as scripts see it.
@@ -61,14 +61,6 @@ impl Workspace {
             pane: script_pane(tab)?.clone(),
             selected: true,
         })
-    }
-
-    /// What the titlebar shows.
-    pub(crate) fn script_title(&self, cx: &App) -> String {
-        self.tabs
-            .get(self.active)
-            .map(|tab| tab_title(tab, cx))
-            .unwrap_or_default()
     }
 
     /// The name given with Rename Tab (or by a script), else "".

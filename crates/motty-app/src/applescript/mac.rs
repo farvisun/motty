@@ -577,7 +577,7 @@ unsafe extern "C-unwind" fn window_name(this: &AnyObject, _: Sel) -> *mut AnyObj
     answer(with_app(|cx| {
         let handle = handle_of(as_window(this)?, cx)?;
         let workspace = handle.read(cx).map_err(|_| ScriptError::no_window())?;
-        Ok(NSString::from_str(&workspace.script_title(cx)))
+        Ok(NSString::from_str(&workspace.title(cx)))
     }))
 }
 
