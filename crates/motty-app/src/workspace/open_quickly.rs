@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use gpui::{
-    AnyWindowHandle, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla, KeyDownEvent,
+    AnyWindowHandle, ClipboardItem, Context, Entity, FocusHandle, Hsla, KeyDownEvent,
     ModifiersChangedEvent, MouseButton, ScrollHandle, SharedString, Task, Window, div, prelude::*,
     px,
 };
@@ -67,8 +67,10 @@ pub(super) struct OpenQuickly {
     filter: Filter,
     selected: usize,
     scroll: ScrollHandle,
-    /// The pane that had focus: Current and Files are about it.
-    target: Entity<TerminalView>,
+    /// The pane that had focus: Current is about it. None over an editor.
+    target: Option<Entity<TerminalView>>,
+    /// Where focus goes back to.
+    back: FocusHandle,
     /// Files in the target's folder, newest first, once listed.
     files: Option<(PathBuf, Vec<PathBuf>)>,
     _list_files: Option<Task<()>>,
@@ -398,14 +400,15 @@ impl Workspace {
             oq.selected = 0;
             return cx.notify();
         }
-        let Some(target) = self.focused_pane() else {
+        let Some(back) = self.active_focus(cx) else {
             return;
         };
+        let target = self.focused_pane();
         self.palette = None;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // Files are listed in the background; the list fills in when done.
-        let list = target.read(cx).cwd.clone().map(|dir| {
+        let list = self.active_folder(cx).map(|dir| {
             cx.spawn(async move |this, cx| {
                 let files = cx
                     .background_spawn({
@@ -441,6 +444,7 @@ impl Workspace {
             selected: 0,
             scroll: ScrollHandle::new(),
             target,
+            back,
             files: None,
             _list_files: list,
             sessions: None,
@@ -452,7 +456,7 @@ impl Workspace {
 
     fn close_open_quickly(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(oq) = self.open_quickly.take() {
-            window.focus(&oq.target.focus_handle(cx), cx);
+            window.focus(&oq.back, cx);
         }
         cx.notify();
     }
@@ -611,8 +615,10 @@ impl Workspace {
             );
         }
 
-        if wants(Filter::Current) {
-            let view = oq.target.read(cx);
+        if wants(Filter::Current)
+            && let Some(view) = &oq.target
+        {
+            let view = view.read(cx);
             let session = view.session();
             let blocks: Vec<_> = session
                 .shell()
@@ -766,21 +772,40 @@ impl Workspace {
                     tracing::warn!("{e:#}");
                 }
             }
-            Target::Folder(path) => self.run_in_pane(
-                &target,
-                &format!("cd -- {}", shell_quote(&path.to_string_lossy())),
-                Some(path),
-                window,
-                cx,
-            ),
-            Target::Ssh(host) => self.run_in_pane(
-                &target,
-                &format!("ssh {}", shell_quote(&host)),
-                None,
-                window,
-                cx,
-            ),
-            Target::Row(row) => target.update(cx, |view, cx| view.reveal_row(row, cx)),
+            // Over an editor, folders and hosts open in a new tab.
+            Target::Folder(path) => match &target {
+                Some(target) => self.run_in_pane(
+                    target,
+                    &format!("cd -- {}", shell_quote(&path.to_string_lossy())),
+                    Some(path),
+                    window,
+                    cx,
+                ),
+                None => {
+                    if let Err(e) = self.add_tab(None, Some(path), window, cx) {
+                        tracing::error!("failed to open a tab: {e:#}");
+                    }
+                }
+            },
+            Target::Ssh(host) => match &target {
+                Some(target) => self.run_in_pane(
+                    target,
+                    &format!("ssh {}", shell_quote(&host)),
+                    None,
+                    window,
+                    cx,
+                ),
+                None => {
+                    if let Err(e) = self.connect_to_host(&host, window, cx) {
+                        tracing::error!("failed to open a tab: {e:#}");
+                    }
+                }
+            },
+            Target::Row(row) => {
+                if let Some(target) = target {
+                    target.update(cx, |view, cx| view.reveal_row(row, cx))
+                }
+            }
             Target::Session(s) => self.resume_session(
                 &ResumeSession {
                     agent: s.agent.to_owned(),

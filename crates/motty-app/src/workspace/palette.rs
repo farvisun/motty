@@ -4,8 +4,8 @@
 //! [`super::picker`].
 
 use gpui::{
-    Action, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyDownEvent, Keystroke,
-    MouseButton, ScrollHandle, SharedString, Window, div, prelude::*, px,
+    Action, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton,
+    ScrollHandle, SharedString, Window, div, prelude::*, px,
 };
 use motty_render::hsla;
 use motty_theme::{Mode, Rgba};
@@ -28,8 +28,10 @@ pub(super) struct Palette {
     query: String,
     /// Index into the filtered commands.
     selected: usize,
-    /// The pane commands run in.
-    target: Entity<TerminalView>,
+    /// The pane commands run in; None over an editor tab.
+    target: Option<Entity<TerminalView>>,
+    /// Where focus goes back to, and where commands are dispatched from.
+    back: FocusHandle,
     scroll: ScrollHandle,
 }
 
@@ -61,11 +63,10 @@ fn commands(
     sidebar_visible: bool,
     details_visible: bool,
     inbox: bool,
-    target: &TerminalView,
+    target: Option<&TerminalView>,
 ) -> Vec<Command> {
-    let mode = target.mode();
     let mut list = Vec::new();
-    if target.cwd.is_some() {
+    if target.is_some_and(|t| t.cwd.is_some()) {
         list.extend([
             Command::new("Working Directory", "Copy Path", CopyPath),
             Command::new("Working Directory", "Reveal in Finder", RevealInFinder),
@@ -95,6 +96,23 @@ fn commands(
         Command::new("Window", "New Window", NewWindow),
         Command::new("Window", "Close Window", CloseWindow),
         Command::new("Window", "Minimize", Minimize),
+    ]);
+    if let Some(target) = target {
+        terminal_commands(target, &mut list);
+    }
+    list.extend([
+        Command::new("Settings", "Settings…", OpenSettings),
+        Command::new("Settings", "Open Config File", OpenConfigFile),
+        Command::new("Motty", "Welcome Guide", ShowWelcome),
+        Command::new("Motty", "Quit Motty", Quit),
+    ]);
+    merge_groups(list)
+}
+
+/// Commands about the focused terminal pane.
+fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
+    let mode = target.mode();
+    list.extend([
         Command::new("Pane", "Split Right", SplitRight),
         Command::new("Pane", "Split Left", SplitLeft),
         Command::new("Pane", "Split Down", SplitDown),
@@ -164,13 +182,19 @@ fn commands(
             }
         }
     }
-    list.extend([
-        Command::new("Settings", "Settings…", OpenSettings),
-        Command::new("Settings", "Open Config File", OpenConfigFile),
-        Command::new("Motty", "Welcome Guide", ShowWelcome),
-        Command::new("Motty", "Quit Motty", Quit),
-    ]);
-    list
+}
+
+/// Puts each group's commands together, groups in first-appearance order,
+/// so no header shows twice.
+fn merge_groups(list: Vec<Command>) -> Vec<Command> {
+    let mut groups: Vec<(&'static str, Vec<Command>)> = Vec::new();
+    for c in list {
+        match groups.iter_mut().find(|(g, _)| *g == c.group) {
+            Some((_, v)) => v.push(c),
+            None => groups.push((c.group, vec![c])),
+        }
+    }
+    groups.into_iter().flat_map(|(_, v)| v).collect()
 }
 
 /// The commands shown for `query`: all of them grouped, or the matches
@@ -236,9 +260,10 @@ impl Workspace {
         if self.palette.is_some() {
             return self.close_palette(window, cx);
         }
-        let Some(target) = self.focused_pane() else {
+        let Some(back) = self.active_focus(cx) else {
             return;
         };
+        let target = self.focused_pane();
         self.open_quickly = None;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -247,6 +272,7 @@ impl Workspace {
             query: String::new(),
             selected: 0,
             target,
+            back,
             scroll: ScrollHandle::new(),
         });
         cx.notify();
@@ -254,7 +280,7 @@ impl Workspace {
 
     fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(palette) = self.palette.take() {
-            window.focus(&palette.target.focus_handle(cx), cx);
+            window.focus(&palette.back, cx);
         }
         cx.notify();
     }
@@ -268,7 +294,7 @@ impl Workspace {
                 self.sidebar_visible,
                 self.details.visible,
                 self.inbox,
-                palette.target.read(cx),
+                palette.target.as_ref().map(|t| t.read(cx)),
             ),
             &palette.query,
         )
@@ -334,7 +360,7 @@ impl Workspace {
         let Some(command) = self.palette_commands(cx).into_iter().nth(ix) else {
             return;
         };
-        let Some(target) = self.palette.as_ref().map(|p| p.target.focus_handle(cx)) else {
+        let Some(target) = self.palette.as_ref().map(|p| p.back.clone()) else {
             return;
         };
         if !keep {
@@ -388,7 +414,7 @@ impl Workspace {
         let palette = self.palette.as_ref()?;
         let t = &self.theme;
         let c = Colors::new(t);
-        let target = palette.target.focus_handle(cx);
+        let target = palette.back.clone();
         let commands = self.palette_commands(cx);
         let grouped = palette.query.trim().is_empty();
         let selected = palette.selected.min(commands.len().saturating_sub(1));

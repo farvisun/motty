@@ -884,6 +884,14 @@ impl Workspace {
         }
     }
 
+    /// What has focus in the active tab: its focused pane or its editor.
+    fn active_focus(&self, cx: &App) -> Option<gpui::FocusHandle> {
+        Some(match &self.tabs.get(self.active)?.content {
+            Content::Terminals(t) => t.focused.focus_handle(cx),
+            Content::Editor(e) => e.focus_handle(cx),
+        })
+    }
+
     /// The tab holding `view`.
     fn tab_of(&self, view: &Entity<TerminalView>) -> Option<usize> {
         self.tabs
@@ -1052,12 +1060,9 @@ impl Workspace {
         self.clear_seen(ix, cx);
         cx.defer(crate::menus::refresh);
         cx.defer(refresh_dock);
-        let tab = &self.tabs[ix];
-        let focus = match &tab.content {
-            Content::Terminals(t) => t.focused.focus_handle(cx),
-            Content::Editor(e) => e.focus_handle(cx),
-        };
-        window.focus(&focus, cx);
+        if let Some(focus) = self.active_focus(cx) {
+            window.focus(&focus, cx);
+        }
         cx.notify();
     }
 

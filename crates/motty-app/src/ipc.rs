@@ -481,6 +481,16 @@ fn action(p: ActionParams, cx: &mut App) -> anyhow::Result<Value> {
     let action = cx
         .build_action(&format!("motty::{pascal}"), None)
         .map_err(|_| anyhow::anyhow!("no action {} (see `motty action --list`)", p.name))?;
+    // Over an editor tab, the action goes to whatever has focus.
+    if p.pane.pane.is_none()
+        && let Some(handle) = workspaces(cx).into_iter().next()
+        && handle.read(cx).is_ok_and(|w| w.focused_pane().is_none())
+    {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.dispatch_action(action, cx)
+        })?;
+        return Ok(Value::Null);
+    }
     let (handle, view) = resolve(&p.pane, cx)?;
     let focus = view.read(cx).focus_handle(cx);
     let shown = handle.update(cx, |workspace, window, cx| {

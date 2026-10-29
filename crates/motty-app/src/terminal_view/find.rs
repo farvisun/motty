@@ -466,13 +466,6 @@ impl TerminalView {
                 cx,
             ))
             .child(toggle(
-                "find-word",
-                find.options.whole_word,
-                whole_word_glyph(icon_color).into_any_element(),
-                |o| o.whole_word = !o.whole_word,
-                cx,
-            ))
-            .child(toggle(
                 "find-regex",
                 find.options.regex,
                 div().child(".*").into_any_element(),
@@ -555,30 +548,6 @@ impl TerminalView {
                 ),
         )
     }
-}
-
-/// "ab" over an open bracket, for whole-word matching.
-fn whole_word_glyph(color: Hsla) -> impl IntoElement {
-    div()
-        .relative()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .pb(px(2.))
-        .child("ab")
-        .child(div().absolute().left_0().top_0().child(icon(
-            TOGGLE_WIDTH,
-            TOGGLE_HEIGHT,
-            move |o, window| {
-                stroke(o, color, window, 1., |p, at| {
-                    p.move_to(at(5., 12.5));
-                    p.line_to(at(5., 14.));
-                    p.line_to(at(16., 14.));
-                    p.line_to(at(16., 12.5));
-                });
-            },
-        )))
 }
 
 /// A 10pt chevron pointing up or down.
