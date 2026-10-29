@@ -163,6 +163,11 @@ enum Command {
     RevealConfig,
     ReloadConfig,
     ClearHistory,
+    /// The saved recipe at this index of [`crate::recipes::list`].
+    OpenRecipe(usize),
+    DeleteRecipe(usize),
+    AddSnippet,
+    RevealRecipes,
 }
 
 enum Control {
@@ -208,6 +213,9 @@ enum Control {
         open: bool,
     },
     Info(SharedString),
+    /// A saved recipe's Open and Delete buttons: its index in
+    /// [`crate::recipes::list`].
+    Recipe(usize),
     /// A skill's Copy button: `ix` indexes [`skills::SKILLS`].
     Skill(usize),
 }
@@ -325,6 +333,26 @@ pub struct SettingsWindow {
     previous: Section,
     epoch: usize,
     _intercept: Subscription,
+}
+
+/// Runs `f` on the frontmost window's workspace.
+fn with_workspace(
+    cx: &mut App,
+    f: impl FnOnce(
+        &mut crate::workspace::Workspace,
+        &mut Window,
+        &mut Context<crate::workspace::Workspace>,
+    ) + 'static,
+) {
+    let front = cx
+        .window_stack()
+        .into_iter()
+        .flatten()
+        .chain(cx.windows())
+        .find_map(|w| w.downcast::<crate::workspace::Workspace>());
+    if let Some(w) = front {
+        let _ = w.update(cx, f);
+    }
 }
 
 /// `~/…` for a path in the home folder.
@@ -757,6 +785,49 @@ impl SettingsWindow {
             Command::ClearHistory => {
                 crate::history::clear();
                 self.status = Some((true, "Command history cleared.".into()));
+            }
+            Command::OpenRecipe(ix) => {
+                if let Some(saved) = crate::recipes::list().into_iter().nth(ix) {
+                    with_workspace(cx, move |ws, window, cx| {
+                        window.activate_window();
+                        ws.apply_saved_recipe(&saved.id, window, cx);
+                    });
+                }
+            }
+            Command::DeleteRecipe(ix) => {
+                let Some(saved) = crate::recipes::list().into_iter().nth(ix) else {
+                    return;
+                };
+                let answer = window.prompt(
+                    gpui::PromptLevel::Warning,
+                    &format!("Delete “{}”?", saved.recipe.recipe.name),
+                    Some("The recipe is removed from Motty's saved recipes."),
+                    &["Cancel", "Delete"],
+                    cx,
+                );
+                cx.spawn(async move |this, cx| {
+                    if answer.await != Ok(1) {
+                        return;
+                    }
+                    let _ = this.update(cx, |this, cx| {
+                        this.status = Some(match crate::recipes::delete(&saved.id) {
+                            Ok(()) => (true, "Recipe deleted.".into()),
+                            Err(e) => (false, format!("Couldn't delete the recipe: {e}")),
+                        });
+                        cx.defer(crate::menus::refresh);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            Command::AddSnippet => with_workspace(cx, |ws, window, cx| {
+                window.activate_window();
+                ws.new_snippet(window, cx);
+            }),
+            Command::RevealRecipes => {
+                let dir = crate::recipes::dir();
+                let _ = std::fs::create_dir_all(&dir);
+                cx.reveal_path(&dir);
             }
         }
         let _ = window;
@@ -1723,12 +1794,68 @@ impl SettingsWindow {
         }
 
         // Recipes
+        let saved = crate::recipes::list();
+        if saved.is_empty() {
+            rows.push(row(
+                Recipes,
+                "Saved Recipes",
+                "No Saved Recipes",
+                Some("Save a layout, commands or a snippet with File › Save… (⌘S)"),
+                Control::Info("None".into()),
+            ));
+        }
+        for (ix, s) in saved.iter().enumerate() {
+            let mut r = row(
+                Recipes,
+                "Saved Recipes",
+                s.recipe.recipe.name.clone(),
+                None,
+                Control::Recipe(ix),
+            );
+            r.description = Some(s.recipe.summary().into());
+            rows.push(r);
+        }
         rows.push(row(
             Recipes,
-            "Recipes",
-            "No Saved Recipes",
-            Some("Saved commands, layouts and snippets are listed here"),
-            Control::Info("None".into()),
+            "Saved Recipes",
+            "Text Snippet",
+            Some(
+                "Text typed by an alias at the prompt: {{clipboard}} {{date}} {{time}} {{cursor}}",
+            ),
+            Control::Button("Add…", Command::AddSnippet),
+        ));
+        rows.push(row(
+            Recipes,
+            "Saved Recipes",
+            "Recipes Folder",
+            Some("~/.config/motty/recipes"),
+            Control::Button("Reveal", Command::RevealRecipes),
+        ));
+        let replay = [
+            ("Auto", "auto"),
+            ("Ask Once", "ask_once"),
+            ("Manually", "manually"),
+            ("Skip", "skip"),
+        ];
+        let label = |r: motty_theme::Replay| {
+            replay
+                .iter()
+                .find(|(_, v)| *v == r.name())
+                .map_or("", |(l, _)| *l)
+        };
+        rows.push(row(
+            Recipes,
+            "Command Replay",
+            "Saved Recipes",
+            Some("Recipes you saved here"),
+            choice("recipe-replay-saved", &replay, label(c.replay_saved())),
+        ));
+        rows.push(row(
+            Recipes,
+            "Command Replay",
+            "Recipe Files",
+            Some("Recipe files from elsewhere; their commands are shown before they first run"),
+            choice("recipe-replay-file", &replay, label(c.replay_file())),
         ));
 
         // Key bindings
@@ -3204,6 +3331,37 @@ impl SettingsWindow {
                 .text_color(c.secondary)
                 .child(text)
                 .into_any_element(),
+            Control::Recipe(recipe) => {
+                let button = |id: &'static str, label: &'static str, command: Command| {
+                    div()
+                        .id((id, ix))
+                        .flex_none()
+                        .h(px(26.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(6.))
+                        .bg(c.control)
+                        .border(px(0.5))
+                        .border_color(c.control_border)
+                        .shadow_xs()
+                        .child(label)
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.run(command, window, cx)),
+                        )
+                };
+                div()
+                    .flex_none()
+                    .flex()
+                    .gap(px(6.))
+                    .child(button("recipe-open", "Open", Command::OpenRecipe(recipe)))
+                    .child(button(
+                        "recipe-delete",
+                        "Delete",
+                        Command::DeleteRecipe(recipe),
+                    ))
+                    .into_any_element()
+            }
         }
     }
 }

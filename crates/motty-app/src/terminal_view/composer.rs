@@ -65,6 +65,10 @@ pub(super) struct Queue {
     editing: Option<usize>,
     /// When the last item went out: the next waits for its turn to end.
     sent: Option<Instant>,
+    /// Recipe commands typed one at a time, each at an empty prompt.
+    pub(super) typed: Vec<String>,
+    /// Commands a recipe ran here, which saving a recipe leaves out.
+    pub(super) replayed: Vec<String>,
 }
 
 /// The chips as fenced blocks, then the draft.
@@ -302,6 +306,11 @@ impl TerminalView {
 
     /// Sends the next prompt if the pane is ready and the last one is done.
     pub fn dispatch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.queue.typed.is_empty() && self.queue.sent.is_none() && self.ready_for_queue() {
+            let next = self.queue.typed.remove(0);
+            self.write_input(&next, cx);
+            return;
+        }
         if self.queue.items.is_empty() || self.queue.sent.is_some() || !self.ready_for_queue() {
             return;
         }

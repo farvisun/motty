@@ -325,6 +325,17 @@ fn open(p: OpenParams, cx: &mut App) -> anyhow::Result<Value> {
             None => Value::Null,
         });
     }
+    // Recipe files open their recipe, asking before their commands run.
+    if path
+        .extension()
+        .is_some_and(|x| x == crate::recipes::EXTENSION || x == crate::recipes::OTTY_EXTENSION)
+    {
+        handle.update(cx, |workspace, window, cx| {
+            window.activate_window();
+            workspace.open_recipe_path(&path, window, cx);
+        })?;
+        return Ok(Value::Null);
+    }
     // Files always get an editor tab, wherever they were asked for.
     handle.update(cx, |workspace, window, cx| {
         workspace.open_editor(Some(path), window, cx);

@@ -14,6 +14,7 @@ mod native_menu;
 mod notifications;
 mod panes;
 mod pasteboard;
+mod recipes;
 mod recovery;
 mod secure_input;
 mod settings;
@@ -40,6 +41,11 @@ fn main() {
         .init();
 
     let app = application().with_assets(settings::Assets);
+    // Files opened from Finder (recipes), handled once the app runs.
+    let (opened_tx, opened) = async_channel::unbounded::<Vec<String>>();
+    app.on_open_urls(move |urls| {
+        let _ = opened_tx.send_blocking(urls);
+    });
     // A Dock click with no window open opens one.
     // A Dock click opens a window when there's none (with windows open,
     // `dock_click` goes to the next tab that failed).
@@ -59,6 +65,12 @@ fn main() {
         fonts::load(cx);
         ipc::start(cx);
         dock_click::install(cx);
+        cx.spawn(async move |cx| {
+            while let Ok(urls) = opened.recv().await {
+                cx.update(|cx| open_urls(urls, cx));
+            }
+        })
+        .detach();
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::QuitKeepWindows, cx| {
             recovery::keep_windows();
@@ -252,6 +264,78 @@ pub(crate) fn open_window_running(
         }
     })?;
     Ok(())
+}
+
+/// Finder's Open: a recipe file opens its recipe in the front window
+/// (asking before its commands run); other files get an editor.
+fn open_urls(urls: Vec<String>, cx: &mut App) {
+    let paths: Vec<std::path::PathBuf> = urls
+        .iter()
+        .filter_map(|u| u.strip_prefix("file://"))
+        .map(|p| std::path::PathBuf::from(percent_decode(p)))
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    let front = cx
+        .window_stack()
+        .into_iter()
+        .flatten()
+        .chain(cx.windows())
+        .find_map(|w| w.downcast::<Workspace>());
+    let front = match front {
+        Some(w) => w,
+        None => match open_window_inner(load_config(), None, None, None, None, cx) {
+            Ok(w) => w,
+            Err(e) => return tracing::error!("failed to open a window: {e:#}"),
+        },
+    };
+    let _ = front.update(cx, |workspace, window, cx| {
+        window.activate_window();
+        for path in paths {
+            let recipe = path
+                .extension()
+                .is_some_and(|x| x == recipes::EXTENSION || x == recipes::OTTY_EXTENSION);
+            if recipe {
+                workspace.open_recipe_path(&path, window, cx);
+            } else {
+                workspace.open_editor(Some(path), window, cx);
+            }
+        }
+    });
+}
+
+/// `%20` and the like back to bytes.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A window for a recipe's tabs, which take its first tab's place.
+pub(crate) fn open_window_for_recipe(
+    config: Config,
+    cwd: Option<std::path::PathBuf>,
+    cx: &mut App,
+) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
+    open_window_inner(config, None, None, None, cwd, cx)
 }
 
 /// A window for a tab moved out of another one (Move Tab to New Window).

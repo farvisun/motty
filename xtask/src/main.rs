@@ -407,6 +407,21 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Motty Recipe</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>CFBundleTypeExtensions</key><array><string>mottyrecipe</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Otty Recipe</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>CFBundleTypeExtensions</key><array><string>ottyrecipe</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 "#;

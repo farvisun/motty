@@ -48,6 +48,7 @@ pub(super) enum Filter {
     Folders,
     Ssh,
     Current,
+    Recipes,
     Files,
 }
 
@@ -55,7 +56,7 @@ pub(super) enum Filter {
 type Mention = (Session, String);
 
 /// Each filter's chip label and its ⌘ key.
-const FILTERS: [(Filter, &str, &str); 8] = [
+const FILTERS: [(Filter, &str, &str); 9] = [
     (Filter::All, "All", "0"),
     (Filter::Opened, "Opened", "w"),
     (Filter::Recent, "Recent", "r"),
@@ -63,6 +64,7 @@ const FILTERS: [(Filter, &str, &str); 8] = [
     (Filter::Folders, "Folders", "z"),
     (Filter::Ssh, "SSH", "s"),
     (Filter::Current, "Current", "j"),
+    (Filter::Recipes, "Recipes", "e"),
     (Filter::Files, "Files", "p"),
 ];
 
@@ -106,6 +108,7 @@ enum Kind {
     SearchAgents,
     /// The Search "…" in file contents row.
     SearchFiles,
+    Recipe,
 }
 
 impl Kind {
@@ -122,6 +125,7 @@ impl Kind {
             Kind::Path => "Path",
             Kind::Session => "Agent",
             Kind::SearchAgents | Kind::SearchFiles => "Search",
+            Kind::Recipe => "Recipe",
         }
     }
 
@@ -136,6 +140,7 @@ impl Kind {
             Kind::Link | Kind::File | Kind::Path => "Open",
             Kind::Session => "Resume",
             Kind::SearchAgents | Kind::SearchFiles => "Search",
+            Kind::Recipe => "Open",
         }
     }
 }
@@ -175,6 +180,8 @@ enum Target {
     SearchAgents(String),
     /// Search in Files under the folder.
     SearchFiles(PathBuf, String),
+    /// A saved recipe's id.
+    Recipe(String),
 }
 
 struct Item {
@@ -331,6 +338,11 @@ fn icon_for(kind: Kind, color: Hsla) -> gpui::AnyElement {
     let w = 1.1;
     match kind {
         Kind::SearchFiles => super::picker::magnifier(color).into_any_element(),
+        Kind::Recipe => gpui::svg()
+            .path("icons/book-open.svg")
+            .size(px(14.))
+            .text_color(color)
+            .into_any_element(),
         // A speech bubble.
         Kind::Session | Kind::SearchAgents => icon(14., 14., move |o, window| {
             stroke(o, color, window, w, |p, at| {
@@ -760,6 +772,21 @@ impl Workspace {
             );
         }
 
+        if wants(Filter::Recipes) {
+            groups.push(
+                crate::recipes::list()
+                    .into_iter()
+                    .map(|saved| Item {
+                        group: "Recipes",
+                        kind: Kind::Recipe,
+                        title: saved.recipe.recipe.name.clone(),
+                        detail: saved.recipe.summary(),
+                        target: Target::Recipe(saved.id),
+                    })
+                    .collect(),
+            );
+        }
+
         if wants(Filter::Files)
             && let Some((dir, files)) = &oq.files
         {
@@ -981,6 +1008,7 @@ impl Workspace {
             }
             // Handled before the panel closes.
             Target::SearchAgents(_) => {}
+            Target::Recipe(id) => self.apply_saved_recipe(&id, window, cx),
             Target::SearchFiles(dir, query) => self.open_search_tab(
                 super::search_view::Scope::Files,
                 Some(dir),
@@ -1021,6 +1049,7 @@ impl Workspace {
         let actions: Vec<(&'static str, Act)> = match item.target {
             Target::Session(session) => return self.session_actions(*session, window, cx),
             Target::SearchAgents(_) | Target::SearchFiles(..) => vec![("Search", Act::Run)],
+            Target::Recipe(_) => vec![("Open Recipe", Act::Run)],
             Target::Editor(_, editor) => {
                 let mut v = vec![("Switch to Tab", Act::Run)];
                 if let Some(path) = editor.read(cx).path().map(Path::to_path_buf) {
@@ -1390,13 +1419,13 @@ impl Workspace {
             .pb(px(10.))
             .flex()
             .flex_wrap()
-            .gap(px(6.5))
+            .gap(px(5.))
             .children(FILTERS.iter().map(|&(filter, label, _)| {
                 let on = filter == oq.filter;
                 div()
                     .id(label)
                     .h(px(CHIP_HEIGHT))
-                    .px(px(11.))
+                    .px(px(8.5))
                     .flex()
                     .items_center()
                     .rounded_full()

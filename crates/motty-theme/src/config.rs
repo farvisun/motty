@@ -84,6 +84,10 @@ pub struct Config {
     pub new_tab_position: NewTabPosition,
     /// `auto-hide-tabs-panel`.
     pub auto_hide_tabs_panel: AutoHide,
+    /// `recipe-replay-saved` (see [`Config::replay_saved`]).
+    pub recipe_replay_saved: Option<Replay>,
+    /// `recipe-replay-file` (see [`Config::replay_file`]).
+    pub recipe_replay_file: Option<Replay>,
     /// `notification-foreground`: banners while Motty is in front.
     pub notification_foreground: NotificationForeground,
     /// `clipboard-read`: a program reading the clipboard (OSC 52).
@@ -261,6 +265,16 @@ pub const PROGRESS_BAR_COMMANDS: &[&str] = &[
 ];
 
 impl Config {
+    /// Replay for recipes you saved; Otty's default asks once.
+    pub fn replay_saved(&self) -> Replay {
+        self.recipe_replay_saved.unwrap_or(Replay::AskOnce)
+    }
+
+    /// Replay for recipe files from elsewhere: one at a time.
+    pub fn replay_file(&self) -> Replay {
+        self.recipe_replay_file.unwrap_or(Replay::Manually)
+    }
+
     /// The command prefixes that show a spinner.
     pub fn progress_commands(&self) -> Vec<String> {
         match &self.progress_bar_commands {
@@ -414,6 +428,40 @@ pub enum Access {
     Ask,
     Allow,
     Deny,
+}
+
+/// How a recipe's commands run when it opens (`recipe-replay-*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replay {
+    /// Each runs when the one before it is done.
+    Auto,
+    /// Typed in together; one ↩ runs them.
+    AskOnce,
+    /// Typed one at a time; ↩ runs each.
+    Manually,
+    /// Layout only.
+    Skip,
+}
+
+impl Replay {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "auto" => Self::Auto,
+            "ask_once" | "ask-once" => Self::AskOnce,
+            "manually" | "manual" => Self::Manually,
+            "skip" | "off" => Self::Skip,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::AskOnce => "ask_once",
+            Self::Manually => "manually",
+            Self::Skip => "skip",
+        }
+    }
 }
 
 /// `auto-hide-tabs-panel` values.
@@ -785,6 +833,15 @@ impl Config {
                     Some("after-current") => out.new_tab_position = NewTabPosition::AfterCurrent,
                     _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
                 },
+                "recipe-replay-saved" | "recipe-replay-file" => {
+                    match value.as_str().and_then(Replay::parse) {
+                        Some(r) if key == "recipe-replay-saved" => {
+                            out.recipe_replay_saved = Some(r)
+                        }
+                        Some(r) => out.recipe_replay_file = Some(r),
+                        None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                    }
+                }
                 "auto-hide-tabs-panel" => match value.as_str() {
                     Some("default") => out.auto_hide_tabs_panel = AutoHide::Default,
                     Some("always") => out.auto_hide_tabs_panel = AutoHide::Always,

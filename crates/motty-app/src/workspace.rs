@@ -39,6 +39,7 @@ pub(crate) use new_menu::{shells, ssh_hosts};
 mod new_menu;
 mod open_quickly;
 mod palette;
+mod recipes;
 mod search_view;
 mod status;
 mod tabs;
@@ -234,6 +235,7 @@ pub struct Workspace {
     /// Open Quickly, while open.
     open_quickly: Option<open_quickly::OpenQuickly>,
     global: Option<global_search::GlobalSearch>,
+    recipe_dialog: Option<recipes::RecipeDialog>,
     /// The close was confirmed (or needed no asking): the window may go.
     closing_window: bool,
     /// The welcome guide, while open.
@@ -554,6 +556,7 @@ impl Workspace {
             palette: None,
             open_quickly: None,
             global: None,
+            recipe_dialog: None,
             closing_window: false,
             welcome: None,
             details: Default::default(),
@@ -3305,6 +3308,24 @@ impl Render for Workspace {
                     view.update(cx, |v, cx| v.reveal_row(a.row, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &SaveRecipe, window, cx| this.save_recipe(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ExportRecipe, window, cx| this.export_recipe(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SaveSelectionToRecipe, window, cx| {
+                this.save_selection_to_recipe(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenRecipeFile, window, cx| {
+                    this.open_recipe_file(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &OpenRecipe, window, cx| {
+                this.show_open_quickly(open_quickly::Filter::Recipes, window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &ApplyRecipe, window, cx| {
+                this.apply_saved_recipe(&a.id, window, cx)
+            }))
             .on_action(cx.listener(|this, a: &TypeCommand, window, cx| {
                 this.type_command(a.clone(), window, cx)
             }))
@@ -3479,6 +3500,7 @@ impl Render for Workspace {
             .children(self.render_palette(window, cx))
             .children(self.render_open_quickly(window, cx))
             .children(self.render_global_search(window, cx))
+            .children(self.render_recipe_dialog(window, cx))
             .children(self.render_welcome(window, cx))
     }
 }

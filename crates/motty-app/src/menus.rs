@@ -62,6 +62,8 @@ struct Live {
     hosts: Vec<String>,
     folders: Vec<PathBuf>,
     files: Vec<PathBuf>,
+    /// Saved recipes: (id, name).
+    recipes: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +94,7 @@ pub fn set(cx: &mut App) {
         shells: crate::workspace::shells(),
         hosts: crate::workspace::ssh_hosts(),
         files: crate::folders::recent_files(),
+        recipes: saved_recipes(),
         ..Live::default()
     };
     build(&Snapshot::default(), &live, cx);
@@ -183,7 +186,16 @@ fn look_up(s: &Snapshot) -> Live {
         hosts: crate::workspace::ssh_hosts(),
         folders: crate::folders::ranked().into_iter().take(RECENT).collect(),
         files: crate::folders::recent_files(),
+        recipes: saved_recipes(),
     }
+}
+
+/// File › Recipe lists the saved recipes, newest first.
+fn saved_recipes() -> Vec<(String, String)> {
+    crate::recipes::list()
+        .into_iter()
+        .map(|s| (s.id, s.recipe.recipe.name))
+        .collect()
 }
 
 /// Open Folder and Open Recent list this many.
@@ -322,6 +334,22 @@ fn file_menu(live: &Live) -> Menu {
         recent.push(MenuItem::action("Clear Menu", ClearRecentFiles));
     }
 
+    let mut recipe = vec![
+        MenuItem::action("Save...", SaveRecipe),
+        MenuItem::action("Export...", ExportRecipe),
+        MenuItem::action("Save Selection to Recipe...", SaveSelectionToRecipe),
+        MenuItem::separator(),
+        MenuItem::action("Open Recipe File...", OpenRecipeFile),
+    ];
+    if !live.recipes.is_empty() {
+        recipe.push(MenuItem::separator());
+        recipe.extend(
+            live.recipes
+                .iter()
+                .map(|(id, name)| MenuItem::action(name.clone(), ApplyRecipe { id: id.clone() })),
+        );
+    }
+
     let mut folders = vec![MenuItem::action("~/", OpenFolder { path: home.clone() })];
     folders.extend(
         live.folders
@@ -355,7 +383,10 @@ fn file_menu(live: &Live) -> Menu {
         MenuItem::action("Export Text As...", ExportText),
         MenuItem::action("Export Selected Text As...", ExportSelectedText),
         MenuItem::separator(),
-        MenuItem::action("Save...", Save),
+        MenuItem::action("Save...", SaveRecipe),
+        MenuItem::action("Export Recipe...", ExportRecipe),
+        MenuItem::action("Open Recipe...", OpenRecipe),
+        MenuItem::submenu(Menu::new("Recipe").items(recipe)),
         MenuItem::separator(),
         MenuItem::action("Close", CloseTab),
         MenuItem::action("Close Window", CloseWindow),

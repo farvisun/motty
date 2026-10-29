@@ -239,6 +239,14 @@ impl TerminalView {
                 .enabled(!self.read_only),
             Pick::Action(Box::new(Paste)),
         );
+        if has_selection {
+            add(
+                &mut entries,
+                &mut picks,
+                Item::new("Save Selection to Recipe…").symbol("book"),
+                Pick::Action(Box::new(SaveSelectionToRecipe)),
+            );
+        }
         entries.push(Entry::Separator);
         add(
             &mut entries,

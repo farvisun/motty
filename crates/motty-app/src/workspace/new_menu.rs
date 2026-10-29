@@ -62,14 +62,33 @@ impl Workspace {
             label: "New Shell".into(),
             entries: shells,
         });
-        // Recipes come with snippets and layouts (⌘S).
-        entries.push(Entry::Submenu {
-            label: "Recipe".into(),
-            entries: vec![add(
+        // Saved layouts, commands and snippets (⌘S saves one).
+        let mut recipes: Vec<Entry> = crate::recipes::list()
+            .into_iter()
+            .map(|saved| {
+                add(
+                    &mut picks,
+                    Item::new(saved.recipe.recipe.name.clone()),
+                    Pick::Action(Box::new(ApplyRecipe { id: saved.id })),
+                )
+            })
+            .collect();
+        if recipes.is_empty() {
+            recipes.push(add(
                 &mut picks,
                 Item::new("No Recipes").enabled(false),
                 Pick::None,
-            )],
+            ));
+        }
+        recipes.push(Entry::Separator);
+        recipes.push(add(
+            &mut picks,
+            Item::new("Save Recipe…").keystroke(key(&SaveRecipe)),
+            Pick::Action(Box::new(SaveRecipe)),
+        ));
+        entries.push(Entry::Submenu {
+            label: "Recipe".into(),
+            entries: recipes,
         });
         entries.push(Entry::Separator);
 

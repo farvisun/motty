@@ -33,6 +33,7 @@ mod find;
 mod hints;
 mod links;
 mod paste;
+mod replay;
 mod vi;
 
 pub use composer::{Chip, is_pinned as composer_pinned};

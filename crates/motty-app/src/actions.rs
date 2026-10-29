@@ -80,6 +80,11 @@ actions!(
         FindPrevious,
         GlobalSearch,
         SearchInFiles,
+        SaveRecipe,
+        ExportRecipe,
+        OpenRecipe,
+        OpenRecipeFile,
+        SaveSelectionToRecipe,
         ToggleViMode,
         ToggleViKeyHints,
         ToggleReadOnly,
@@ -198,6 +203,13 @@ pub struct RevealRow {
     pub row: u64,
 }
 
+/// Opens a saved recipe (by id or name).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct ApplyRecipe {
+    pub id: String,
+}
+
 /// Types a command at the focused pane's prompt; with `run`, asks first
 /// and then runs it.
 #[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
@@ -306,6 +318,8 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-y", Redo, EDITOR),
         b("cmd-shift-z", Redo, EDITOR),
         b("cmd-s", Save, EDITOR),
+        b("cmd-s", SaveRecipe, TERMINAL),
+        b("cmd-shift-s", ExportRecipe, TERMINAL),
         b("cmd-f", Find, TERMINAL),
         b("cmd-shift-e", ToggleComposer, TERMINAL),
         b("cmd-shift-m", TogglePromptQueue, TERMINAL),
@@ -400,8 +414,9 @@ fn defaults() -> Vec<DefaultKey> {
 }
 
 /// The ⌘ chords Open Quickly handles itself: filters, rows, open.
-const OPEN_QUICKLY_KEYS: [&str; 19] = [
+const OPEN_QUICKLY_KEYS: [&str; 20] = [
     "cmd-0",
+    "cmd-e",
     "cmd-g",
     "cmd-k",
     "cmd-w",

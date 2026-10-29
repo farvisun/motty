@@ -1,7 +1,8 @@
 //! Inline suggestions at the prompt: the rest of a command run here before,
 //! drawn dim after the cursor. The accept key (Tab by default,
 //! `autocomplete-shortcut`) types it; Esc hides it until the line changes.
-//! See [`crate::history`] for what's remembered.
+//! See [`crate::history`] for what's remembered. A snippet's alias offers
+//! the snippet instead, which replaces the alias when accepted.
 
 use gpui::{Context, Keystroke, SharedString};
 use motty_theme::{AcceptKey, Autocomplete};
@@ -13,6 +14,8 @@ use super::TerminalView;
 pub(super) struct Suggestion {
     line: String,
     rest: String,
+    /// The snippet the line is the alias of.
+    snippet: Option<String>,
 }
 
 impl TerminalView {
@@ -40,9 +43,25 @@ impl TerminalView {
             if self.dismissed.as_deref() == Some(line.as_str()) {
                 return None;
             }
+            if !line.contains(char::is_whitespace)
+                && let Some(text) = crate::recipes::snippet_for(&line)
+            {
+                let (date, time) = crate::recipes::date_time();
+                let first = text.lines().next().unwrap_or_default();
+                let preview = first
+                    .replace("{{cursor}}", "")
+                    .replace("{{date}}", &date)
+                    .replace("{{time}}", &time);
+                return Some(Suggestion {
+                    rest: format!("  → {preview}"),
+                    line,
+                    snippet: Some(text),
+                });
+            }
             // Typing what the suggestion said keeps it, one character
             // shorter, without another lookup.
             if let Some(s) = &self.suggestion
+                && s.snippet.is_none()
                 && let Some(typed) = line.strip_prefix(s.line.as_str())
                 && let Some(rest) = s.rest.strip_prefix(typed)
                 && !rest.is_empty()
@@ -50,10 +69,15 @@ impl TerminalView {
                 return Some(Suggestion {
                     rest: rest.to_owned(),
                     line,
+                    snippet: None,
                 });
             }
             let rest = crate::history::suggest(self.cwd.as_deref(), &line)?;
-            Some(Suggestion { line, rest })
+            Some(Suggestion {
+                line,
+                rest,
+                snippet: None,
+            })
         });
         self.suggestion = next;
     }
@@ -69,7 +93,22 @@ impl TerminalView {
         let Some(s) = self.suggestion.take() else {
             return false;
         };
-        self.write_input(&s.rest, cx);
+        let Some(text) = s.snippet else {
+            self.write_input(&s.rest, cx);
+            return true;
+        };
+        // The alias goes, the snippet comes in its place.
+        let clipboard = if text.contains("{{clipboard}}") {
+            cx.read_from_clipboard()
+                .and_then(|c| c.text())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let (text, back) =
+            crate::recipes::expand_snippet(&text, &clipboard, crate::recipes::date_time());
+        let erase = "\x7f".repeat(s.line.chars().count());
+        self.write_input(&format!("{erase}{text}{}", "\x1b[D".repeat(back)), cx);
         true
     }
 
