@@ -1,27 +1,39 @@
 //! The details panel (⌘⇧R): a column on the right about the focused pane,
-//! mirroring the tabs panel on the left. Four tabs, picked from the strip at
-//! its top: Info (working directory, open-in actions, processes, listening
-//! ports), Outline (the pane's commands), Git (branch and changed files) and
-//! Files (a tree of the working directory).
+//! mirroring the tabs panel on the left. Its tabs, picked from the strip at
+//! its top: Info (working directory, open-in actions, the agent, processes,
+//! listening ports), Outline (the pane's commands and prompts, or a file's
+//! structure), Git (branch, changed files, a diff) and Files (a tree of the
+//! working directory), then the views of your own (`details-view`). When
+//! the strip can't fit its tabs they collapse into a dropdown; dragging
+//! the panel's left edge sets its width.
 //!
 //! Geometry is measured from Otty's screenshots at 2x; the icons are drawn
 //! here in the style of the system's symbols.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+mod files;
+mod git;
+mod outline;
+mod views;
+
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
-    AnyElement, Context, Entity, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle,
-    SharedString, Task, Window, div, prelude::*, px,
+    AnyElement, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString, Task,
+    Window, div, prelude::*, px,
 };
 use motty_render::hsla;
 use motty_term::ProcessInfo;
+use motty_theme::{DetailsView, ViewKind};
 
 use super::{Workspace, native_label};
 use crate::actions::*;
+use crate::native_menu::{self, Entry, Item};
+use crate::panes::PaneItem;
 use crate::terminal_view::TerminalView;
 use crate::titlebar::{self, icon, stroke};
+pub(crate) use git::web_url;
 
 /// The strip's buttons: 24pt tall, 4pt from the top, from 8pt in; an
 /// unselected tab is a 28pt box, the selected one a pill with its name.
@@ -30,6 +42,8 @@ const STRIP_LEFT: f32 = 8.;
 const TAB_WIDTH: f32 = 28.;
 const TAB_GAP: f32 = 4.;
 const PILL_PAD: f32 = 7.;
+/// Room the panel's toggle takes at the strip's right end.
+const STRIP_RIGHT: f32 = titlebar::DETAILS_RIGHT + titlebar::BUTTON + 6.;
 /// Where content starts below the window's top.
 const CONTENT_TOP: f32 = 44.;
 const INSET: f32 = 18.5;
@@ -38,6 +52,10 @@ const LIST_ROW: f32 = 22.;
 const TREE_ROW: f32 = 25.;
 const TREE_INDENT: f32 = 18.;
 const SECTION_GAP: f32 = 22.;
+/// What dragging the left edge allows, and how wide the grip is.
+const DETAILS_MIN: f32 = 180.;
+const DETAILS_MAX: f32 = 720.;
+const EDGE_GRAB: f32 = 6.;
 /// The slowest refreshes run at most this often.
 const GIT_INTERVAL: Duration = Duration::from_secs(3);
 const PORTS_INTERVAL: Duration = Duration::from_secs(2);
@@ -62,120 +80,65 @@ impl DetailsTab {
             Self::Files => "Files",
         }
     }
+
+    /// Its `details-view` id.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Outline => "outline",
+            Self::Git => "git",
+            Self::Files => "files",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.id() == id)
+    }
 }
 
 #[derive(Default)]
 pub(super) struct Details {
     pub visible: bool,
     tab: DetailsTab,
+    /// A custom view's id, when one is showing instead of `tab`.
+    view: Option<String>,
     /// The folder the data below describes.
-    cwd: Option<PathBuf>,
+    cwd: Option<std::path::PathBuf>,
     pane: Option<gpui::EntityId>,
     processes: Vec<ProcessInfo>,
     ports: Vec<(u16, i32)>,
     ports_at: Option<Instant>,
-    git: Option<GitSummary>,
+    git: Option<git::GitSummary>,
     git_at: Option<Instant>,
-    files: FileTree,
+    git_ui: git::GitUi,
+    files: files::FileTree,
+    outline: outline::OutlineState,
+    views: views::Views,
+    fields: [Field; 4],
     pending: Option<Task<()>>,
     scroll: ScrollHandle,
+    /// The width while the left edge is dragged.
+    drag: Option<f32>,
 }
 
-/// What `git status` says about a repository.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct GitSummary {
-    branch: String,
-    added: u32,
-    removed: u32,
-    remote: Option<String>,
-    staged: Vec<Change>,
-    unstaged: Vec<Change>,
-    untracked: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Change {
-    status: char,
-    path: String,
+/// The panel's text fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldId {
+    Filter,
+    Commit,
+    ViewName,
+    ViewTarget,
 }
 
 #[derive(Default)]
-struct FileTree {
-    root: Option<PathBuf>,
-    expanded: HashSet<PathBuf>,
-    children: HashMap<PathBuf, Vec<FileEntry>>,
-    show_hidden: bool,
+struct Field {
+    pub text: String,
+    focus: Option<FocusHandle>,
 }
 
-#[derive(Clone, Debug)]
-struct FileEntry {
-    path: PathBuf,
-    name: String,
-    dir: bool,
-}
-
-impl FileTree {
-    fn entries(&mut self, dir: &Path) -> Vec<FileEntry> {
-        if let Some(list) = self.children.get(dir) {
-            return list.clone();
-        }
-        let mut list: Vec<FileEntry> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| FileEntry {
-                name: e.file_name().to_string_lossy().into_owned(),
-                dir: e.path().is_dir(),
-                path: e.path(),
-            })
-            .collect();
-        list.sort_by(|a, b| {
-            b.dir
-                .cmp(&a.dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        self.children.insert(dir.to_path_buf(), list.clone());
-        list
-    }
-
-    /// The visible rows, depth first: (depth, entry).
-    fn rows(&mut self) -> Vec<(usize, FileEntry)> {
-        let Some(root) = self.root.clone() else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        let mut stack: Vec<(usize, FileEntry)> = self
-            .entries(&root)
-            .into_iter()
-            .rev()
-            .map(|e| (0, e))
-            .collect();
-        while let Some((depth, entry)) = stack.pop() {
-            if !self.show_hidden && entry.name.starts_with('.') {
-                continue;
-            }
-            if entry.dir && self.expanded.contains(&entry.path) {
-                stack.extend(
-                    self.entries(&entry.path)
-                        .into_iter()
-                        .rev()
-                        .map(|e| (depth + 1, e)),
-                );
-            }
-            out.push((depth, entry));
-            if out.len() >= 2000 {
-                break;
-            }
-        }
-        out
-    }
-
-    fn set_root(&mut self, root: Option<PathBuf>) {
-        if root != self.root {
-            self.root = root;
-            self.expanded.clear();
-            self.children.clear();
-        }
+impl Details {
+    fn field(&mut self, id: FieldId) -> &mut Field {
+        &mut self.fields[id as usize]
     }
 }
 
@@ -187,10 +150,58 @@ impl Workspace {
             .border
             .as_ref()
             .map_or(0., |b| b.width);
-        self.config
-            .details_panel_width
+        self.details_inner_width() + border
+    }
+
+    /// `details-panel-width`, or where its edge is being dragged.
+    fn details_inner_width(&self) -> f32 {
+        self.details
+            .drag
+            .or(self.config.details_panel_width)
             .unwrap_or(self.theme.details_panel.width)
-            + border
+    }
+
+    /// Follows the pointer while the panel's left edge is dragged.
+    pub(super) fn drag_details(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.details.drag.is_none() {
+            return false;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.finish_details_drag(cx);
+            return true;
+        }
+        let border = self
+            .theme
+            .details_panel
+            .border
+            .as_ref()
+            .map_or(0., |b| b.width);
+        let right = f32::from(window.viewport_size().width - event.position.x) - border;
+        self.details.drag = Some(right.clamp(DETAILS_MIN, DETAILS_MAX).round());
+        cx.notify();
+        true
+    }
+
+    /// Saves the dragged width as `details-panel-width`, as Otty does.
+    pub(super) fn finish_details_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(width) = self.details.drag else {
+            return;
+        };
+        let value = toml::Value::Integer(width as i64);
+        match motty_theme::config::save(&[("details-panel-width", Some(value))]) {
+            Ok(_) => {
+                self.config.details_panel_width = Some(width);
+                cx.defer(super::reload_all);
+            }
+            Err(e) => tracing::warn!("couldn't save details-panel-width: {e}"),
+        }
+        self.details.drag = None;
+        cx.notify();
     }
 
     pub(super) fn toggle_details(&mut self, cx: &mut Context<Self>) {
@@ -202,8 +213,31 @@ impl Workspace {
     pub(super) fn show_details_tab(&mut self, tab: DetailsTab, cx: &mut Context<Self>) {
         self.details.visible = true;
         self.details.tab = tab;
+        self.details.view = None;
+        self.details.views.adding = None;
         self.refresh_details(true, cx);
         cx.notify();
+    }
+
+    /// Shows a tab of the strip by its `details-view` id.
+    fn select_details(&mut self, id: &str, cx: &mut Context<Self>) {
+        match DetailsTab::from_id(id) {
+            Some(tab) => self.show_details_tab(tab, cx),
+            None => {
+                self.details.visible = true;
+                self.details.view = Some(id.to_owned());
+                self.details.views.adding = None;
+                cx.notify();
+            }
+        }
+    }
+
+    /// The id of the tab showing.
+    fn details_selected(&self) -> String {
+        self.details
+            .view
+            .clone()
+            .unwrap_or_else(|| self.details.tab.id().to_owned())
     }
 
     /// Re-reads what the panel shows about the focused pane: processes now,
@@ -213,44 +247,61 @@ impl Workspace {
         if !self.details.visible {
             return;
         }
-        let Some(view) = self.focused_pane() else {
+        let Some(item) = self.active_panes().map(|p| p.focused.clone()) else {
             return;
         };
-        let (cwd, processes) = {
-            let v = view.read(cx);
-            (v.cwd.clone(), v.session().processes())
+        let (cwd, processes) = match &item {
+            PaneItem::Terminal(view) => {
+                let v = view.read(cx);
+                (v.cwd.clone(), v.session().processes())
+            }
+            PaneItem::File(editor) => (editor.read(cx).folder(), Vec::new()),
         };
+        let builtin = self.details.view.is_none();
+        if builtin && self.details.tab == DetailsTab::Outline {
+            self.refresh_outline(now, cx);
+        }
         let d = &mut self.details;
-        let moved = d.cwd != cwd || d.pane != Some(view.entity_id());
+        let moved = d.cwd != cwd || d.pane != Some(item.entity_id());
         if moved {
             d.cwd = cwd.clone();
-            d.pane = Some(view.entity_id());
+            d.pane = Some(item.entity_id());
             d.git = None;
             d.ports.clear();
             d.git_at = None;
             d.ports_at = None;
+            d.git_ui = Default::default();
         }
         if d.processes != processes {
             d.processes = processes;
             cx.notify();
         }
+        let old_root = d.files.root.clone();
         d.files.set_root(cwd.clone());
+        if d.files.root != old_root && !d.field(FieldId::Filter).text.is_empty() {
+            self.refilter(cx);
+        }
+        let d = &mut self.details;
         if d.pending.is_some() {
             return;
         }
         let due =
             |at: Option<Instant>, every| now || moved || at.is_none_or(|t| t.elapsed() >= every);
-        let git = (d.tab == DetailsTab::Git && due(d.git_at, GIT_INTERVAL))
-            .then(|| cwd.clone())
-            .flatten();
+        // A program view's `${branch}` comes from here too.
+        let git = ((builtin && d.tab == DetailsTab::Git || !builtin)
+            && due(d.git_at, GIT_INTERVAL))
+        .then(|| cwd.clone())
+        .flatten();
         let pids: Vec<i32> = d.processes.iter().map(|p| p.pid).collect();
-        let ports =
-            d.tab == DetailsTab::Info && due(d.ports_at, PORTS_INTERVAL) && !pids.is_empty();
+        let ports = builtin
+            && d.tab == DetailsTab::Info
+            && due(d.ports_at, PORTS_INTERVAL)
+            && !pids.is_empty();
         if git.is_none() && !ports {
             return;
         }
         let work = cx.background_spawn(async move {
-            let git = git.map(|dir| git_summary(&dir));
+            let git = git.map(|dir| git::git_summary(&dir));
             let ports = ports.then(|| listening_ports(&pids));
             (git, ports)
         });
@@ -278,7 +329,11 @@ impl Workspace {
         }));
     }
 
-    pub(super) fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_details(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let t = &self.theme;
         let c = PanelColors {
             text: hsla(t.token.foreground),
@@ -293,12 +348,53 @@ impl Workspace {
             success: hsla(t.token.success),
         };
         let view = self.focused_pane();
-        let body = match self.details.tab {
-            DetailsTab::Info => self.render_info(view.as_ref(), &c, cx),
-            DetailsTab::Outline => self.render_outline(view.as_ref(), &c, cx),
-            DetailsTab::Git => self.render_git(&c),
-            DetailsTab::Files => self.render_files(&c, cx),
+        let scroll = |body: AnyElement, font: SharedString, handle: &ScrollHandle| {
+            div()
+                .id("details-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(handle)
+                .font_family(font)
+                .text_size(px(13.))
+                .pb(px(16.))
+                .child(body)
+                .into_any_element()
         };
+        let body = if self.details.views.adding.is_some() {
+            let form = self.render_add_view(window, &c, cx);
+            scroll(form, self.ui_font.clone(), &self.details.scroll)
+        } else if let Some(id) = self.details.view.clone() {
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .font_family(self.ui_font.clone())
+                .text_size(px(13.))
+                .child(self.render_view(&id, window, &c, cx))
+                .into_any_element()
+        } else {
+            let body = match self.details.tab {
+                DetailsTab::Info => self.render_info(view.as_ref(), &c, cx),
+                DetailsTab::Outline => self.render_outline(view.as_ref(), &c, cx),
+                DetailsTab::Git => self.render_git(window, &c, cx),
+                DetailsTab::Files => self.render_files(window, &c, cx),
+            };
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                        this.show_panel_menu(e.position, window, cx)
+                    }),
+                )
+                .child(scroll(body, self.ui_font.clone(), &self.details.scroll))
+                .into_any_element()
+        };
+        let strip = self.render_details_strip(&c, cx);
         let t = &self.theme;
         let side = &t.details_panel;
         let mut panel = div()
@@ -310,61 +406,56 @@ impl Workspace {
             .flex()
             .flex_col()
             .bg(hsla(side.background))
-            .child(self.render_details_strip(&c, cx))
-            .child(
-                div()
-                    .id("details-body")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.details.scroll)
-                    .font_family(self.ui_font.clone())
-                    .text_size(px(13.))
-                    .pb(px(16.))
-                    .child(body),
-            );
+            .child(strip)
+            .child(body);
         if let Some(b) = &side.border {
             panel = panel
                 .border_l(px(b.width))
                 .border_color(hsla(t.border_color(b)));
         }
-        panel.into_any_element()
+        panel
+            .child(
+                // Drag the edge to resize; it straddles the border.
+                div()
+                    .id("details-edge")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(-EDGE_GRAB / 2.))
+                    .w(px(EDGE_GRAB))
+                    .occlude()
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.details.drag = Some(this.details_inner_width());
+                        }),
+                    ),
+            )
+            .into_any_element()
     }
 
+    /// The tabs, or, when they don't fit, the showing one with a ▾ that
+    /// lists them all.
     fn render_details_strip(&self, c: &PanelColors, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self.details.tab;
-        let tabs = DetailsTab::ALL.map(|tab| {
-            let on = tab == selected;
-            let color = if on { c.text } else { c.icon };
-            div()
-                .id(SharedString::from(format!("details-tab-{}", tab.label())))
-                .h(px(titlebar::BUTTON))
-                .flex()
-                .items_center()
-                .rounded(px(titlebar::RADIUS))
-                .map(|d| {
-                    if on {
-                        d.px(px(PILL_PAD))
-                            .gap(px(5.))
-                            .bg(c.selected)
-                            .child(tab_icon(tab, color))
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .text_color(color)
-                                    .child(tab.label()),
-                            )
-                    } else {
-                        d.w(px(TAB_WIDTH))
-                            .justify_center()
-                            .hover(|s| s.bg(c.hover))
-                            .child(tab_icon(tab, color))
-                    }
-                })
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _, _, cx| this.show_details_tab(tab, cx)))
-        });
-        div()
+        let tabs = self.details_tabs();
+        let selected = self.details_selected();
+        let labels: Vec<String> = tabs.iter().map(tab_label).collect();
+        let need: f32 = tabs
+            .iter()
+            .zip(&labels)
+            .map(|(t, l)| {
+                if t.id == selected {
+                    pill_width(l)
+                } else {
+                    TAB_WIDTH
+                }
+            })
+            .sum::<f32>()
+            + TAB_GAP * tabs.len().saturating_sub(1) as f32;
+        let room = self.details_width() - STRIP_LEFT - STRIP_RIGHT;
+        let strip = div()
             .flex_none()
             .h(px(CONTENT_TOP - 12.))
             .pt(px(STRIP_TOP))
@@ -374,8 +465,317 @@ impl Workspace {
             .gap(px(TAB_GAP))
             .font_family(self.ui_font.clone())
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
-            .children(tabs)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.show_strip_menu(None, e.position, window, cx)
+                }),
+            );
+        if need > room {
+            let ix = tabs.iter().position(|t| t.id == selected).unwrap_or(0);
+            let Some(tab) = tabs.get(ix) else {
+                return strip.into_any_element();
+            };
+            let custom = (tab.kind != ViewKind::Builtin).then(|| tab.id.clone());
+            let max = (room - PILL_PAD * 2. - 15. - 5. - 16.).max(20.);
+            let pill = div()
+                .id("details-tabs-menu")
+                .h(px(titlebar::BUTTON))
+                .min_w_0()
+                .px(px(PILL_PAD))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .rounded(px(titlebar::RADIUS))
+                .bg(c.selected)
+                .child(strip_icon(tab, c.text))
+                .child(
+                    div()
+                        .max_w(px(max))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_size(px(13.))
+                        .text_color(c.text)
+                        .child(labels[ix].clone()),
+                )
+                .child(lucide("chevron-down", 11., c.icon))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.show_tabs_menu(e.position, window, cx);
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.show_strip_menu(custom.clone(), e.position, window, cx);
+                    }),
+                );
+            return strip.child(pill).into_any_element();
+        }
+        let tabs = tabs.into_iter().zip(labels).map(|(tab, label)| {
+            let on = tab.id == selected;
+            let color = if on { c.text } else { c.icon };
+            let id = tab.id.clone();
+            let custom = (tab.kind != ViewKind::Builtin).then(|| tab.id.clone());
+            div()
+                .id(SharedString::from(format!("details-tab-{}", tab.id)))
+                .h(px(titlebar::BUTTON))
+                .flex()
+                .items_center()
+                .rounded(px(titlebar::RADIUS))
+                .map(|d| {
+                    if on {
+                        d.px(px(PILL_PAD))
+                            .gap(px(5.))
+                            .bg(c.selected)
+                            .child(strip_icon(&tab, color))
+                            .child(
+                                div()
+                                    .whitespace_nowrap()
+                                    .text_size(px(13.))
+                                    .text_color(color)
+                                    .child(label.clone()),
+                            )
+                    } else {
+                        d.w(px(TAB_WIDTH))
+                            .justify_center()
+                            .hover(|s| s.bg(c.hover))
+                            .child(strip_icon(&tab, color))
+                            .tooltip(move |_, cx| crate::tooltip::text(label.clone(), cx))
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.show_strip_menu(custom.clone(), e.position, window, cx);
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.select_details(&id, cx)))
+        });
+        strip.children(tabs).into_any_element()
+    }
+
+    /// The collapsed strip's list: every tab, then Add View….
+    fn show_tabs_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let tabs = self.details_tabs();
+        let selected = self.details_selected();
+        let mut entries: Vec<Entry> = tabs
+            .iter()
+            .map(|t| Item::new(tab_label(t)).checked(t.id == selected).into())
+            .collect();
+        entries.push(Entry::Separator);
+        entries.push(Item::new("Add View…").into());
+        let ids: Vec<String> = tabs.into_iter().map(|t| t.id).collect();
+        let this = cx.entity().downgrade();
+        native_menu::popup(entries, at, None, window, cx, move |ix, window, cx| {
+            let _ = this.update(cx, |this, cx| match ids.get(ix) {
+                Some(id) => this.select_details(id, cx),
+                None => this.show_add_view(window, cx),
+            });
+        });
+    }
+
+    /// Right-click on the strip: Add View…, and for a view of your own,
+    /// Configure… and Close.
+    fn show_strip_menu(
+        &mut self,
+        custom: Option<String>,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut entries: Vec<Entry> = Vec::new();
+        if custom.is_some() {
+            entries.push(Item::new("Configure…").into());
+            entries.push(Item::new("Close").into());
+            entries.push(Entry::Separator);
+        }
+        entries.push(Item::new("Add View…").into());
+        let this = cx.entity().downgrade();
+        native_menu::popup(entries, at, None, window, cx, move |ix, window, cx| {
+            let _ = this.update(cx, |this, cx| match (custom, ix) {
+                (Some(id), 0) => this.configure_view(&id, window, cx),
+                (Some(id), 1) => this.close_view(&id, cx),
+                _ => this.show_add_view(window, cx),
+            });
+        });
+    }
+
+    /// Right-click in the panel: Configure Open With… and Close.
+    fn show_panel_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let entries = vec![
+            Item::new("Configure Open With…").into(),
+            Entry::Separator,
+            Item::new("Close Details Panel").into(),
+        ];
+        let this = cx.entity().downgrade();
+        native_menu::popup(entries, at, None, window, cx, move |ix, window, cx| {
+            let _ = this.update(cx, |this, cx| match ix {
+                0 => this.configure_open_with(window, cx),
+                _ => this.toggle_details(cx),
+            });
+        });
+    }
+
+    fn field_focus(&mut self, id: FieldId, cx: &mut Context<Self>) -> FocusHandle {
+        self.details.fields[id as usize]
+            .focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    fn focus_field(&mut self, id: FieldId, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.field_focus(id, cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Gives focus back to the pane.
+    fn refocus_pane(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.active_panes().map(|p| p.focused.clone()) {
+            window.focus(&item.focus_handle(cx), cx);
+        }
+    }
+
+    /// A one-line text field: the caret after the text while focused, the
+    /// placeholder while empty.
+    fn render_field(
+        &mut self,
+        id: FieldId,
+        placeholder: &'static str,
+        window: &mut Window,
+        c: &PanelColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let focus = self.field_focus(id, cx);
+        let focused = focus.is_focused(window);
+        // The end of a long text, where the caret is.
+        let room = ((self.details_width() - 60.) / 6.5).max(8.) as usize;
+        let text = left_cut(&self.details.fields[id as usize].text, room);
+        let caret = div().flex_none().w(px(1.5)).h(px(14.)).bg(c.accent);
+        div()
+            .id(("details-field", id as usize))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
+                this.on_field_key(id, e, window, cx)
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.focus_field(id, window, cx);
+                }),
+            )
+            .h(px(24.))
+            .px(px(7.))
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .rounded(px(6.))
+            .bg(c.hover)
+            .border_1()
+            .border_color(if focused {
+                c.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .text_size(px(12.5))
+            .when(id == FieldId::Filter, |d| {
+                d.child(lucide("search", 12., c.tertiary))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .when(!text.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .text_color(c.text)
+                                .child(text.clone()),
+                        )
+                    })
+                    .when(focused, |d| d.child(caret))
+                    .when(text.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .pl(px(1.))
+                                .whitespace_nowrap()
+                                .text_color(c.tertiary)
+                                .child(placeholder),
+                        )
+                    }),
+            )
             .into_any_element()
+    }
+
+    fn on_field_key(
+        &mut self,
+        id: FieldId,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ks = &event.keystroke;
+        let mut edited = false;
+        if ks.modifiers.platform {
+            // ⌘V pastes a line; other ⌘ keys go on to their actions.
+            if ks.key != "v" {
+                return;
+            }
+            if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
+                let line = text.lines().next().unwrap_or_default().to_owned();
+                self.details.field(id).text.push_str(&line);
+                edited = true;
+            }
+        }
+        cx.stop_propagation();
+        match ks.key.as_str() {
+            _ if edited => {}
+            "escape" => match id {
+                FieldId::Filter if self.details.field(id).text.is_empty() => {
+                    self.refocus_pane(window, cx)
+                }
+                FieldId::Filter => {
+                    self.details.field(id).text.clear();
+                    self.refilter(cx);
+                }
+                FieldId::Commit => {
+                    self.details.git_ui.committing = false;
+                    self.details.field(id).text.clear();
+                    self.refocus_pane(window, cx);
+                }
+                FieldId::ViewName | FieldId::ViewTarget => {
+                    self.details.views.adding = None;
+                    self.refocus_pane(window, cx);
+                }
+            },
+            "enter" => match id {
+                FieldId::Filter => self.open_selected_file(window, cx),
+                FieldId::Commit => self.commit(cx),
+                FieldId::ViewName | FieldId::ViewTarget => self.add_view(cx),
+            },
+            "up" | "down" if id == FieldId::Filter => {
+                self.move_file_selection(ks.key == "down", cx)
+            }
+            "tab" if id == FieldId::ViewName => self.focus_field(FieldId::ViewTarget, window, cx),
+            "tab" if id == FieldId::ViewTarget => self.focus_field(FieldId::ViewName, window, cx),
+            _ => edited = super::picker::edit_query(&mut self.details.field(id).text, ks),
+        }
+        if edited && id == FieldId::Filter {
+            self.refilter(cx);
+        }
+        cx.notify();
     }
 
     fn render_info(
@@ -419,24 +819,10 @@ impl Workspace {
                     Box::new(move |_, _| open_in(&bundle, &path)),
                 ));
             }
-            for (ix, (label, glyph, run)) in actions.into_iter().enumerate() {
-                col = col.child(
-                    div()
-                        .id(("details-action", ix))
-                        .mx(px(INSET - 8.))
-                        .px(px(8.))
-                        .h(px(ROW_HEIGHT))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .rounded(px(6.))
-                        .text_color(c.accent)
-                        .hover(|s| s.bg(c.hover))
-                        .child(glyph.draw(c.accent))
-                        .child(label)
-                        .on_click(move |_, window, cx| run(window, cx)),
-                );
-            }
+            col = col.child(action_rows("details-action", actions, c));
+        }
+        if let Some(view) = view {
+            col = col.child(render_agent(view, c, cx));
         }
         let now = SystemTime::now();
         col = col
@@ -521,130 +907,42 @@ impl Workspace {
                     .on_click(move |_, _, cx| cx.open_url(&url)),
             );
         }
-        let _ = cx;
         col.into_any_element()
     }
+}
 
-    fn render_outline(
-        &self,
-        view: Option<&Entity<TerminalView>>,
-        c: &PanelColors,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut col = div().flex().flex_col().pt(px(8.));
-        let Some(view) = view else {
-            return col.into_any_element();
-        };
-        let (blocks, commands) = {
-            let session = view.read(cx).session();
-            let blocks: Vec<_> = session
-                .shell()
-                .blocks
-                .iter()
-                .rev()
-                .take(300)
-                .cloned()
-                .collect();
-            let commands: Vec<Option<String>> =
-                blocks.iter().map(|b| session.block_command(b)).collect();
-            (blocks, commands)
-        };
-        if let Some(cwd) = &self.details.cwd {
-            col = col.child(
-                div()
-                    .px(px(INSET - 8.))
-                    .h(px(LIST_ROW))
-                    .flex()
-                    .items_center()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(c.secondary)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(format!("{}/", tilde(cwd))),
-                    ),
-            );
+/// The Info tab's Agent group, for a pane an agent reported from: its
+/// name, whether it's working or waiting, its step and its session.
+fn render_agent(view: &Entity<TerminalView>, c: &PanelColors, cx: &mut gpui::App) -> AnyElement {
+    use crate::agents::{Badge, sessions};
+    let Some(status) = view.read(cx).status.clone() else {
+        return div().into_any_element();
+    };
+    let Some(name) = status.agent.clone() else {
+        return div().into_any_element();
+    };
+    let (state, color) = if status.in_turn {
+        ("Working", c.accent)
+    } else {
+        match status.badge {
+            Some(Badge::Awaiting) => ("Waiting for you", c.warning),
+            Some(Badge::Error) => ("Failed", c.danger),
+            _ => ("Waiting for a prompt", c.success),
         }
-        let mut any = false;
-        for (ix, (block, command)) in blocks.iter().zip(commands).enumerate().rev() {
-            let Some(command) = command else { continue };
-            any = true;
-            let ago = block
-                .started
-                .map(|s| format!("{} ago", short_duration(s.elapsed())))
-                .unwrap_or_default();
-            let failed = block.exit.is_some_and(|e| e != 0);
-            let row = block.prompt_row;
-            let target = view.clone();
-            col = col.child(
-                div()
-                    .id(("details-outline", ix))
-                    .mx(px(4.))
-                    .px(px(INSET - 12.))
-                    .h(px(ROW_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(6.))
-                    .hover(|s| s.bg(c.hover))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_color(if failed { c.danger } else { c.text })
-                            .child(command.lines().next().unwrap_or_default().to_owned()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.5))
-                            .text_color(c.tertiary)
-                            .child(ago),
-                    )
-                    .on_click(move |_, window, cx| {
-                        target.update(cx, |v, cx| v.reveal_row(row, cx));
-                        window.focus(&target.focus_handle(cx), cx);
-                    }),
-            );
-        }
-        if !any {
-            col = col.child(
-                div()
-                    .px(px(INSET - 8.))
-                    .pt(px(6.))
-                    .text_color(c.tertiary)
-                    .child("No commands yet"),
-            );
-        }
-        col.into_any_element()
-    }
-
-    fn render_git(&self, c: &PanelColors) -> AnyElement {
-        let mut col = div().flex().flex_col().pt(px(12.));
-        let Some(git) = &self.details.git else {
-            let msg = if self.details.git_at.is_some() || self.details.cwd.is_none() {
-                "Not a git repository"
-            } else {
-                "Loading…"
-            };
-            return col
-                .child(div().px(px(INSET)).text_color(c.tertiary).child(msg))
-                .into_any_element();
-        };
-        col = col.child(
+    };
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .child(div().h(px(SECTION_GAP - 10.)))
+        .child(header("Agent", c))
+        .child(
             div()
                 .px(px(INSET))
+                .h(px(LIST_ROW))
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
                 .child(
                     div()
                         .flex_1()
@@ -652,231 +950,202 @@ impl Workspace {
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(c.text)
-                        .child(git.branch.clone()),
+                        .child(name),
                 )
-                .when(git.added + git.removed > 0, |d| {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .text_color(c.secondary)
-                            .child(format!("+{} −{}", git.added, git.removed)),
-                    )
-                }),
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.5))
+                        .text_color(c.tertiary)
+                        .child(state),
+                ),
         );
-        if let Some(remote) = &git.remote {
-            let url = web_url(remote);
-            col = col.child(
-                div()
-                    .id("details-git-remote")
-                    .px(px(INSET))
-                    .pt(px(2.))
-                    .text_size(px(12.))
-                    .text_color(c.accent)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .cursor_pointer()
-                    .child(url.clone())
-                    .when(url.starts_with("http"), |d| {
-                        d.on_click(move |_, _, cx| cx.open_url(&url))
-                    }),
-            );
-        }
+    if let Some(message) = status.message.filter(|m| !m.trim().is_empty()) {
         col = col.child(
             div()
-                .mx(px(INSET))
-                .mt(px(14.))
-                .mb(px(8.))
-                .h(px(1.))
-                .bg(c.hover),
+                .px(px(INSET))
+                .pl(px(INSET + 16.))
+                .pb(px(4.))
+                .text_size(px(12.))
+                .text_color(c.secondary)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(message.lines().next().unwrap_or_default().to_owned()),
         );
-        let root = self.details.cwd.clone();
-        let sections: [(&str, Vec<Change>); 3] = [
-            ("Staged", git.staged.clone()),
-            ("Unstaged", git.unstaged.clone()),
-            (
-                "Untracked",
-                git.untracked
-                    .iter()
-                    .map(|p| Change {
-                        status: '?',
-                        path: p.clone(),
-                    })
-                    .collect(),
-            ),
-        ];
-        if sections.iter().all(|(_, l)| l.is_empty()) {
-            col = col.child(
-                div()
-                    .px(px(INSET))
-                    .pt(px(4.))
-                    .text_color(c.tertiary)
-                    .child("No changes"),
-            );
-        }
-        let mut ix = 0usize;
-        for (name, list) in sections {
-            if list.is_empty() {
-                continue;
-            }
-            col = col.child(header_text(format!("{name} ({})", list.len()), c));
-            for change in list {
-                ix += 1;
-                let color = match change.status {
-                    'A' | '?' => c.success,
-                    'D' => c.danger,
-                    _ => c.warning,
-                };
-                let path = root.as_ref().map(|r| r.join(&change.path));
-                col = col.child(
+    }
+    if let Some(session) = status.session {
+        col = col.child(
+            div()
+                .px(px(INSET))
+                .pl(px(INSET + 16.))
+                .h(px(LIST_ROW))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .child(div().flex_none().text_color(c.tertiary).child("Session"))
+                .child(
                     div()
-                        .id(("details-git", ix))
-                        .mx(px(INSET - 8.))
-                        .px(px(8.))
-                        .h(px(LIST_ROW))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .rounded(px(6.))
-                        .hover(|s| s.bg(c.hover))
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(10.))
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(color)
-                                .child(change.status.to_string()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_color(c.text)
-                                .child(left_ellipsis(&change.path, 34)),
-                        )
-                        .when_some(path, |d, path| {
-                            d.on_click(move |_, _, cx| {
-                                if path.exists() {
-                                    cx.open_with_system(&path)
-                                }
-                            })
-                        }),
-                );
-            }
-            col = col.child(div().h(px(10.)));
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(c.secondary)
+                        .child(session.chars().take(8).collect::<String>()),
+                ),
+        );
+        let mut actions: Vec<(SharedString, Icon, Run)> = Vec::new();
+        let id = session.clone();
+        actions.push((
+            "Copy Session ID".into(),
+            Icon::Copy,
+            Box::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))),
+        ));
+        if let Some(resume) = status
+            .agent_id
+            .as_deref()
+            .and_then(|a| sessions::resume_command(a, &session))
+        {
+            actions.push((
+                "Copy Resume Command".into(),
+                Icon::Copy,
+                Box::new(move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(resume.clone()))
+                }),
+            ));
         }
-        col.into_any_element()
+        col = col.child(action_rows("details-agent-action", actions, c));
     }
+    col.into_any_element()
+}
 
-    fn render_files(&mut self, c: &PanelColors, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.details.files.rows();
-        let hidden = self.details.files.show_hidden;
-        let tools = div()
-            .px(px(INSET - 8.))
-            .pt(px(6.))
-            .pb(px(6.))
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(c.secondary)
-                    .children(self.details.files.root.as_deref().map(tilde)),
-            )
-            .child(
-                tool_button("details-files-up", Icon::Up, c).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        let parent = this
-                            .details
-                            .files
-                            .root
-                            .as_deref()
-                            .and_then(Path::parent)
-                            .map(Path::to_path_buf);
-                        if parent.is_some() {
-                            this.details.files.set_root(parent);
-                            cx.notify();
-                        }
-                    },
-                )),
-            )
-            .child(
-                tool_button(
-                    "details-files-hidden",
-                    if hidden { Icon::Eye } else { Icon::EyeSlash },
-                    c,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.details.files.show_hidden = !this.details.files.show_hidden;
-                    cx.notify();
-                })),
-            );
-        let mut col = div().flex().flex_col().child(tools);
-        for (ix, (depth, entry)) in rows.into_iter().enumerate() {
-            let open = entry.dir && self.details.files.expanded.contains(&entry.path);
-            let path = entry.path.clone();
-            let dir = entry.dir;
-            col = col.child(
-                div()
-                    .id(("details-file", ix))
-                    .mx(px(4.))
-                    .pl(px(4. + depth as f32 * TREE_INDENT))
-                    .h(px(TREE_ROW))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .rounded(px(6.))
-                    .hover(|s| s.bg(c.hover))
-                    .child(div().flex_none().w(px(14.)).when(dir, |d| {
-                        d.child(if open {
-                            Icon::ChevronDown.draw(c.icon)
-                        } else {
-                            Icon::ChevronRight.draw(c.icon)
-                        })
-                    }))
-                    .child(if dir {
-                        Icon::Folder.draw(c.icon)
-                    } else {
-                        Icon::File.draw(c.icon)
-                    })
-                    .child(
-                        div()
-                            .pl(px(4.))
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_color(c.text)
-                            .child(entry.name),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if dir {
-                            let expanded = &mut this.details.files.expanded;
-                            if !expanded.remove(&path) {
-                                expanded.insert(path.clone());
-                            }
-                            cx.notify();
-                        } else {
-                            cx.open_with_system(&path);
-                        }
-                    })),
-            );
-        }
-        col.into_any_element()
+/// Info's accent rows that do something.
+fn action_rows(
+    id: &'static str,
+    actions: Vec<(SharedString, Icon, Run)>,
+    c: &PanelColors,
+) -> impl IntoElement {
+    let mut col = div().flex().flex_col();
+    for (ix, (label, glyph, run)) in actions.into_iter().enumerate() {
+        col = col.child(
+            div()
+                .id((id, ix))
+                .mx(px(INSET - 8.))
+                .px(px(8.))
+                .h(px(ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(6.))
+                .text_color(c.accent)
+                .hover(|s| s.bg(c.hover))
+                .child(glyph.draw(c.accent))
+                .child(label)
+                .on_click(move |_, window, cx| run(window, cx)),
+        );
     }
+    col
+}
+
+/// A tab's name in the strip.
+fn tab_label(view: &DetailsView) -> String {
+    match (&view.title, DetailsTab::from_id(&view.id)) {
+        (Some(title), _) => title.clone(),
+        (None, Some(tab)) => tab.label().to_owned(),
+        (None, None) => view.id.clone(),
+    }
+}
+
+/// The selected tab's pill: padding, icon, gap and its name at 13pt.
+fn pill_width(label: &str) -> f32 {
+    PILL_PAD * 2. + 15. + 5. + label.chars().count() as f32 * 7.2
+}
+
+/// A tab's icon: a built-in's own, a view's named icon or emoji, or a
+/// terminal or globe.
+fn strip_icon(view: &DetailsView, color: Hsla) -> AnyElement {
+    if view.kind == ViewKind::Builtin
+        && let Some(tab) = DetailsTab::from_id(&view.id)
+    {
+        return tab_icon(tab, color);
+    }
+    let named = view
+        .icon
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
+    if let Some(name) = named {
+        if let Some(path) = crate::tab_icons::path(name) {
+            return gpui::svg()
+                .path(path)
+                .flex_none()
+                .size(px(13.))
+                .text_color(color)
+                .into_any_element();
+        }
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return div()
+                .flex_none()
+                .w(px(15.))
+                .flex()
+                .justify_center()
+                .text_size(px(11.))
+                .child(name.to_owned())
+                .into_any_element();
+        }
+    }
+    let fallback = if view.kind == ViewKind::Web {
+        "globe"
+    } else {
+        "terminal"
+    };
+    lucide(fallback, 13., color)
+}
+
+/// One of the bundled Lucide icons.
+pub(super) fn lucide(name: &str, size: f32, color: Hsla) -> AnyElement {
+    gpui::svg()
+        .path(format!("icons/{name}.svg"))
+        .flex_none()
+        .size(px(size))
+        .text_color(color)
+        .into_any_element()
+}
+
+/// A small icon button with a tooltip.
+fn tool_button_svg(
+    id: impl Into<gpui::ElementId>,
+    icon: &'static str,
+    tip: &'static str,
+    c: &PanelColors,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = c.selected;
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(20.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .hover(move |s| s.bg(hover))
+        .child(lucide(icon, 12., c.icon))
+        .tooltip(move |_, cx| crate::tooltip::text(tip, cx))
+        // Not a click on the row it's in.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// The last `max` characters of `text`, after an ellipsis.
+fn left_cut(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_owned();
+    }
+    let tail: String = text.chars().skip(n - max + 1).collect();
+    format!("…{tail}")
 }
 
 /// What an Info action does when clicked.
@@ -1044,101 +1313,6 @@ fn left_ellipsis(path: &str, max: usize) -> String {
         Some(i) if i < tail.len() - 1 => format!("…{}", &tail[i..]),
         _ => format!("…{tail}"),
     }
-}
-
-/// A remote as a browsable URL (`git@github.com:a/b.git` → https).
-pub(crate) fn web_url(remote: &str) -> String {
-    let r = remote.trim().trim_end_matches(".git");
-    if let Some(rest) = r.strip_prefix("git@")
-        && let Some((host, path)) = rest.split_once(':')
-    {
-        return format!("https://{host}/{path}");
-    }
-    if let Some(rest) = r.strip_prefix("ssh://git@") {
-        return format!("https://{rest}");
-    }
-    r.to_owned()
-}
-
-fn git_summary(dir: &Path) -> Option<GitSummary> {
-    let git = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .output()
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-    };
-    let status = git(&["status", "--porcelain=v2", "--branch", "-z"])?;
-    let mut summary = parse_status(&status);
-    if let Some(stat) = git(&["diff", "HEAD", "--numstat"]) {
-        (summary.added, summary.removed) = parse_numstat(&stat);
-    }
-    summary.remote = git(&["remote", "get-url", "origin"])
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    Some(summary)
-}
-
-/// `git status --porcelain=v2 --branch -z`.
-fn parse_status(out: &str) -> GitSummary {
-    let mut s = GitSummary::default();
-    let mut fields = out.split('\0');
-    while let Some(entry) = fields.next() {
-        if let Some(head) = entry.strip_prefix("# branch.head ") {
-            s.branch = head.to_owned();
-        } else if let Some(path) = entry.strip_prefix("? ") {
-            s.untracked.push(path.to_owned());
-        } else if entry.starts_with("1 ") || entry.starts_with("2 ") || entry.starts_with("u ") {
-            let kind = entry.as_bytes()[0];
-            // Ordinary: 8 fields before the path; renamed: 9; unmerged: 10.
-            let skip = match kind {
-                b'1' => 8,
-                b'2' => 9,
-                _ => 10,
-            };
-            let mut parts = entry.splitn(skip + 1, ' ');
-            let xy: Vec<char> = parts.nth(1).unwrap_or("..").chars().collect();
-            let path = parts.nth(skip - 2).unwrap_or_default().to_owned();
-            if kind == b'2' {
-                fields.next(); // the original path
-            }
-            let (x, y) = (
-                xy.first().copied().unwrap_or('.'),
-                xy.get(1).copied().unwrap_or('.'),
-            );
-            if kind == b'u' {
-                s.unstaged.push(Change { status: 'U', path });
-                continue;
-            }
-            if x != '.' {
-                s.staged.push(Change {
-                    status: x,
-                    path: path.clone(),
-                });
-            }
-            if y != '.' {
-                s.unstaged.push(Change { status: y, path });
-            }
-        }
-    }
-    if s.branch == "(detached)" {
-        s.branch = "detached HEAD".into();
-    }
-    s
-}
-
-fn parse_numstat(out: &str) -> (u32, u32) {
-    out.lines().fold((0, 0), |(a, r), line| {
-        let mut f = line.split('\t');
-        let add = f.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
-        let del = f.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
-        (a + add, r + del)
-    })
 }
 
 /// TCP ports the processes listen on, as (port, pid).
@@ -1431,6 +1605,8 @@ fn tab_icon(tab: DetailsTab, color: Hsla) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn reads_lsof_names() {
         let out =
@@ -1444,46 +1620,27 @@ mod tests {
         );
     }
 
-    use super::*;
-
-    #[test]
-    fn porcelain_v2_status() {
-        let out = "# branch.oid abc\0# branch.head main\0\
-            1 .M N... 100644 100644 100644 aaa bbb src/lib.rs\0\
-            1 A. N... 000000 100644 100644 000 ccc new file.txt\0\
-            1 MM N... 100644 100644 100644 aaa bbb both.rs\0\
-            2 R. N... 100644 100644 100644 aaa bbb R100 renamed.rs\0old.rs\0\
-            ? notes.md\0";
-        let s = parse_status(out);
-        assert_eq!(s.branch, "main");
-        let names = |l: &[Change]| -> Vec<(char, String)> {
-            l.iter().map(|c| (c.status, c.path.clone())).collect()
-        };
-        assert_eq!(
-            names(&s.staged),
-            [
-                ('A', "new file.txt".to_owned()),
-                ('M', "both.rs".to_owned()),
-                ('R', "renamed.rs".to_owned())
-            ]
-        );
-        assert_eq!(
-            names(&s.unstaged),
-            [('M', "src/lib.rs".to_owned()), ('M', "both.rs".to_owned())]
-        );
-        assert_eq!(s.untracked, ["notes.md"]);
-    }
-
     #[test]
     fn lsof_ports_and_helpers() {
         let out = "p100\nf5\nn*:3000\nf6\nn[::1]:3000\np200\nf7\nn127.0.0.1:5173\n";
         assert_eq!(parse_lsof(out), [(3000, 100), (5173, 200)]);
-        assert_eq!(parse_numstat("3\t1\ta\n-\t-\tbin\n10\t0\tb\n"), (13, 1));
-        assert_eq!(web_url("git@github.com:a/b.git"), "https://github.com/a/b");
         assert_eq!(
             left_ellipsis("docs/user/workspace/file-pane.md", 20),
             "…/file-pane.md"
         );
         assert_eq!(short_duration(Duration::from_secs(125)), "2m");
+        assert_eq!(left_cut("abcdef", 4), "…def");
+        assert_eq!(left_cut("abc", 4), "abc");
+    }
+
+    #[test]
+    fn strip_labels() {
+        assert_eq!(tab_label(&DetailsView::builtin("git")), "Git");
+        let mut v = DetailsView::builtin("docker");
+        v.kind = ViewKind::Tui;
+        assert_eq!(tab_label(&v), "docker");
+        v.title = Some("Docker".into());
+        assert_eq!(tab_label(&v), "Docker");
+        assert!(pill_width("Outline") > TAB_WIDTH);
     }
 }

@@ -3170,7 +3170,10 @@ impl Render for Workspace {
         self.auto_hide_sidebar();
         let sidebar = self.sidebar_shown().then(|| self.render_sidebar(cx));
         let mut tab_bar = self.tab_bar_shown().then(|| self.render_tab_bar(cx));
-        let details = self.details.visible.then(|| self.render_details(cx));
+        let details = self
+            .details
+            .visible
+            .then(|| self.render_details(window, cx));
         let (titlebar_buttons, details_button) = self.render_titlebar_buttons(cx);
         let overlays: Vec<AnyElement> = [
             self.render_palette(window, cx)
@@ -3466,7 +3469,7 @@ impl Render for Workspace {
                 this.type_command(a.clone(), window, cx)
             }))
             .on_mouse_move(cx.listener(|this, event, window, cx| {
-                if !this.drag_sidebar(event, cx) {
+                if !this.drag_sidebar(event, cx) && !this.drag_details(event, window, cx) {
                     this.drag_divider(event, window, cx);
                 }
             }))
@@ -3475,6 +3478,7 @@ impl Render for Workspace {
                 cx.listener(|this, _, _, cx| {
                     this.dragging = None;
                     this.finish_sidebar_drag(cx);
+                    this.finish_details_drag(cx);
                 }),
             )
             .on_action(
