@@ -1286,38 +1286,44 @@ fn iso_from_millis(ms: i64) -> String {
     )
 }
 
-/// The command that reopens a session, in its folder.
-pub fn resume_command(agent: &str, id: &str) -> Option<String> {
+/// What starts `agent`: `launch`, its `agent-command` from the config, when
+/// it has one, else the agent's own program.
+pub fn launch_command<'a>(agent: &str, launch: Option<&'a str>) -> Option<&'a str> {
+    launch
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .or_else(|| super::by_id(agent).map(|a| a.command))
+}
+
+/// The command that reopens a session, in its folder: the agent's launch
+/// command (see [`launch_command`]) and its own resume arguments.
+pub fn resume_command(agent: &str, id: &str, launch: Option<&str>) -> Option<String> {
     let id = quote(id);
-    Some(match agent {
-        "claude" => format!("claude --resume {id}"),
-        "codex" => format!("codex resume {id}"),
-        "opencode" => format!("opencode --session {id}"),
-        "cursor" => format!("agent --resume {id}"),
-        "kimi" => format!("kimi --session {id}"),
-        "pi" | "omp" => format!("{agent} --session {id}"),
-        "grok" => format!("grok --resume {id}"),
-        "reasonix" => format!("reasonix --resume {id}"),
-        "codebuddy" => format!("codebuddy --resume {id}"),
-        "antigravity" => format!("agy --conversation {id}"),
-        "copilot" => format!("copilot --resume {id}"),
+    let args = match agent {
+        "claude" | "cursor" | "grok" | "reasonix" | "codebuddy" | "copilot" => {
+            format!("--resume {id}")
+        }
+        "codex" => format!("resume {id}"),
+        "opencode" | "kimi" | "pi" | "omp" => format!("--session {id}"),
+        "antigravity" => format!("--conversation {id}"),
         _ => return None,
-    })
+    };
+    Some(format!("{} {args}", launch_command(agent, launch)?))
 }
 
 /// The command that starts a new session from a copy of this one, where the
-/// agent has one.
-pub fn fork_command(agent: &str, id: &str) -> Option<String> {
+/// agent has one (see [`resume_command`]).
+pub fn fork_command(agent: &str, id: &str, launch: Option<&str>) -> Option<String> {
     let id = quote(id);
-    Some(match agent {
-        "claude" => format!("claude --resume {id} --fork-session"),
-        "codex" => format!("codex fork {id}"),
-        "opencode" => format!("opencode --fork --session {id}"),
-        "pi" | "omp" => format!("{agent} --fork {id}"),
-        "grok" => format!("grok --resume {id} --fork-session"),
-        "reasonix" => format!("reasonix --resume {id} --copy"),
+    let args = match agent {
+        "claude" | "grok" => format!("--resume {id} --fork-session"),
+        "codex" => format!("fork {id}"),
+        "opencode" => format!("--fork --session {id}"),
+        "pi" | "omp" => format!("--fork {id}"),
+        "reasonix" => format!("--resume {id} --copy"),
         _ => return None,
-    })
+    };
+    Some(format!("{} {args}", launch_command(agent, launch)?))
 }
 
 /// What the agent calls forking.
@@ -1692,7 +1698,7 @@ Done.
         let roles: Vec<Role> = transcript(session).iter().map(|m| m.role).collect();
         assert_eq!(roles, [Role::User, Role::Tool, Role::Assistant, Role::Tool]);
         assert_eq!(
-            resume_command("omp", &session.id).unwrap(),
+            resume_command("omp", &session.id, None).unwrap(),
             format!("omp --session '{}'", path.display())
         );
     }
@@ -1820,10 +1826,10 @@ Done.
         assert_eq!(session.title, "Fix the flaky test");
         assert_eq!(session.cwd.as_deref(), Some(Path::new("/work/kimi")));
         assert_eq!(
-            resume_command("kimi", &session.id).unwrap(),
+            resume_command("kimi", &session.id, None).unwrap(),
             format!("kimi --session {KIMI_ID}")
         );
-        assert_eq!(fork_command("kimi", &session.id), None);
+        assert_eq!(fork_command("kimi", &session.id, None), None);
 
         let messages = transcript(session);
         let texts: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
@@ -1860,29 +1866,61 @@ Done.
     #[test]
     fn quotes_ids_in_commands() {
         assert_eq!(
-            resume_command("claude", "abc-123").as_deref(),
+            resume_command("claude", "abc-123", None).as_deref(),
             Some("claude --resume abc-123")
         );
         assert_eq!(
-            fork_command("claude", "abc").as_deref(),
+            fork_command("claude", "abc", None).as_deref(),
             Some("claude --resume abc --fork-session")
         );
         assert_eq!(
-            fork_command("pi", "/tmp/it's here.jsonl").as_deref(),
+            fork_command("pi", "/tmp/it's here.jsonl", None).as_deref(),
             Some(r"pi --fork '/tmp/it'\''s here.jsonl'")
         );
         assert_eq!(
-            resume_command("antigravity", "c1").as_deref(),
+            resume_command("antigravity", "c1", None).as_deref(),
             Some("agy --conversation c1")
         );
         assert_eq!(
-            resume_command("cursor", "c1").as_deref(),
+            resume_command("cursor", "c1", None).as_deref(),
             Some("agent --resume c1")
         );
-        assert_eq!(fork_command("cursor", "x"), None);
-        assert_eq!(resume_command("nope", "x"), None);
+        assert_eq!(fork_command("cursor", "x", None), None);
+        assert_eq!(resume_command("nope", "x", None), None);
         assert_eq!(fork_label("claude"), "Branch");
         assert_eq!(fork_label("codex"), "Fork");
+    }
+
+    #[test]
+    fn launch_commands_replace_the_program() {
+        let claude = Some("claude --dangerously-skip-permissions");
+        assert_eq!(
+            resume_command("claude", "abc", claude).as_deref(),
+            Some("claude --dangerously-skip-permissions --resume abc")
+        );
+        assert_eq!(
+            fork_command("claude", "abc", claude).as_deref(),
+            Some("claude --dangerously-skip-permissions --resume abc --fork-session")
+        );
+        let codex = Some(" /opt/homebrew/bin/codex --profile work ");
+        assert_eq!(
+            fork_command("codex", "019a", codex).as_deref(),
+            Some("/opt/homebrew/bin/codex --profile work fork 019a")
+        );
+        assert_eq!(
+            resume_command("kimi", "session_1", Some("op run -- kimi")).as_deref(),
+            Some("op run -- kimi --session session_1")
+        );
+        // Blank is the built-in command, and an agent without a fork has
+        // none whatever it's started with.
+        assert_eq!(
+            resume_command("codex", "x", Some("  ")).as_deref(),
+            Some("codex resume x")
+        );
+        assert_eq!(fork_command("kimi", "x", Some("kimi --yolo")), None);
+        assert_eq!(launch_command("cursor", None), Some("agent"));
+        assert_eq!(launch_command("pi", Some("pi --x")), Some("pi --x"));
+        assert_eq!(launch_command("nope", None), None);
     }
 
     #[test]

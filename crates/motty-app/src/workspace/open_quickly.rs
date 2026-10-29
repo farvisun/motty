@@ -1238,7 +1238,8 @@ impl Workspace {
 
     /// ⌘K on a session: resume, fork it somewhere, read it, copy its id.
     fn session_actions(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
-        let fork = crate::agents::sessions::fork_command(session.agent, &session.id).is_some();
+        let fork =
+            crate::agents::sessions::fork_command(session.agent, &session.id, None).is_some();
         let label = crate::agents::sessions::fork_label(session.agent);
         let places = [
             ("tab", "New Tab"),

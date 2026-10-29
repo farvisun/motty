@@ -768,9 +768,10 @@ impl Workspace {
                 let view = self.new_terminal_with(None, cwd, preload, rect, window, cx)?;
                 // Privilege: Resume Session on Recovery.
                 let resume = agent.as_ref().filter(|_| self.config.badges.resume_session);
-                if let Some(line) = resume
-                    .and_then(|[agent, id]| crate::agents::sessions::resume_command(agent, id))
-                {
+                if let Some(line) = resume.and_then(|[agent, id]| {
+                    let launch = self.config.agent_command(agent);
+                    crate::agents::sessions::resume_command(agent, id, launch)
+                }) {
                     let line = format!("{line}\r");
                     view.update(cx, |v, cx| v.write_input(&line, cx));
                 }
@@ -2363,7 +2364,7 @@ impl Workspace {
             s.vi = v.in_vi_mode();
             s.fork = v.status.as_ref().and_then(|st| {
                 let (agent, id) = (st.agent_id.as_deref()?, st.session.as_deref()?);
-                crate::agents::sessions::fork_command(agent, id)
+                crate::agents::sessions::fork_command(agent, id, None)
                     .map(|_| crate::agents::sessions::fork_label(agent))
             });
         }

@@ -1006,16 +1006,22 @@ fn render_agent(view: &Entity<TerminalView>, c: &PanelColors, cx: &mut gpui::App
             Icon::Copy,
             Box::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))),
         ));
-        if let Some(resume) = status
+        if let Some(agent) = status
             .agent_id
-            .as_deref()
-            .and_then(|a| sessions::resume_command(a, &session))
+            .clone()
+            .filter(|a| sessions::resume_command(a, &session, None).is_some())
         {
+            let id = session.clone();
             actions.push((
                 "Copy Resume Command".into(),
                 Icon::Copy,
+                // With the agent's `agent-command` as the config has it now.
                 Box::new(move |_, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(resume.clone()))
+                    let config = crate::load_config();
+                    let launch = config.agent_command(&agent);
+                    if let Some(resume) = sessions::resume_command(&agent, &id, launch) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(resume))
+                    }
                 }),
             ));
         }

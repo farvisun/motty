@@ -220,7 +220,7 @@ fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
             "View Session History",
             ViewSessionHistory,
         ));
-        if crate::agents::sessions::fork_command(agent, id).is_some() {
+        if crate::agents::sessions::fork_command(agent, id, None).is_some() {
             let label = crate::agents::sessions::fork_label(agent);
             for (place, action) in [
                 ("New Tab", Box::new(ForkSessionInNewTab) as Box<dyn Action>),

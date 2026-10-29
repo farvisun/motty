@@ -241,7 +241,10 @@ impl Workspace {
         } else {
             Place::Tab
         };
-        if let Some(view) = self.start_in(agent.command, cwd, place, window, cx) {
+        let line = sessions::launch_command(agent.id, self.config.agent_command(agent.id))
+            .unwrap_or(agent.command)
+            .to_owned();
+        if let Some(view) = self.start_in(&line, cwd, place, window, cx) {
             cx.set_global(LastChat(view.entity_id()));
             view.update(cx, |v, cx| v.attach(chip, window, cx));
         }
@@ -312,10 +315,11 @@ impl Workspace {
             }
             return;
         }
+        let launch = self.config.agent_command(&a.agent);
         let command = if a.fork {
-            sessions::fork_command(&a.agent, &a.id)
+            sessions::fork_command(&a.agent, &a.id, launch)
         } else {
-            sessions::resume_command(&a.agent, &a.id)
+            sessions::resume_command(&a.agent, &a.id, launch)
         };
         let Some(command) = command else {
             return window.play_system_bell();
