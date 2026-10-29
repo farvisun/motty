@@ -95,14 +95,6 @@ impl QuickLookView {
         cx.notify();
     }
 
-    /// Hides the preview while a GPUI overlay (a palette, a menu) covers
-    /// it, since it would draw over the overlay.
-    pub fn set_suppressed(&self, suppressed: bool) {
-        if let Some(native) = &self.native {
-            native.set_suppressed(suppressed);
-        }
-    }
-
     fn render_toolbar(&self) -> gpui::AnyElement {
         let ink = Ink(self.style.palette[NamedColor::Foreground as usize]);
         let pdf = extension(&self.path) == "pdf";
@@ -165,6 +157,9 @@ impl Overlaid for Native {
     }
     fn blur(&self) {
         Native::blur(self)
+    }
+    fn set_suppressed(&self, suppressed: bool) {
+        Native::set_suppressed(self, suppressed)
     }
 }
 
