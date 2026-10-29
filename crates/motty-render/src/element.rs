@@ -26,8 +26,8 @@ use motty_theme::{FaceMode, FontBlending, Rgba};
 
 use crate::bidi::{self, BidiCell, LineOrder, VisualMap};
 use crate::box_drawing;
-use crate::motion::FrameMotion;
 use crate::contrast::Contrast;
+use crate::motion::FrameMotion;
 use crate::style::{TerminalStyle, hsla};
 
 /// Geometry of the last painted frame, shared with the view for hit-testing.
@@ -207,7 +207,6 @@ impl TerminalElement {
         self.motion = motion;
         self
     }
-
 
     /// Hides blinking cells (the off half of the blink cycle).
     pub fn blink_off(mut self, off: bool) -> Self {
@@ -424,7 +423,8 @@ impl gpui::Element for TerminalElement {
         };
         self.layout_sink.set(Some(layout));
         if let Some(map) = &self.visual_map {
-            map.borrow_mut().rows = snapshot.orders[snapshot.grid_row0.min(snapshot.orders.len())..].to_vec();
+            map.borrow_mut().rows =
+                snapshot.orders[snapshot.grid_row0.min(snapshot.orders.len())..].to_vec();
         }
         let faces = Faces::new(&style, window);
         let mut prepaint = build(&snapshot, &style, &faces, metrics, rows_origin, window);
