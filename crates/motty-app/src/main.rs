@@ -3,6 +3,9 @@ mod agents;
 mod dock;
 mod dock_click;
 mod editor;
+// Not shown anywhere yet: the pane kinds for images and Quick Look.
+#[allow(dead_code)]
+mod file_kind;
 mod file_search;
 #[allow(dead_code)]
 mod folder_view;
