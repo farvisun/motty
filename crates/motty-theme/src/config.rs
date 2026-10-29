@@ -65,6 +65,9 @@ pub struct Config {
     pub link_cmd_shift_click: LinkShiftClick,
     /// `open-with-app = "Name|bundle.id"` entries, in file order.
     pub open_with_apps: Vec<String>,
+    /// `agent-command = <agent>=<command>` lines, in file order (see
+    /// [`Config::agent_command`]).
+    pub agent_commands: Vec<AgentCommand>,
     /// The `autocomplete-*` keys.
     pub autocomplete: Autocomplete,
     /// `keybind = <trigger>=<action>` entries, in file order.
@@ -594,6 +597,45 @@ pub enum NewTabPosition {
     AfterCurrent,
 }
 
+/// An `agent-command` line: what starts an agent in place of its own
+/// program (a wrapper, an absolute path, global flags). The arguments that
+/// resume or fork a session are added after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentCommand {
+    /// The catalog id: `claude`, `codex`, `kimi`, …
+    pub agent: String,
+    /// Empty for the built-in command.
+    pub command: String,
+}
+
+impl AgentCommand {
+    /// `claude=claude --dangerously-skip-permissions`: the agent id up to the
+    /// first `=`, the command after it.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (agent, command) = s.split_once('=')?;
+        let agent = agent.trim();
+        if agent.is_empty() || agent.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(Self {
+            agent: agent.to_owned(),
+            command: command.trim().to_owned(),
+        })
+    }
+}
+
+impl Config {
+    /// The command `agent` is started with, from its last `agent-command`
+    /// line; `None` for the built-in one.
+    pub fn agent_command(&self, agent: &str) -> Option<&str> {
+        self.agent_commands
+            .iter()
+            .rfind(|c| c.agent == agent)
+            .map(|c| c.command.as_str())
+            .filter(|c| !c.is_empty())
+    }
+}
+
 impl Config {
     /// `title-from-osc`, on unless turned off: programs may rename tabs.
     pub fn programs_set_title(&self) -> bool {
@@ -1070,6 +1112,10 @@ impl Config {
                     _ => unknown.push(format!("config.toml {key}: unknown action {value}")),
                 },
                 "open-with-app" => out.open_with_apps.extend(str_of(value)),
+                "agent-command" => match value.as_str().and_then(AgentCommand::parse) {
+                    Some(command) => out.agent_commands.push(command),
+                    None => unknown.push(format!("config.toml agent-command: can't read {value}")),
+                },
                 "autocomplete-shortcut" => match value.as_str() {
                     Some("tab") => out.autocomplete.shortcut = AcceptKey::Tab,
                     Some("tab+right-arrow") => out.autocomplete.shortcut = AcceptKey::TabRightArrow,
@@ -1539,6 +1585,53 @@ fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
     out
 }
 
+/// Sets `agent`'s `agent-command` in Motty's config.toml; an empty
+/// `command` goes back to the built-in one.
+pub fn save_agent_command(agent: &str, command: &str) -> std::io::Result<PathBuf> {
+    edit(|src| set_agent_command_in(src, agent, command))
+}
+
+/// `src` with `agent`'s `agent-command` lines replaced by one for `command`,
+/// where the first one was (or at the end), or with none when it's empty.
+fn set_agent_command_in(src: &str, agent: &str, command: &str) -> String {
+    let command = command.trim();
+    let line = (!command.is_empty()).then(|| {
+        let value = toml::Value::String(format!("{agent}={command}"));
+        format!("agent-command = {value}")
+    });
+    let names_agent = |l: &str| {
+        let trimmed = l.trim_start();
+        trimmed.split(['=', ' ']).next() == Some("agent-command")
+            && parse_entries(trimmed).0.iter().any(|(k, v)| {
+                k == "agent-command"
+                    && v.as_str()
+                        .and_then(AgentCommand::parse)
+                        .is_some_and(|c| c.agent == agent)
+            })
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut placed = false;
+    for l in src.lines() {
+        if names_agent(l) {
+            if !placed {
+                lines.extend(line.clone());
+                placed = true;
+            }
+            continue;
+        }
+        lines.push(l.to_owned());
+    }
+    if !placed && let Some(line) = line {
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        lines.push(line);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 pub fn save(changes: &[(&str, Option<toml::Value>)]) -> std::io::Result<PathBuf> {
     edit(|src| {
         let mut src = src.to_owned();
@@ -1839,6 +1932,63 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn agent_commands() {
+        let cfg = Config::parse(
+            "agent-command = claude=claude --dangerously-skip-permissions\n\
+             agent-command = codex=/opt/homebrew/bin/codex --profile work # mine\n\
+             agent-command = \"kimi=kimi --yolo\"\n\
+             agent-command = kimi=\n\
+             agent-command = no command\n",
+        );
+        assert_eq!(
+            cfg.warnings,
+            ["config.toml agent-command: can't read \"no command\""]
+        );
+        assert_eq!(
+            cfg.agent_command("claude"),
+            Some("claude --dangerously-skip-permissions")
+        );
+        assert_eq!(
+            cfg.agent_command("codex"),
+            Some("/opt/homebrew/bin/codex --profile work")
+        );
+        // A later empty line puts the built-in command back.
+        assert_eq!(cfg.agent_command("kimi"), None);
+        assert_eq!(cfg.agent_command("pi"), None);
+        assert_eq!(
+            AgentCommand::parse(" omp = omp --x=1 "),
+            Some(AgentCommand {
+                agent: "omp".into(),
+                command: "omp --x=1".into()
+            })
+        );
+        assert_eq!(AgentCommand::parse("=claude"), None);
+    }
+
+    #[test]
+    fn agent_commands_are_written_back() {
+        let src = "theme = \"Nord\"\nagent-command = claude=claude\nfont-size = 13\nagent-command = codex=codex -p\nagent-command = \"claude=x\"\n\n";
+        let out = set_agent_command_in(src, "claude", "my-wrapper claude --flag \"a b\"");
+        assert_eq!(
+            out,
+            "theme = \"Nord\"\nagent-command = 'claude=my-wrapper claude --flag \"a b\"'\nfont-size = 13\nagent-command = codex=codex -p\n\n"
+        );
+        let cfg = Config::parse(&out);
+        assert_eq!(
+            cfg.agent_command("claude"),
+            Some("my-wrapper claude --flag \"a b\"")
+        );
+        assert_eq!(cfg.agent_command("codex"), Some("codex -p"));
+        let out = set_agent_command_in(&out, "kimi", "kimi --yolo");
+        assert!(out.ends_with("agent-command = \"kimi=kimi --yolo\"\n"));
+        let out = set_agent_command_in(&out, "claude", "  ");
+        let cfg = Config::parse(&out);
+        assert_eq!(cfg.agent_command("claude"), None);
+        assert_eq!(cfg.agent_command("kimi"), Some("kimi --yolo"));
+        assert_eq!(cfg.agent_commands.len(), 2);
     }
 
     #[test]
