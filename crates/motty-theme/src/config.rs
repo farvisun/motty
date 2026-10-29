@@ -68,6 +68,10 @@ pub struct Config {
     /// `agent-command = <agent>=<command>` lines, in file order (see
     /// [`Config::agent_command`]).
     pub agent_commands: Vec<AgentCommand>,
+    /// `agent-quota-off = claude` entries: the agents whose plan quota
+    /// isn't read. The ones switched off are recorded, so an agent that
+    /// learns to report a quota arrives switched on.
+    pub agent_quota_off: Vec<String>,
     /// The `autocomplete-*` keys.
     pub autocomplete: Autocomplete,
     /// `keybind = <trigger>=<action>` entries, in file order.
@@ -637,6 +641,11 @@ impl Config {
 }
 
 impl Config {
+    /// Show Plan Quota for an agent: on unless `agent-quota-off` names it.
+    pub fn shows_quota(&self, agent: &str) -> bool {
+        !self.agent_quota_off.iter().any(|a| a == agent)
+    }
+
     /// `title-from-osc`, on unless turned off: programs may rename tabs.
     pub fn programs_set_title(&self) -> bool {
         self.title_from_osc.unwrap_or(true)
@@ -1116,6 +1125,12 @@ impl Config {
                     Some(command) => out.agent_commands.push(command),
                     None => unknown.push(format!("config.toml agent-command: can't read {value}")),
                 },
+                "agent-quota-off" => {
+                    let id = value.as_str().map(str::trim).unwrap_or_default();
+                    if !id.is_empty() && !out.agent_quota_off.iter().any(|a| a == id) {
+                        out.agent_quota_off.push(id.to_owned());
+                    }
+                }
                 "autocomplete-shortcut" => match value.as_str() {
                     Some("tab") => out.autocomplete.shortcut = AcceptKey::Tab,
                     Some("tab+right-arrow") => out.autocomplete.shortcut = AcceptKey::TabRightArrow,
@@ -1558,17 +1573,36 @@ fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
             }
         })
         .collect();
+    replace_repeated(src, "tab-rule", &lines)
+}
+
+/// Replaces every `agent-quota-off` line with one per agent in `agents`.
+pub fn save_quota_off(agents: &[String]) -> std::io::Result<PathBuf> {
+    edit(|src| replace_quota_off(src, agents))
+}
+
+fn replace_quota_off(src: &str, agents: &[String]) -> String {
+    let lines: String = agents
+        .iter()
+        .map(|a| format!("agent-quota-off = {}\n", toml::Value::String(a.clone())))
+        .collect();
+    replace_repeated(src, "agent-quota-off", &lines)
+}
+
+/// Puts `lines` where the first `key` line was (or at the end), dropping
+/// the other `key` lines.
+fn replace_repeated(src: &str, key: &str, lines: &str) -> String {
     let mut out = String::new();
     let mut placed = false;
     for line in src.lines() {
-        let key = line
+        let this = line
             .trim_start()
             .split(['=', ' '])
             .next()
             .unwrap_or_default();
-        if key == "tab-rule" {
+        if this == key {
             if !placed {
-                out.push_str(&lines);
+                out.push_str(lines);
                 placed = true;
             }
             continue;
@@ -1580,7 +1614,7 @@ fn replace_tab_rules(src: &str, rules: &[TabRule]) -> String {
         if !out.is_empty() && !out.ends_with("\n\n") {
             out.push('\n');
         }
-        out.push_str(&lines);
+        out.push_str(lines);
     }
     out
 }
@@ -2007,6 +2041,22 @@ mod tests {
         let added = replace_tab_rules("theme = \"Nord\"\n", &rules[..1]);
         assert_eq!(Config::parse(&added).tab_rules, rules[..1]);
         assert_eq!(replace_tab_rules(src, &[]).matches("tab-rule").count(), 0);
+    }
+
+    #[test]
+    fn quota_off_round_trips() {
+        let src = "theme = \"Nord\"\nagent-quota-off = \"codex\"\nfont-size = 13\nagent-quota-off = codex\n";
+        let cfg = Config::parse(src);
+        assert_eq!(cfg.agent_quota_off, ["codex"]);
+        assert!(cfg.shows_quota("claude") && !cfg.shows_quota("codex"));
+        let off = ["codex".to_owned(), "claude".to_owned()];
+        let out = replace_quota_off(src, &off);
+        assert_eq!(out.matches("agent-quota-off").count(), 2);
+        assert!(out.ends_with("font-size = 13\n"));
+        assert_eq!(Config::parse(&out).agent_quota_off, off);
+        let none = replace_quota_off(&out, &[]);
+        assert!(!none.contains("agent-quota-off"));
+        assert!(Config::parse("").shows_quota("omp"));
     }
 
     #[test]
