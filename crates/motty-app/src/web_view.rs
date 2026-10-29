@@ -21,6 +21,8 @@ use gpui::{
 
 #[cfg(target_os = "macos")]
 use mac::Native;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::Overlay;
 #[cfg(not(target_os = "macos"))]
 use stub::Native;
 
@@ -291,7 +293,7 @@ impl Render for WebView {
                     |_, _, _| {},
                     move |bounds, (), window, _| {
                         if let Some(native) = native {
-                            paint(native, id, bounds, window);
+                            paint_overlay(native, "web-view", id, bounds, window);
                         }
                     },
                 )
@@ -300,10 +302,34 @@ impl Render for WebView {
     }
 }
 
-fn paint(native: Rc<Native>, id: EntityId, bounds: Bounds<Pixels>, window: &mut Window) {
+/// A native view drawn over GPUI's, where its element paints (see the
+/// module docs): the web view, Quick Look's preview.
+pub(crate) trait Overlaid {
+    /// Records a paint and returns its number.
+    fn painted(&self) -> u64;
+    /// A frame ended without paint `paint` being repeated.
+    fn unpainted(&self, paint: u64);
+    /// Moves the view to `bounds`, showing the `visible` part, both in
+    /// GPUI's window coordinates (points, y down).
+    fn place(&self, window: &Window, bounds: Bounds<Pixels>, visible: Bounds<Pixels>);
+    /// Hands the keyboard back to GPUI if the view has it.
+    fn blur(&self);
+    /// Hidden while something GPUI draws covers it.
+    fn set_suppressed(&self, suppressed: bool);
+}
+
+/// Shows `native` over `bounds` for this frame; `name` and `id` tell its
+/// element state apart.
+pub(crate) fn paint_overlay(
+    native: Rc<dyn Overlaid>,
+    name: &'static str,
+    id: EntityId,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
     let visible = bounds.intersect(&window.content_mask().bounds);
     window.with_global_id(
-        ElementId::NamedInteger("web-view".into(), id.as_u64()),
+        ElementId::NamedInteger(name.into(), id.as_u64()),
         |id, window| {
             window.with_element_state::<Presence, _>(id, |presence, _| {
                 let paint = native.painted();
@@ -323,9 +349,9 @@ fn paint(native: Rc<Native>, id: EntityId, bounds: Bounds<Pixels>, window: &mut 
     );
     native.set_suppressed(covered(window));
     native.place(window, bounds, visible);
-    // Clicks on the web view go to it directly; one that reaches GPUI is
-    // outside it, so GPUI takes the keyboard back (its NSView doesn't take
-    // it on click by itself).
+    // Clicks on the native view go to it directly; one that reaches GPUI
+    // is outside it, so GPUI takes the keyboard back (its NSView doesn't
+    // take it on click by itself).
     window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
         if phase == DispatchPhase::Capture {
             native.blur();
@@ -357,10 +383,10 @@ fn covered(window: &Window) -> bool {
     COVERED.with_borrow(|set| set.contains(&id))
 }
 
-/// Lives in GPUI's element state while the web view is painted each frame;
+/// Lives in GPUI's element state while the view is painted each frame;
 /// dropped when a frame ends without painting it, which hides the view.
 struct Presence {
-    native: Rc<Native>,
+    native: Rc<dyn Overlaid>,
     /// The paint that last kept this alive. A newer paint under another
     /// element id (the pane moved in the tree) outlives this one.
     paint: u64,
@@ -369,6 +395,24 @@ struct Presence {
 impl Drop for Presence {
     fn drop(&mut self) {
         self.native.unpainted(self.paint);
+    }
+}
+
+impl Overlaid for Native {
+    fn painted(&self) -> u64 {
+        Native::painted(self)
+    }
+    fn unpainted(&self, paint: u64) {
+        Native::unpainted(self, paint)
+    }
+    fn place(&self, window: &Window, bounds: Bounds<Pixels>, visible: Bounds<Pixels>) {
+        Native::place(self, window, bounds, visible)
+    }
+    fn blur(&self) {
+        Native::blur(self)
+    }
+    fn set_suppressed(&self, suppressed: bool) {
+        Native::set_suppressed(self, suppressed)
     }
 }
 
@@ -428,12 +472,11 @@ mod mac {
         }
     );
 
-    /// The web view, inside a view that clips it to the visible part of the
-    /// element.
-    pub struct Native {
+    /// A native view over GPUI's, inside a view that clips it to the
+    /// visible part of its element; hidden while it isn't painted.
+    pub struct Overlay {
         clip: Retained<NSView>,
-        web: Retained<WKWebView>,
-        _delegate: Retained<UiDelegate>,
+        content: Retained<NSView>,
         /// Counts paints; see [`super::Presence`].
         paints: Cell<u64>,
         painted: Cell<bool>,
@@ -443,32 +486,11 @@ mod mac {
         detached: Cell<bool>,
     }
 
-    impl Native {
-        pub fn new(options: WebViewOptions) -> Option<Self> {
-            let mtm = MainThreadMarker::new()?;
+    impl Overlay {
+        /// Wraps `content`, hidden until it's painted.
+        pub fn new(content: Retained<NSView>) -> Self {
+            let mtm = MainThreadMarker::from(&*content);
             let frame = NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.));
-            // SAFETY: plain WebKit configuration on the main thread; the
-            // configuration is copied by the web view's initializer.
-            let web = unsafe {
-                let config = WKWebViewConfiguration::new(mtm);
-                let page = WKWebpagePreferences::new(mtm);
-                page.setAllowsContentJavaScript(options.javascript);
-                config.setDefaultWebpagePreferences(Some(&page));
-                config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
-                if options.non_persistent {
-                    config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
-                }
-                WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &config)
-            };
-            if options.mobile {
-                // SAFETY: setting a string property on the main thread.
-                unsafe { web.setCustomUserAgent(Some(&NSString::from_str(MOBILE_USER_AGENT))) };
-            }
-            // SAFETY: `NSObject`'s `init` on a freshly allocated delegate.
-            let delegate: Retained<UiDelegate> = unsafe { msg_send![UiDelegate::alloc(mtm), init] };
-            // SAFETY: the web view holds its delegate weakly; `Native` keeps
-            // it alive for as long as the web view.
-            unsafe { web.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
             let clip = NSView::initWithFrame(mtm.alloc(), frame);
             // Views no longer clip their subviews by default as of macOS 14;
             // before that the setter doesn't exist and they always do.
@@ -476,17 +498,16 @@ mod mac {
                 clip.setClipsToBounds(true);
             }
             clip.setHidden(true);
-            clip.addSubview(&web);
-            Some(Self {
+            clip.addSubview(&content);
+            Self {
                 clip,
-                web,
-                _delegate: delegate,
+                content,
                 paints: Cell::new(0),
                 painted: Cell::new(false),
                 suppressed: Cell::new(false),
                 on_screen: Cell::new(false),
                 detached: Cell::new(false),
-            })
+            }
         }
 
         /// Records a paint and returns its number.
@@ -526,8 +547,8 @@ mod mac {
             self.clip.setHidden(hidden);
         }
 
-        /// Moves the web view to `bounds`, showing the `visible` part, both
-        /// in GPUI's window coordinates (points, y down).
+        /// Moves the view to `bounds`, showing the `visible` part, both in
+        /// GPUI's window coordinates (points, y down).
         pub fn place(&self, window: &Window, bounds: Bounds<Pixels>, visible: Bounds<Pixels>) {
             if self.detached.get() {
                 return;
@@ -548,23 +569,108 @@ mod mac {
             let bounds = Rect::from(bounds).snap(scale);
             self.clip
                 .setFrame(visible.frame_in(&host_rect, host.isFlipped()));
-            self.web
+            self.content
                 .setFrame(bounds.frame_in(&visible, self.clip.isFlipped()));
             self.on_screen
                 .set(visible.width > 0. && visible.height > 0.);
             self.update_hidden();
         }
 
-        /// Takes the web view out of its window for good.
+        /// Takes the view out of its window for good.
         pub fn detach(&self) {
             self.detached.set(true);
             self.blur();
+            self.clip.removeFromSuperview();
+        }
+
+        /// Gives the view the keyboard.
+        pub fn focus(&self) {
+            if let Some(window) = self.content.window() {
+                window.makeFirstResponder(Some(&self.content));
+            }
+        }
+
+        /// Gives the keyboard back to GPUI's view if the view has it.
+        pub fn blur(&self) {
+            let Some(window) = self.content.window() else {
+                return;
+            };
+            let focused = window.firstResponder().is_some_and(|responder| {
+                responder
+                    .downcast_ref::<NSView>()
+                    .is_some_and(|view| view.isDescendantOf(&self.clip))
+            });
+            // SAFETY: reading the superview on the main thread.
+            if focused && let Some(host) = unsafe { self.clip.superview() } {
+                window.makeFirstResponder(Some(&host));
+            }
+        }
+    }
+
+    /// The web view, as an [`Overlay`].
+    pub struct Native {
+        overlay: Overlay,
+        web: Retained<WKWebView>,
+        _delegate: Retained<UiDelegate>,
+    }
+
+    impl Native {
+        pub fn new(options: WebViewOptions) -> Option<Self> {
+            let mtm = MainThreadMarker::new()?;
+            let frame = NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.));
+            // SAFETY: plain WebKit configuration on the main thread; the
+            // configuration is copied by the web view's initializer.
+            let web = unsafe {
+                let config = WKWebViewConfiguration::new(mtm);
+                let page = WKWebpagePreferences::new(mtm);
+                page.setAllowsContentJavaScript(options.javascript);
+                config.setDefaultWebpagePreferences(Some(&page));
+                config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
+                if options.non_persistent {
+                    config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
+                }
+                WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &config)
+            };
+            if options.mobile {
+                // SAFETY: setting a string property on the main thread.
+                unsafe { web.setCustomUserAgent(Some(&NSString::from_str(MOBILE_USER_AGENT))) };
+            }
+            // SAFETY: `NSObject`'s `init` on a freshly allocated delegate.
+            let delegate: Retained<UiDelegate> = unsafe { msg_send![UiDelegate::alloc(mtm), init] };
+            // SAFETY: the web view holds its delegate weakly; `Native` keeps
+            // it alive for as long as the web view.
+            unsafe { web.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+            Some(Self {
+                overlay: Overlay::new(Retained::into_super(web.clone())),
+                web,
+                _delegate: delegate,
+            })
+        }
+
+        pub fn painted(&self) -> u64 {
+            self.overlay.painted()
+        }
+
+        pub fn unpainted(&self, paint: u64) {
+            self.overlay.unpainted(paint);
+        }
+
+        pub fn set_suppressed(&self, suppressed: bool) {
+            self.overlay.set_suppressed(suppressed);
+        }
+
+        pub fn place(&self, window: &Window, bounds: Bounds<Pixels>, visible: Bounds<Pixels>) {
+            self.overlay.place(window, bounds, visible);
+        }
+
+        /// Takes the web view out of its window for good.
+        pub fn detach(&self) {
+            self.overlay.detach();
             // SAFETY: plain WebKit calls on the main thread.
             unsafe {
                 self.web.stopLoading();
                 self.web.setUIDelegate(None);
             }
-            self.clip.removeFromSuperview();
         }
 
         pub fn load_url(&self, url: &str) {
@@ -679,25 +785,11 @@ mod mac {
         }
 
         pub fn focus(&self) {
-            if let Some(window) = self.web.window() {
-                window.makeFirstResponder(Some(&self.web));
-            }
+            self.overlay.focus();
         }
 
-        /// Gives the keyboard back to GPUI's view if the web view has it.
         pub fn blur(&self) {
-            let Some(window) = self.web.window() else {
-                return;
-            };
-            let focused = window.firstResponder().is_some_and(|responder| {
-                responder
-                    .downcast_ref::<NSView>()
-                    .is_some_and(|view| view.isDescendantOf(&self.clip))
-            });
-            // SAFETY: reading the superview on the main thread.
-            if focused && let Some(host) = unsafe { self.clip.superview() } {
-                window.makeFirstResponder(Some(&host));
-            }
+            self.overlay.blur();
         }
 
         pub fn set_appearance(&self, dark: bool) {
