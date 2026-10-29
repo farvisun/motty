@@ -2937,6 +2937,77 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Show Plan Quota, in the details of an agent that reports one.
+    fn quota_switch(&self, ix: usize, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
+        let agent = &agents::CATALOG[ix];
+        let on = self.config.shows_quota(agent.id);
+        let (track, knob_left) = if on {
+            (c.accent, 14.)
+        } else {
+            (c.switch_off, 2.)
+        };
+        div()
+            .mt(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(c.text)
+                            .child("Show Plan Quota"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(c.secondary)
+                            .child(agents::quota::source(agent.id)),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("agent-quota", ix))
+                    .flex_none()
+                    .relative()
+                    .w(px(30.))
+                    .h(px(18.))
+                    .rounded_full()
+                    .bg(track)
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(2.))
+                            .left(px(knob_left))
+                            .size(px(14.))
+                            .rounded_full()
+                            .bg(hsla(Rgba::rgb(0xffffff)))
+                            .shadow_sm(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let agent = agents::CATALOG[ix].id;
+                        match agents::quota::show(agent, !on, &this.config) {
+                            Ok(_) => {
+                                this.status = None;
+                                crate::workspace::reload_all(cx);
+                                this.config = crate::load_config();
+                            }
+                            Err(e) => {
+                                this.status =
+                                    Some((false, format!("Couldn't save config.toml: {e}")))
+                            }
+                        }
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// What an agent's switch writes, under its row.
     fn agent_details(&self, ix: usize, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
         let agent = &agents::CATALOG[ix];
@@ -2968,6 +3039,7 @@ impl SettingsWindow {
             .children(path.as_ref().map(|p| line(tilde(p), true)))
             .child(line(what.into(), false))
             .children(hooks::note(agent.id).map(|n| line(n.into(), false)))
+            .children(agents::quota::reports(agent.id).then(|| self.quota_switch(ix, c, cx)))
             .children(path.filter(|p| p.exists()).map(|p| {
                 div()
                     .id(("reveal-agent", ix))

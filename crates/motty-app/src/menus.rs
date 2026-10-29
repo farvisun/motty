@@ -32,6 +32,8 @@ pub struct Snapshot {
     pub agent: Option<(String, Option<String>)>,
     /// What forking that session is called (`Branch`), when it can be.
     pub fork: Option<&'static str>,
+    /// Show Plan Quota, when that agent reports a quota.
+    pub quota: Option<bool>,
     /// Each tab's title and its programs (pid, name), for Ports.
     pub tabs: Vec<(String, Vec<(i32, String)>)>,
     pub read_only: bool,
@@ -631,6 +633,9 @@ fn shell_menu(s: &Snapshot, live: &Live) -> Menu {
             ])));
         }
         agent.push(MenuItem::separator());
+        if let Some(on) = s.quota {
+            agent.push(MenuItem::action("Show Plan Quota", ToggleShowPlanQuota).checked(on));
+        }
         agent.push(MenuItem::action("Clear Badge", ClearBadge));
         items.push(MenuItem::submenu(Menu::new(label.clone()).items(agent)));
     }

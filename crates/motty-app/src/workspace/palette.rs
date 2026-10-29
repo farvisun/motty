@@ -144,6 +144,13 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
     ]);
     if let Some(target) = target {
         terminal_commands(target, &mut list);
+        let agent = target.status.as_ref().and_then(|s| s.agent_id.as_deref());
+        if let Some(agent) = agent.filter(|a| crate::agents::quota::reports(a)) {
+            list.push(
+                Command::new("Agent", "Show Plan Quota", ToggleShowPlanQuota)
+                    .checked(ws.config.shows_quota(agent)),
+            );
+        }
     }
     list.extend([
         Command::new("Edit", "Secure Keyboard Entry", ToggleSecureKeyboardEntry),

@@ -84,6 +84,10 @@ impl Workspace {
             .as_deref()
             .and_then(agents::by_command)
             .map_or_else(|| p.agent.clone(), |a| a.id.to_owned());
+        // A finished task is when the plan's numbers move.
+        if p.state == AgentState::Idle && in_turn {
+            agents::quota::task_finished(&agent_id, cx);
+        }
         if let Some(path) = &p.transcript
             && matches!(p.agent.as_str(), "claude" | "grok")
         {

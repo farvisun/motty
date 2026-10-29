@@ -343,6 +343,43 @@ impl Workspace {
         })
     }
 
+    /// The focused pane's agent, when it reports a plan quota.
+    pub(super) fn focused_quota_agent(&self, cx: &App) -> Option<&'static str> {
+        let view = self.focused_pane()?;
+        let id = view.read(cx).status.as_ref()?.agent_id.clone()?;
+        agents::by_id(&id)
+            .map(|a| a.id)
+            .filter(|a| agents::quota::reports(a))
+    }
+
+    /// Reads the plan quota of the agents running in this window's panes
+    /// when it's due.
+    pub(super) fn poll_quota(&mut self, cx: &mut Context<Self>) {
+        let running: Vec<String> = self
+            .tabs
+            .iter()
+            .filter_map(Tab::panes)
+            .flat_map(|p| p.terminals())
+            .filter_map(|v| v.read(cx).status.as_ref()?.agent_id.clone())
+            .collect();
+        agents::quota::poll(&running, &self.config, cx);
+    }
+
+    /// Show Plan Quota, for the focused pane's agent.
+    pub(super) fn toggle_plan_quota(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.focused_quota_agent(cx) else {
+            return;
+        };
+        let on = !self.config.shows_quota(agent);
+        match agents::quota::show(agent, on, &self.config) {
+            Ok(_) => cx.defer(|cx| {
+                super::reload_all(cx);
+                crate::menus::refresh(cx);
+            }),
+            Err(e) => tracing::warn!("couldn't save agent-quota-off: {e}"),
+        }
+    }
+
     /// Branch in… / Fork in…: the focused agent's session, copied to `place`.
     pub(super) fn fork_focused(
         &mut self,

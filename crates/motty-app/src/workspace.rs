@@ -544,6 +544,7 @@ impl Workspace {
                         cx.defer(refresh_dock);
                     }
                     this.refresh_details(false, cx);
+                    this.poll_quota(cx);
                     // Now and then for what the menus show: ports, git.
                     tick += 1;
                     if tick.is_multiple_of(5) {
@@ -2368,6 +2369,9 @@ impl Workspace {
                     .map(|_| crate::agents::sessions::fork_label(agent))
             });
         }
+        s.quota = self
+            .focused_quota_agent(cx)
+            .map(|a| self.config.shows_quota(a));
         s.tabs = self
             .tabs
             .iter()
@@ -3636,6 +3640,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ViewSessionHistory, window, cx| {
                 this.view_focused_history(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleShowPlanQuota, _, cx| this.toggle_plan_quota(cx)),
+            )
             .on_action(cx.listener(|this, _: &ForkSessionInNewTab, window, cx| {
                 this.fork_focused("tab", window, cx)
             }))

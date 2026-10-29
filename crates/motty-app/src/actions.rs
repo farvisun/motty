@@ -145,6 +145,7 @@ actions!(
         SendToChat,
         AgentHistory,
         ViewSessionHistory,
+        ToggleShowPlanQuota,
         ForkSessionInNewTab,
         ForkSessionInNewWindow,
         ForkSessionRight,

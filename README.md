@@ -183,7 +183,12 @@ exist (exit 127) and ones typed after a space aren't remembered. History is kept
 
 - **Info**: the working directory with Copy Path, Reveal in Finder and Open in… (your
   `open-with-app = "Name|bundle.id"` entries, else VS Code, Cursor, Zed or Xcode when installed),
-  the processes running in the pane, and the TCP ports they listen on (click to open).
+  the processes running in the pane, and the TCP ports they listen on (click to open). With a
+  coding agent in the pane, its group shows what the session has spent, read from the agent's
+  own log: context in use, running tokens, and cost when the agent logs one. Claude Code, Codex
+  and omp also show their plan quota (from `claude -p "/usage"`, `codex app-server` and
+  `omp usage --json`, every 5 minutes and when a task finishes; click to read it again). Turn
+  it off per agent under Settings › Agents (`agent-quota-off = claude`) or with Show Plan Quota.
 - **Outline**: the pane's commands, newest last; click one to scroll to it.
 - **Git**: branch, lines added and removed, the remote, and staged, unstaged and untracked files.
 - **Files**: a tree of the working directory (↑ goes up a folder; the eye shows dotfiles).

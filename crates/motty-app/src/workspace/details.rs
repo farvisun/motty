@@ -29,6 +29,7 @@ use motty_theme::{DetailsView, ViewKind};
 
 use super::{Workspace, native_label};
 use crate::actions::*;
+use crate::agents::{quota, sessions, usage};
 use crate::native_menu::{self, Entry, Item};
 use crate::panes::PaneItem;
 use crate::terminal_view::TerminalView;
@@ -59,6 +60,7 @@ const EDGE_GRAB: f32 = 6.;
 /// The slowest refreshes run at most this often.
 const GIT_INTERVAL: Duration = Duration::from_secs(3);
 const PORTS_INTERVAL: Duration = Duration::from_secs(2);
+const USAGE_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum DetailsTab {
@@ -108,6 +110,12 @@ pub(super) struct Details {
     processes: Vec<ProcessInfo>,
     ports: Vec<(u16, i32)>,
     ports_at: Option<Instant>,
+    /// The agent and session the usage below is for.
+    usage_for: Option<(&'static str, String)>,
+    /// Its log, read as it grows; away while a read is under way.
+    tally: Option<usage::Tally>,
+    usage: Option<usage::Usage>,
+    usage_at: Option<Instant>,
     git: Option<git::GitSummary>,
     git_at: Option<Instant>,
     git_ui: git::GitUi,
@@ -250,12 +258,12 @@ impl Workspace {
         let Some(item) = self.active_panes().map(|p| p.focused.clone()) else {
             return;
         };
-        let (cwd, processes) = match &item {
+        let (cwd, processes, agent) = match &item {
             PaneItem::Terminal(view) => {
                 let v = view.read(cx);
-                (v.cwd.clone(), v.session().processes())
+                (v.cwd.clone(), v.session().processes(), agent_session(v))
             }
-            other => (other.folder(cx), Vec::new()),
+            other => (other.folder(cx), Vec::new(), None),
         };
         let builtin = self.details.view.is_none();
         if builtin && self.details.tab == DetailsTab::Outline {
@@ -271,6 +279,12 @@ impl Workspace {
             d.git_at = None;
             d.ports_at = None;
             d.git_ui = Default::default();
+        }
+        if moved || d.usage_for != agent {
+            d.usage_for = agent.clone();
+            d.tally = None;
+            d.usage = None;
+            d.usage_at = None;
         }
         if d.processes != processes {
             d.processes = processes;
@@ -297,19 +311,38 @@ impl Workspace {
             && d.tab == DetailsTab::Info
             && due(d.ports_at, PORTS_INTERVAL)
             && !pids.is_empty();
-        if git.is_none() && !ports {
+        let usage = (builtin && d.tab == DetailsTab::Info && due(d.usage_at, USAGE_INTERVAL))
+            .then(|| agent.clone())
+            .flatten()
+            .map(|key| (d.tally.take(), key));
+        if git.is_none() && !ports && usage.is_none() {
             return;
         }
         let work = cx.background_spawn(async move {
             let git = git.map(|dir| git::git_summary(&dir));
             let ports = ports.then(|| listening_ports(&pids));
-            (git, ports)
+            let usage = usage.map(|(tally, key)| {
+                let (tally, read) = read_usage(tally, &key);
+                (key, tally, read)
+            });
+            (git, ports, usage)
         });
         d.pending = Some(cx.spawn(async move |this, cx| {
-            let (git, ports) = work.await;
+            let (git, ports, usage) = work.await;
             this.update(cx, |this, cx| {
                 let d = &mut this.details;
                 d.pending = None;
+                // Unless the pane moved on to another session meanwhile.
+                if let Some((key, tally, read)) = usage
+                    && d.usage_for.as_ref() == Some(&key)
+                {
+                    d.usage_at = Some(Instant::now());
+                    d.tally = tally;
+                    if d.usage != read {
+                        d.usage = read;
+                        cx.notify();
+                    }
+                }
                 if let Some(git) = git {
                     // The first answer turns Loading… into what it found.
                     let first = d.git_at.is_none();
@@ -824,7 +857,8 @@ impl Workspace {
             col = col.child(action_rows("details-action", actions, c));
         }
         if let Some(view) = view {
-            col = col.child(render_agent(view, c, cx));
+            let usage = d.usage.as_ref();
+            col = col.child(render_agent(view, usage, &self.config, c, cx));
         }
         let now = SystemTime::now();
         col = col
@@ -913,9 +947,40 @@ impl Workspace {
     }
 }
 
+/// The agent and session a pane's usage is read for, when its agent logs
+/// any.
+fn agent_session(v: &TerminalView) -> Option<(&'static str, String)> {
+    let status = v.status.as_ref()?;
+    let agent = crate::agents::by_id(status.agent_id.as_deref()?)?;
+    if !usage::reports(agent.id) {
+        return None;
+    }
+    Some((agent.id, status.session.clone()?))
+}
+
+/// Reads on from where `tally` stopped, finding the session's log first.
+fn read_usage(
+    tally: Option<usage::Tally>,
+    (agent, session): &(&'static str, String),
+) -> (Option<usage::Tally>, Option<usage::Usage>) {
+    let mut tally = tally.or_else(|| {
+        let path = sessions::log_path(&sessions::Roots::current(), agent, session)?;
+        Some(usage::Tally::new(agent, path))
+    });
+    let read = tally.as_mut().map(usage::Tally::update);
+    (tally, read.filter(|u| !u.is_empty()))
+}
+
 /// The Info tab's Agent group, for a pane an agent reported from: its
-/// name, whether it's working or waiting, its step and its session.
-fn render_agent(view: &Entity<TerminalView>, c: &PanelColors, cx: &mut gpui::App) -> AnyElement {
+/// name, whether it's working or waiting, its step, its session, what the
+/// session has spent and what's left of the plan.
+fn render_agent(
+    view: &Entity<TerminalView>,
+    usage: Option<&usage::Usage>,
+    config: &motty_theme::Config,
+    c: &PanelColors,
+    cx: &mut gpui::App,
+) -> AnyElement {
     use crate::agents::{Badge, sessions};
     let Some(status) = view.read(cx).status.clone() else {
         return div().into_any_element();
@@ -978,28 +1043,14 @@ fn render_agent(view: &Entity<TerminalView>, c: &PanelColors, cx: &mut gpui::App
                 .child(message.lines().next().unwrap_or_default().to_owned()),
         );
     }
+    let mut actions: Vec<(SharedString, Icon, Run)> = Vec::new();
     if let Some(session) = status.session {
-        col = col.child(
-            div()
-                .px(px(INSET))
-                .pl(px(INSET + 16.))
-                .h(px(LIST_ROW))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .text_size(px(12.))
-                .child(div().flex_none().text_color(c.tertiary).child("Session"))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .text_color(c.secondary)
-                        .child(session.chars().take(8).collect::<String>()),
-                ),
-        );
-        let mut actions: Vec<(SharedString, Icon, Run)> = Vec::new();
+        col = col.child(stat_row(
+            "Session",
+            session.chars().take(8).collect(),
+            None,
+            c,
+        ));
         let id = session.clone();
         actions.push((
             "Copy Session ID".into(),
@@ -1025,9 +1076,174 @@ fn render_agent(view: &Entity<TerminalView>, c: &PanelColors, cx: &mut gpui::App
                 }),
             ));
         }
+    }
+    if let Some(usage) = usage {
+        col = col.child(usage_rows(usage, c));
+    }
+    let agent = status.agent_id.as_deref().and_then(crate::agents::by_id);
+    if let Some(agent) = agent
+        && let Some(shown) = quota::shown(agent.id, config, cx)
+    {
+        col = col.child(quota_rows(agent.id, shown, c));
+    }
+    if !actions.is_empty() {
         col = col.child(action_rows("details-agent-action", actions, c));
     }
     col.into_any_element()
+}
+
+/// A line of the Agent group: a name, its value, and maybe a figure at
+/// the right end.
+fn stat_row(
+    label: &'static str,
+    value: String,
+    right: Option<String>,
+    c: &PanelColors,
+) -> impl IntoElement {
+    div()
+        .px(px(INSET))
+        .pl(px(INSET + 16.))
+        .h(px(LIST_ROW))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(12.))
+        .child(div().flex_none().text_color(c.tertiary).child(label))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .text_color(c.secondary)
+                .child(value),
+        )
+        .children(right.map(|r| div().flex_none().text_color(c.secondary).child(r)))
+}
+
+/// A thin bar `fill` (0–1) full: amber past 75%, red past 90%, so it
+/// warns before a limit bites.
+fn meter(fill: f32, c: &PanelColors) -> impl IntoElement {
+    let color = match fill {
+        f if f > 0.9 => c.danger,
+        f if f > 0.75 => c.warning,
+        _ => c.accent,
+    };
+    div()
+        .mx(px(INSET))
+        .ml(px(INSET + 16.))
+        .h(px(4.))
+        .rounded_full()
+        .bg(c.selected)
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(fill.clamp(0., 1.)))
+                .rounded_full()
+                .bg(color),
+        )
+}
+
+/// Context, tokens and cost, from the session's log. Only a context
+/// window the log states gets a bar.
+fn usage_rows(usage: &usage::Usage, c: &PanelColors) -> impl IntoElement {
+    let mut col = div().flex().flex_col();
+    if let Some(context) = usage.context {
+        let (value, right) = match (usage.window, usage.fill()) {
+            (Some(window), Some(fill)) => (
+                format!("{} of {}", usage::count(context), usage::count(window)),
+                Some(format!("{:.0}%", fill * 100.)),
+            ),
+            _ => (usage::count(context), None),
+        };
+        col = col.child(stat_row("Context", value, right, c));
+        if let Some(fill) = usage.fill() {
+            col = col.child(div().pb(px(4.)).child(meter(fill, c)));
+        }
+    }
+    if let Some(tokens) = usage.tokens {
+        col = col.child(stat_row("Tokens", usage::count(tokens), None, c));
+    }
+    if let Some(cost) = usage.cost {
+        col = col.child(stat_row("Cost", usage::dollars(cost), None, c));
+    }
+    col
+}
+
+/// The plan's allowances, a bar each with when it starts over. A click
+/// reads them again.
+fn quota_rows(agent: &'static str, shown: quota::Shown, c: &PanelColors) -> impl IntoElement {
+    let now = SystemTime::now();
+    let note = |text: String| {
+        div()
+            .px(px(INSET))
+            .pl(px(INSET + 16.))
+            .pb(px(4.))
+            .text_size(px(11.5))
+            .text_color(c.tertiary)
+            .child(text)
+    };
+    let mut col = div()
+        .id("details-quota")
+        .flex()
+        .flex_col()
+        .pt(px(2.))
+        .rounded(px(6.))
+        .hover(|s| s.bg(c.hover))
+        .tooltip(|_, cx| crate::tooltip::text("Read the plan quota again", cx))
+        .on_click(move |_, _, cx| quota::refresh(agent, cx));
+    let bars = shown.quota.as_ref().map_or(&[][..], |q| &q.bars[..]);
+    for bar in bars {
+        col = col
+            .child(stat_row_text(
+                bar.label.clone(),
+                format!("{:.0}%", bar.used),
+                c,
+            ))
+            .child(meter(bar.used / 100., c));
+        col = col.child(match &bar.resets {
+            Some(resets) => note(resets.describe(now)).pt(px(3.)),
+            None => note(String::new()).h(px(6.)),
+        });
+    }
+    if let Some(text) = shown.quota.as_ref().and_then(|q| q.note.clone()) {
+        col = col.child(note(text));
+    }
+    if bars.is_empty() {
+        let text = if shown.reading {
+            "Reading plan quota…"
+        } else if shown.failed {
+            "Plan quota unavailable"
+        } else {
+            "No plan quota yet"
+        };
+        col = col.child(stat_row("Quota", text.to_owned(), None, c));
+    }
+    col
+}
+
+/// A quota bar's name and how much of it is used.
+fn stat_row_text(label: String, used: String, c: &PanelColors) -> impl IntoElement {
+    div()
+        .px(px(INSET))
+        .pl(px(INSET + 16.))
+        .h(px(LIST_ROW))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .text_color(c.secondary)
+                .child(label),
+        )
+        .child(div().flex_none().text_color(c.secondary).child(used))
 }
 
 /// Info's accent rows that do something.
