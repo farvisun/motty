@@ -20,7 +20,8 @@ pub const SNAP: Duration = Duration::from_millis(120);
 /// How long a gesture must be quiet before it counts as over: trackpad
 /// momentum arrives as more moves after the finger lifts.
 pub const SNAP_IDLE: Duration = Duration::from_millis(80);
-/// How far the output slide may trail what was printed, in rows.
+/// How far a stream of output may leave the slide behind, in rows, beyond
+/// the latest batch (which always slides in whole).
 pub const MAX_LAG: f32 = 4.;
 /// The cursor's glide along its row.
 pub const CURSOR_GLIDE: Duration = Duration::from_millis(90);
@@ -290,9 +291,10 @@ impl ScrollMotion {
 
     /// The terminal scrolled itself by `pushed` rows while the view was at
     /// the live bottom (display offset 0). The view starts where the rows
-    /// were and slides up into place when `slide`, at most [`MAX_LAG`]
-    /// rows behind; more than a screen at once jumps. Being past the last
-    /// line is used up by the new rows unless `sticky`.
+    /// were and slides up into place when `slide`: a batch slides in whole,
+    /// and a stream stays at most [`MAX_LAG`] rows (or one batch) behind;
+    /// more than a screen at once jumps. Being past the last line is used
+    /// up by the new rows unless `sticky`.
     #[allow(clippy::too_many_arguments)]
     pub fn output(
         &mut self,
@@ -309,9 +311,10 @@ impl ScrollMotion {
         } else {
             self.held
         };
+        let lag = n.max(MAX_LAG);
         let from = if slide && pushed < rows {
             (self.delta(now) + n)
-                .clamp(target - MAX_LAG, target + MAX_LAG)
+                .clamp(target - lag, target + lag)
                 .min(history as f32)
         } else {
             target
@@ -610,12 +613,17 @@ mod tests {
             worst = worst.max(m.delta(now));
         }
         assert!(worst <= 3., "lag {worst}");
-        // A faster stream is capped at MAX_LAG.
+        // A faster stream trails by one batch at most.
         let mut m = ScrollMotion::default();
         for i in 0..50 {
             m.output(6, 30, 1000, true, false, t0 + ms(16 * i));
-            assert!(m.delta(t0 + ms(16 * i)) <= MAX_LAG);
+            assert!(m.delta(t0 + ms(16 * i)) <= 6.);
         }
+        // `ls`: one batch under a screen slides in whole.
+        let mut m = ScrollMotion::default();
+        m.output(20, 30, 1000, true, false, t0);
+        assert_eq!(m.delta(t0), 20.);
+        assert_eq!(m.delta(t0 + SLIDE), 0.);
     }
 
     #[test]
