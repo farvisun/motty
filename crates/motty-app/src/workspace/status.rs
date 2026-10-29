@@ -115,13 +115,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.badges_for(view).exit_status
-            || view
-                .read(cx)
-                .status
-                .as_ref()
-                .is_some_and(|s| s.agent.is_some())
-        {
+        let b = self.badges_for(view);
+        let agent = view
+            .read(cx)
+            .status
+            .as_ref()
+            .is_some_and(|s| s.agent.is_some());
+        if !agent {
+            self.command_alerts(view, exit, b, window, cx);
+        }
+        if !b.exit_status || agent {
             return;
         }
         let looking = self.looking_at(view, window);
@@ -141,6 +144,164 @@ impl Workspace {
             })
         });
         self.touched(view, cx);
+    }
+
+    /// Gives each pane its tab's Title and Mouse — Shell Controlled; run
+    /// when they change, on reload, and for a new pane.
+    pub(super) fn sync_shell_privileges(&mut self, cx: &mut Context<Self>) {
+        let defaults = self.config.badges;
+        for tab in &self.tabs {
+            let b = tab.privileges.unwrap_or(defaults);
+            let Some(terms) = tab.terms() else { continue };
+            for view in terms.root.leaves() {
+                let v = view.read(cx);
+                if (v.allow_title, v.allow_mouse) != (b.title_shell, b.mouse_shell) {
+                    view.update(cx, |v, cx| {
+                        v.allow_title = b.title_shell;
+                        v.allow_mouse = b.mouse_shell;
+                        cx.notify();
+                    });
+                }
+            }
+        }
+    }
+
+    /// Sound on Error Exit, Notify on Error and Notify on Finish.
+    fn command_alerts(
+        &mut self,
+        view: &Entity<TerminalView>,
+        exit: Option<i32>,
+        b: motty_theme::Badges,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let failed = exit.is_some_and(|code| code != 0);
+        if failed && b.sound_on_error {
+            window.play_system_bell();
+        }
+        let body = match exit {
+            Some(code) if code != 0 && b.notify_error => format!("Exited with {code}"),
+            Some(0) if b.notify_finish => "Finished".to_owned(),
+            _ => return,
+        };
+        // Named after the command, when the shell said which.
+        let title = {
+            let v = view.read(cx);
+            let session = v.session();
+            session
+                .shell()
+                .last_finished()
+                .and_then(|block| session.block_command(block))
+                .unwrap_or_else(|| v.display_title())
+        };
+        self.banner(view, &title, &body, window, cx);
+    }
+
+    /// Posts a banner about `view`, as `notification-foreground` allows
+    /// while Motty is in front, and bounces the Dock icon when it isn't.
+    pub(super) fn banner(
+        &mut self,
+        view: &Entity<TerminalView>,
+        title: &str,
+        body: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use motty_theme::NotificationForeground;
+        let in_front = cx.active_window().is_some();
+        let show = !in_front
+            || match self.config.notification_foreground {
+                NotificationForeground::Off => false,
+                NotificationForeground::Always => true,
+                NotificationForeground::TabUnfocused => !self.looking_at(view, window),
+            };
+        if show {
+            crate::notifications::notify(title, body);
+            if !in_front {
+                crate::notifications::bounce_dock();
+            }
+        }
+    }
+
+    /// OSC 52 copy: `clipboard-write`, under Clipboard — Shell Controlled.
+    pub(super) fn clipboard_write(
+        &mut self,
+        view: &Entity<TerminalView>,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use motty_theme::Access;
+        if !self.badges_for(view).clipboard_shell {
+            return;
+        }
+        match self.config.clipboard_write {
+            Access::Deny => {}
+            Access::Allow => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
+            Access::Ask => {
+                let program = clipboard_asker(view, cx);
+                let answer = window.prompt(
+                    gpui::PromptLevel::Info,
+                    &format!("Allow {program} to copy to the clipboard?"),
+                    Some(&format!("{} characters", text.chars().count())),
+                    &["Allow", "Deny"],
+                    cx,
+                );
+                cx.spawn(async move |_, cx| {
+                    if answer.await == Ok(0) {
+                        cx.update(|cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// OSC 52 paste: `clipboard-read` (ask by default: a program reading the
+    /// clipboard could take what you copied elsewhere).
+    pub(super) fn clipboard_read(
+        &mut self,
+        view: &Entity<TerminalView>,
+        format: std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use motty_theme::Access;
+        if !self.badges_for(view).clipboard_shell {
+            return;
+        }
+        let answer = move |view: &Entity<TerminalView>, cx: &mut gpui::App| {
+            let text = cx
+                .read_from_clipboard()
+                .and_then(|c| c.text())
+                .unwrap_or_default();
+            view.read(cx).answer_clipboard(&*format, &text);
+        };
+        match self.config.clipboard_read {
+            Access::Deny => {}
+            Access::Allow => answer(view, cx),
+            Access::Ask => {
+                let program = clipboard_asker(view, cx);
+                let reply = window.prompt(
+                    gpui::PromptLevel::Warning,
+                    &format!("Allow {program} to read the clipboard?"),
+                    Some("It asked for what you last copied (OSC 52)."),
+                    // Deny is the default button, so a stray Return
+                    // doesn't hand the clipboard over.
+                    &["Deny", "Allow"],
+                    cx,
+                );
+                let view = view.clone();
+                cx.spawn(async move |_, cx| {
+                    if reply.await == Ok(1) {
+                        cx.update(|cx| answer(&view, cx));
+                    }
+                })
+                .detach();
+            }
+        }
     }
 
     /// Looking at a tab clears the marks of what happened while away; a
@@ -217,5 +378,15 @@ impl Workspace {
                     .any(|p| p.pid == pid)
             })
             .cloned()
+    }
+}
+
+/// Who's asking, for the clipboard prompts: the program in front, else the
+/// pane.
+fn clipboard_asker(view: &Entity<TerminalView>, cx: &gpui::App) -> String {
+    let v = view.read(cx);
+    match &v.foreground {
+        Some(program) => format!("\u{201c}{program}\u{201d}"),
+        None => "the program in this pane".to_owned(),
     }
 }

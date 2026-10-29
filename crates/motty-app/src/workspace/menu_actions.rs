@@ -57,6 +57,7 @@ impl Workspace {
             let on = p.field(&mut b);
             *on = !*on;
             tab.privileges = Some(b);
+            this.sync_shell_privileges(cx);
             cx.defer(crate::menus::refresh);
             cx.notify();
         }))
@@ -64,6 +65,7 @@ impl Workspace {
             if let Some(tab) = this.tabs.get_mut(this.active) {
                 tab.privileges = None;
             }
+            this.sync_shell_privileges(cx);
             cx.defer(crate::menus::refresh);
             cx.notify();
         }))

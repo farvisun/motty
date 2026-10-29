@@ -733,18 +733,30 @@ impl Workspace {
                     cx.defer(refresh_dock);
                 }
                 TerminalEvent::Notification { title, body } => {
-                    // Only for panes the user can't see right now.
-                    if !window.is_window_active() || !this.is_focused_pane(terminal) {
+                    if this.badges_for(terminal).notify_shell {
                         let title = title
                             .clone()
                             .unwrap_or_else(|| terminal.read(cx).display_title());
-                        crate::notifications::notify(&title, body);
+                        this.banner(terminal, &title, body, window, cx);
                     }
+                }
+                TerminalEvent::Bell => {
+                    if this.badges_for(terminal).sound_shell {
+                        window.play_system_bell();
+                    }
+                }
+                TerminalEvent::ClipboardWrite(text) => {
+                    this.clipboard_write(terminal, text.clone(), window, cx)
+                }
+                TerminalEvent::ClipboardRead(format) => {
+                    this.clipboard_read(terminal, format.clone(), window, cx)
                 }
             },
         );
         self.pane_subscriptions
             .insert(terminal.entity_id(), subscription);
+        // Once it's in its tab.
+        cx.defer_in(window, |this, _, cx| this.sync_shell_privileges(cx));
     }
 
     fn add_tab(
@@ -1277,6 +1289,7 @@ impl Workspace {
                 t.apply_config(meta, blink, cursor, scrollback, cx)
             });
         }
+        self.sync_shell_privileges(cx);
         self.reload_theme(cx);
     }
 

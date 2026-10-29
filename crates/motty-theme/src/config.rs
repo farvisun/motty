@@ -76,6 +76,12 @@ pub struct Config {
     pub split_working_directory: Option<WorkingDir>,
     /// `new-tab-position`.
     pub new_tab_position: NewTabPosition,
+    /// `notification-foreground`: banners while Motty is in front.
+    pub notification_foreground: NotificationForeground,
+    /// `clipboard-read`: a program reading the clipboard (OSC 52).
+    pub clipboard_read: Access,
+    /// `clipboard-write`: a program setting the clipboard (OSC 52).
+    pub clipboard_write: Access,
     /// `editor-show-line-numbers`: the file editor's line-number gutter.
     pub editor_line_numbers: bool,
     /// Where the config was read from, if anywhere.
@@ -104,6 +110,27 @@ pub struct Badges {
     /// `privilege-resume-agent-session`: a recovered pane resumes the
     /// agent session it had.
     pub resume_session: bool,
+    /// `privilege-notification-on-finish`: a banner when a command exits 0.
+    pub notify_finish: bool,
+    /// `privilege-notification-on-error`: …when one exits non-zero.
+    pub notify_error: bool,
+    /// `privilege-notification-on-watch-finish`: …when a watched command
+    /// finishes.
+    pub notify_watch: bool,
+    /// `privilege-notification-shell`: programs may post banners (OSC 9 /
+    /// 777 / 99).
+    pub notify_shell: bool,
+    /// `privilege-sound-on-error`: a beep when a command exits non-zero.
+    pub sound_on_error: bool,
+    /// `privilege-sound-shell`: programs may ring the bell (BEL).
+    pub sound_shell: bool,
+    /// `privilege-title-shell`: programs may set the title (OSC 0 / 2).
+    pub title_shell: bool,
+    /// `privilege-clipboard-shell`: OSC 52 at all (see `clipboard-read` /
+    /// `clipboard-write`).
+    pub clipboard_shell: bool,
+    /// `privilege-mouse-shell`: programs may turn on mouse reporting.
+    pub mouse_shell: bool,
     /// `ipc-allow-send-keys`: `motty send` and agents may type into panes.
     pub ipc_send_keys: bool,
     /// `ipc-allow-sensitive-sessions`: …even into SSH sessions and
@@ -122,6 +149,15 @@ impl Default for Badges {
             notify_awaiting: true,
             caffeinate: false,
             resume_session: true,
+            notify_finish: false,
+            notify_error: true,
+            notify_watch: true,
+            notify_shell: true,
+            sound_on_error: false,
+            sound_shell: true,
+            title_shell: true,
+            clipboard_shell: true,
+            mouse_shell: true,
             ipc_send_keys: false,
             ipc_sensitive: false,
         }
@@ -351,6 +387,27 @@ pub enum NewTerminal {
     Split,
 }
 
+/// `notification-foreground` values: whether banners show while Motty is
+/// the active app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotificationForeground {
+    /// Only while another app is in front (macOS's own rule).
+    #[default]
+    Off,
+    Always,
+    /// When it comes from a pane you aren't looking at.
+    TabUnfocused,
+}
+
+/// `clipboard-read` / `clipboard-write` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Access {
+    #[default]
+    Ask,
+    Allow,
+    Deny,
+}
+
 /// `new-tab-position` values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NewTabPosition {
@@ -482,6 +539,7 @@ impl Config {
             link_detection: true,
             restore_session: true,
             editor_line_numbers: true,
+            clipboard_write: Access::Allow,
             ..Default::default()
         };
         let (entries, mut warnings) = parse_entries(src);
@@ -571,6 +629,15 @@ impl Config {
                 | "privilege-notify-agent-awaiting-input"
                 | "privilege-caffeinate-agent-processing"
                 | "privilege-resume-agent-session"
+                | "privilege-notification-on-finish"
+                | "privilege-notification-on-error"
+                | "privilege-notification-on-watch-finish"
+                | "privilege-notification-shell"
+                | "privilege-sound-on-error"
+                | "privilege-sound-shell"
+                | "privilege-title-shell"
+                | "privilege-clipboard-shell"
+                | "privilege-mouse-shell"
                 | "ipc-allow-send-keys"
                 | "ipc-allow-sensitive-sessions" => match value.as_bool() {
                     Some(on) => {
@@ -583,6 +650,15 @@ impl Config {
                             "privilege-notify-agent-task-complete" => &mut b.notify_complete,
                             "privilege-notify-agent-awaiting-input" => &mut b.notify_awaiting,
                             "privilege-resume-agent-session" => &mut b.resume_session,
+                            "privilege-notification-on-finish" => &mut b.notify_finish,
+                            "privilege-notification-on-error" => &mut b.notify_error,
+                            "privilege-notification-on-watch-finish" => &mut b.notify_watch,
+                            "privilege-notification-shell" => &mut b.notify_shell,
+                            "privilege-sound-on-error" => &mut b.sound_on_error,
+                            "privilege-sound-shell" => &mut b.sound_shell,
+                            "privilege-title-shell" => &mut b.title_shell,
+                            "privilege-clipboard-shell" => &mut b.clipboard_shell,
+                            "privilege-mouse-shell" => &mut b.mouse_shell,
                             "ipc-allow-send-keys" => &mut b.ipc_send_keys,
                             "ipc-allow-sensitive-sessions" => &mut b.ipc_sensitive,
                             _ => &mut b.caffeinate,
@@ -667,6 +743,30 @@ impl Config {
                     Some("after-current") => out.new_tab_position = NewTabPosition::AfterCurrent,
                     _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
                 },
+                "notification-foreground" => match value.as_str() {
+                    Some("off") => out.notification_foreground = NotificationForeground::Off,
+                    Some("always") => out.notification_foreground = NotificationForeground::Always,
+                    Some("tab-unfocused") => {
+                        out.notification_foreground = NotificationForeground::TabUnfocused
+                    }
+                    _ => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "clipboard-read" | "clipboard-write" => {
+                    let access = match value.as_str() {
+                        Some("ask") => Access::Ask,
+                        Some("allow") => Access::Allow,
+                        Some("deny") => Access::Deny,
+                        _ => {
+                            unknown.push(format!("config.toml {key}: unknown value {value}"));
+                            continue;
+                        }
+                    };
+                    if key == "clipboard-read" {
+                        out.clipboard_read = access;
+                    } else {
+                        out.clipboard_write = access;
+                    }
+                }
                 "on-launch" => match value.as_str() {
                     Some("restore_session") => out.restore_session = true,
                     Some("new_window") => out.restore_session = false,
@@ -1242,6 +1342,32 @@ mod tests {
         assert!(
             !Config::parse("macos-option-as-alt = true\nmacos-option-as-alt = \"false\"\n")
                 .option_as_meta
+        );
+    }
+
+    #[test]
+    fn notification_and_privilege_keys() {
+        let d = Config::parse("");
+        assert!(!d.badges.notify_finish && d.badges.notify_error && d.badges.sound_shell);
+        assert_eq!(d.clipboard_read, Access::Ask);
+        assert_eq!(d.clipboard_write, Access::Allow);
+        assert_eq!(d.notification_foreground, NotificationForeground::Off);
+        let cfg = Config::parse(
+            "privilege-notification-on-finish = true\nprivilege-sound-shell = false\nprivilege-mouse-shell = false\nclipboard-read = \"deny\"\nclipboard-write = \"ask\"\nnotification-foreground = \"tab-unfocused\"\n",
+        );
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert!(cfg.badges.notify_finish && !cfg.badges.sound_shell && !cfg.badges.mouse_shell);
+        assert_eq!(cfg.clipboard_read, Access::Deny);
+        assert_eq!(cfg.clipboard_write, Access::Ask);
+        assert_eq!(
+            cfg.notification_foreground,
+            NotificationForeground::TabUnfocused
+        );
+        assert_eq!(
+            Config::parse("clipboard-read = \"sometimes\"\n")
+                .warnings
+                .len(),
+            1
         );
     }
 

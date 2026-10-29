@@ -53,6 +53,13 @@ pub enum TerminalEvent {
         title: Option<String>,
         body: String,
     },
+    /// BEL: whether it rings is Sound — Shell Controlled.
+    Bell,
+    /// OSC 52 copy, subject to `clipboard-write`.
+    ClipboardWrite(String),
+    /// OSC 52 paste, subject to `clipboard-read`: reply with
+    /// [`TerminalView::answer_clipboard`].
+    ClipboardRead(std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>),
 }
 
 /// A new pane id; unique for the life of the app.
@@ -76,6 +83,10 @@ pub struct TerminalView {
     pub process: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
     pub busy: bool,
+    /// Title — Shell Controlled and Mouse — Shell Controlled for this pane's
+    /// tab (Notifications & Privileges).
+    pub allow_title: bool,
+    pub allow_mouse: bool,
     /// The program in the foreground while a command runs (not the shell).
     pub foreground: Option<String>,
     /// Sudo, SSH and caffeinate while a command runs.
@@ -174,6 +185,8 @@ impl TerminalView {
             layout: Rc::new(Cell::new(None)),
             title: None,
             process: None,
+            allow_title: true,
+            allow_mouse: true,
             foreground: None,
             system: Default::default(),
             cwd: None,
@@ -393,20 +406,14 @@ impl TerminalView {
                 cx.notify();
             }
             SessionEvent::Title(title) => {
-                self.title = title;
-                cx.emit(TerminalEvent::TitleChanged);
+                if self.allow_title {
+                    self.title = title;
+                    cx.emit(TerminalEvent::TitleChanged);
+                }
             }
-            SessionEvent::Bell => window.play_system_bell(),
-            SessionEvent::ClipboardStore(text) => {
-                cx.write_to_clipboard(ClipboardItem::new_string(text))
-            }
-            SessionEvent::ClipboardLoad(format) => {
-                let text = cx
-                    .read_from_clipboard()
-                    .and_then(|c| c.text())
-                    .unwrap_or_default();
-                self.session.write(format(&text).into_bytes());
-            }
+            SessionEvent::Bell => cx.emit(TerminalEvent::Bell),
+            SessionEvent::ClipboardStore(text) => cx.emit(TerminalEvent::ClipboardWrite(text)),
+            SessionEvent::ClipboardLoad(format) => cx.emit(TerminalEvent::ClipboardRead(format)),
             SessionEvent::ColorRequest(index, format) => {
                 let c = self
                     .style
@@ -544,7 +551,18 @@ impl TerminalView {
     /// application mouse tracking so text can still be selected; so does
     /// read-only mode.
     fn captures_mouse(&self, mods: &gpui::Modifiers) -> bool {
-        !mods.shift && !self.read_only && self.term_mode().intersects(TermMode::MOUSE_MODE)
+        !mods.shift && !self.read_only && self.reports_mouse(self.term_mode())
+    }
+
+    /// The program asked for mouse events and may have them.
+    fn reports_mouse(&self, mode: TermMode) -> bool {
+        self.allow_mouse && mode.intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// Answers an allowed OSC 52 read with the clipboard's text (a refused
+    /// one gets no answer, as in xterm).
+    pub fn answer_clipboard(&self, format: &(dyn Fn(&str) -> String + Send + Sync), text: &str) {
+        self.session.write(format(text).into_bytes());
     }
 
     fn report_mouse(
@@ -665,7 +683,7 @@ impl TerminalView {
             return;
         }
         let mode = self.term_mode();
-        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift && !self.read_only {
+        if self.reports_mouse(mode) && !event.modifiers.shift && !self.read_only {
             let button = if whole > 0 {
                 input::MouseButton::WheelUp
             } else {

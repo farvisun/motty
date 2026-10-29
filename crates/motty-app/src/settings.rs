@@ -1042,6 +1042,92 @@ impl SettingsWindow {
                 &c.split_working_directory,
             ),
         ));
+        let b = c.badges;
+        for (title, note, key, on) in [
+            (
+                "Notify on Finish",
+                "A banner when a command exits 0",
+                "privilege-notification-on-finish",
+                b.notify_finish,
+            ),
+            (
+                "Notify on Error",
+                "A banner when a command exits non-zero",
+                "privilege-notification-on-error",
+                b.notify_error,
+            ),
+            (
+                "Notify on Watch Finish",
+                "A banner when a watched command finishes",
+                "privilege-notification-on-watch-finish",
+                b.notify_watch,
+            ),
+            (
+                "Notification \u{2014} Shell Controlled",
+                "Programs may post banners (OSC 9, 777, 99)",
+                "privilege-notification-shell",
+                b.notify_shell,
+            ),
+        ] {
+            rows.push(row(
+                Shell,
+                "Notification",
+                title,
+                Some(note),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
+        rows.push(row(
+            Shell,
+            "Notification",
+            "Notify While Foreground",
+            Some("Banners while Motty is the active app"),
+            choice(
+                "notification-foreground",
+                &[
+                    ("Off", "off"),
+                    ("Always", "always"),
+                    ("When the Tab Isn't Focused", "tab-unfocused"),
+                ],
+                match c.notification_foreground {
+                    motty_theme::NotificationForeground::Off => "Off",
+                    motty_theme::NotificationForeground::Always => "Always",
+                    motty_theme::NotificationForeground::TabUnfocused => {
+                        "When the Tab Isn't Focused"
+                    }
+                },
+            ),
+        ));
+        for (title, note, key, on) in [
+            (
+                "Sound on Error Exit",
+                "A beep when a command exits non-zero",
+                "privilege-sound-on-error",
+                b.sound_on_error,
+            ),
+            (
+                "Sound \u{2014} Shell Controlled",
+                "Programs may ring the bell (BEL)",
+                "privilege-sound-shell",
+                b.sound_shell,
+            ),
+        ] {
+            rows.push(row(
+                Shell,
+                "Notification",
+                title,
+                Some(note),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
         rows.push(row(
             Shell,
             "Tab Badge",
@@ -1681,6 +1767,65 @@ impl SettingsWindow {
             "Reload Config",
             Some("Motty also notices when the file changes"),
             Control::Button("Reload", Command::ReloadConfig),
+        ));
+        let access = |a: motty_theme::Access| match a {
+            motty_theme::Access::Ask => "Ask",
+            motty_theme::Access::Allow => "Allow",
+            motty_theme::Access::Deny => "Deny",
+        };
+        let accesses = [("Ask", "ask"), ("Allow", "allow"), ("Deny", "deny")];
+        for (group, title, note, key, on) in [
+            (
+                "Title",
+                "Title \u{2014} Shell Controlled",
+                "Programs may set the tab and window title (OSC 0, 2)",
+                "privilege-title-shell",
+                c.badges.title_shell,
+            ),
+            (
+                "Clipboard",
+                "Clipboard \u{2014} Shell Controlled",
+                "Programs may use the clipboard at all (OSC 52)",
+                "privilege-clipboard-shell",
+                c.badges.clipboard_shell,
+            ),
+        ] {
+            rows.push(row(
+                Advanced,
+                group,
+                title,
+                Some(note),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
+        rows.push(row(
+            Advanced,
+            "Clipboard",
+            "Clipboard Read",
+            Some("A program pasting from your clipboard"),
+            choice("clipboard-read", &accesses, access(c.clipboard_read)),
+        ));
+        rows.push(row(
+            Advanced,
+            "Clipboard",
+            "Clipboard Write",
+            Some("A program copying to your clipboard"),
+            choice("clipboard-write", &accesses, access(c.clipboard_write)),
+        ));
+        rows.push(row(
+            Advanced,
+            "Mouse",
+            "Mouse \u{2014} Shell Controlled",
+            Some("Programs may turn on mouse reporting"),
+            Control::Toggle {
+                key: "privilege-mouse-shell",
+                on: c.badges.mouse_shell,
+                invert: false,
+            },
         ));
         rows.push(row(
             Advanced,

@@ -153,9 +153,17 @@ enum Pick {
     Nothing,
 }
 
-/// The title menu's Notifications & Privileges switches.
+/// The title menu's Notifications & Privileges switches, in Otty's
+/// Settings › Shell order: banners, sounds, badges, agents, then what a
+/// program may control.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Privilege {
+    NotifyFinish,
+    NotifyError,
+    NotifyWatch,
+    NotifyShell,
+    SoundOnError,
+    SoundShell,
     ExitStatus,
     Processing,
     Complete,
@@ -163,10 +171,19 @@ pub(super) enum Privilege {
     NotifyComplete,
     NotifyAwaiting,
     Caffeinate,
+    TitleShell,
+    ClipboardShell,
+    MouseShell,
 }
 
 impl Privilege {
-    pub(super) const ALL: [Privilege; 7] = [
+    pub(super) const ALL: [Privilege; 16] = [
+        Privilege::NotifyFinish,
+        Privilege::NotifyError,
+        Privilege::NotifyWatch,
+        Privilege::NotifyShell,
+        Privilege::SoundOnError,
+        Privilege::SoundShell,
         Privilege::ExitStatus,
         Privilege::Processing,
         Privilege::Complete,
@@ -174,10 +191,19 @@ impl Privilege {
         Privilege::NotifyComplete,
         Privilege::NotifyAwaiting,
         Privilege::Caffeinate,
+        Privilege::TitleShell,
+        Privilege::ClipboardShell,
+        Privilege::MouseShell,
     ];
 
     pub(super) fn label(self) -> &'static str {
         match self {
+            Privilege::NotifyFinish => "Notify on Finish",
+            Privilege::NotifyError => "Notify on Error",
+            Privilege::NotifyWatch => "Notify on Watch Finish",
+            Privilege::NotifyShell => "Notification \u{2014} Shell Controlled",
+            Privilege::SoundOnError => "Sound on Error Exit",
+            Privilege::SoundShell => "Sound \u{2014} Shell Controlled",
             Privilege::ExitStatus => "Badge Exit Status",
             Privilege::Processing => "Badge While Processing",
             Privilege::Complete => "Badge When Task Completes",
@@ -185,11 +211,20 @@ impl Privilege {
             Privilege::NotifyComplete => "Notify When Task Completes",
             Privilege::NotifyAwaiting => "Notify When Awaiting Input",
             Privilege::Caffeinate => "Prevent Sleep While Processing",
+            Privilege::TitleShell => "Title \u{2014} Shell Controlled",
+            Privilege::ClipboardShell => "Clipboard \u{2014} Shell Controlled",
+            Privilege::MouseShell => "Mouse \u{2014} Shell Controlled",
         }
     }
 
     pub(super) fn field(self, b: &mut motty_theme::Badges) -> &mut bool {
         match self {
+            Privilege::NotifyFinish => &mut b.notify_finish,
+            Privilege::NotifyError => &mut b.notify_error,
+            Privilege::NotifyWatch => &mut b.notify_watch,
+            Privilege::NotifyShell => &mut b.notify_shell,
+            Privilege::SoundOnError => &mut b.sound_on_error,
+            Privilege::SoundShell => &mut b.sound_shell,
             Privilege::ExitStatus => &mut b.exit_status,
             Privilege::Processing => &mut b.agent_processing,
             Privilege::Complete => &mut b.agent_complete,
@@ -197,6 +232,9 @@ impl Privilege {
             Privilege::NotifyComplete => &mut b.notify_complete,
             Privilege::NotifyAwaiting => &mut b.notify_awaiting,
             Privilege::Caffeinate => &mut b.caffeinate,
+            Privilege::TitleShell => &mut b.title_shell,
+            Privilege::ClipboardShell => &mut b.clipboard_shell,
+            Privilege::MouseShell => &mut b.mouse_shell,
         }
     }
 
@@ -204,6 +242,21 @@ impl Privilege {
         let mut b = *b;
         *self.field(&mut b)
     }
+}
+
+/// The speaker and bell on Notifications & Privileges: whether programs may
+/// ring the bell, and whether anything may post a banner.
+pub(super) fn privilege_symbols(b: &motty_theme::Badges) -> Vec<&'static str> {
+    let sound = b.sound_shell || b.sound_on_error;
+    let banner = b.notify_shell || b.notify_finish || b.notify_error;
+    vec![
+        if sound {
+            "speaker.wave.2"
+        } else {
+            "speaker.slash"
+        },
+        if banner { "bell" } else { "bell.slash" },
+    ]
 }
 
 /// `~/code/motty/`: a folder as the title menu shows it.
@@ -248,6 +301,19 @@ impl Menu {
         }
         self.entries.push(Entry::Submenu {
             label: label.to_owned().into(),
+            entries,
+        });
+    }
+
+    fn status(&mut self, label: &str, symbols: Vec<&'static str>, items: Vec<(Item, Pick)>) {
+        let mut entries = Vec::new();
+        for (item, pick) in items {
+            entries.push(item.into());
+            self.picks.push(pick);
+        }
+        self.entries.push(Entry::Status {
+            label: label.to_owned().into(),
+            symbols,
             entries,
         });
     }
@@ -416,7 +482,11 @@ impl Workspace {
                 Item::new("Use Settings Defaults").enabled(tab.privileges.is_some()),
                 Pick::DefaultPrivileges,
             ));
-            m.sub("Notifications & Privileges", privileges);
+            m.status(
+                "Notifications & Privileges",
+                privilege_symbols(&current),
+                privileges,
+            );
             m.separator();
             use crate::actions::*;
             m.sub(
@@ -610,9 +680,13 @@ impl Workspace {
                 let on = p.field(&mut b);
                 *on = !*on;
                 self.tabs[ix].privileges = Some(b);
+                self.sync_shell_privileges(cx);
+                cx.defer(crate::menus::refresh);
             }
             Pick::DefaultPrivileges => {
                 self.tabs[ix].privileges = None;
+                self.sync_shell_privileges(cx);
+                cx.defer(crate::menus::refresh);
             }
             Pick::Nothing => {}
         }

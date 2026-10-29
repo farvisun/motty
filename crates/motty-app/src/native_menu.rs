@@ -15,6 +15,13 @@ pub enum Entry {
         label: SharedString,
         entries: Vec<Entry>,
     },
+    /// A submenu whose row shows SF Symbols for its state at the right
+    /// (Notifications & Privileges: speaker, bell).
+    Status {
+        label: SharedString,
+        symbols: Vec<&'static str>,
+        entries: Vec<Entry>,
+    },
     Separator,
     /// A section title (`WORKING DIRECTORY`); not an item.
     Header(SharedString),
@@ -446,6 +453,7 @@ mod mac {
                 .fold(0., f64::max);
             ICON_COLUMN + widest + 36.
         });
+        let entries_here = entries;
         for entry in entries {
             match entry {
                 Entry::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
@@ -472,6 +480,27 @@ mod mac {
                     if symbols {
                         item.setAttributedTitle(Some(&symbol_title(label, None, true, None)));
                     }
+                    let sub = build(entries, target, mtm, count, selected, positioning);
+                    item.setSubmenu(Some(&sub));
+                    menu.addItem(&item);
+                }
+                Entry::Status {
+                    label,
+                    symbols: icons,
+                    entries,
+                } => {
+                    let item = NSMenuItem::new(mtm);
+                    item.setTitle(&NSString::from_str(label));
+                    // The symbols end where the widest row's text would, plus
+                    // room for them.
+                    let widest = entries_width(entries_here);
+                    let left = if symbols { Some(ICON_COLUMN) } else { None };
+                    item.setAttributedTitle(Some(&status_title(
+                        label,
+                        icons,
+                        left,
+                        left.unwrap_or(0.) + widest + 24. + 22. * icons.len() as f64,
+                    )));
                     let sub = build(entries, target, mtm, count, selected, positioning);
                     item.setSubmenu(Some(&sub));
                     menu.addItem(&item);
@@ -527,6 +556,71 @@ mod mac {
         Some(NSAttributedString::attributedStringWithAttachment(
             &attachment,
         ))
+    }
+
+    /// The widest label among a menu's rows.
+    fn entries_width(entries: &[Entry]) -> f64 {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Item(i) => Some(label_width(&i.label)),
+                Entry::Submenu { label, .. } | Entry::Status { label, .. } => {
+                    Some(label_width(label))
+                }
+                _ => None,
+            })
+            .fold(0., f64::max)
+    }
+
+    /// A Status row's title: the label (after the icon column, `left`),
+    /// then its symbols right-aligned at `right`, in the secondary colour.
+    fn status_title(
+        label: &str,
+        symbols: &[&str],
+        left: Option<f64>,
+        right: f64,
+    ) -> Retained<NSAttributedString> {
+        let text = NSMutableAttributedString::new();
+        let plain = |s: &str| NSAttributedString::from_nsstring(&NSString::from_str(s));
+        if left.is_some() {
+            text.appendAttributedString(&plain("\t"));
+        }
+        text.appendAttributedString(&plain(label));
+        text.appendAttributedString(&plain("\t"));
+        let start = text.length();
+        for (i, name) in symbols.iter().enumerate() {
+            if i > 0 {
+                text.appendAttributedString(&plain("  "));
+            }
+            if let Some(icon) = symbol_attachment(name) {
+                text.appendAttributedString(&icon);
+            }
+        }
+        let mut tabs = Vec::new();
+        if let Some(at) = left {
+            tabs.push(tab(NSTextAlignment::Left, at));
+        }
+        tabs.push(tab(NSTextAlignment::Right, right));
+        let style = NSMutableParagraphStyle::new();
+        style.setTabStops(Some(&NSArray::from_retained_slice(&tabs)));
+        let all = NSRange::new(0, text.length());
+        let icons = NSRange::new(start, text.length() - start);
+        // SAFETY: the values have the types these keys take.
+        unsafe {
+            text.addAttribute_value_range(NSFontAttributeName, &NSFont::menuFontOfSize(0.), all);
+            text.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &NSColor::labelColor(),
+                all,
+            );
+            text.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &NSColor::secondaryLabelColor(),
+                icons,
+            );
+            text.addAttribute_value_range(NSParagraphStyleAttributeName, &style, all);
+        }
+        Retained::into_super(text)
     }
 
     fn label_width(label: &str) -> f64 {

@@ -236,6 +236,9 @@ impl Session {
                 config.scrollback
             },
             default_cursor_style: config.cursor_style,
+            // Both directions reach the app, which applies the clipboard
+            // privileges (read asks by default).
+            osc52: term::Osc52::CopyPaste,
             ..Default::default()
         };
         let mut terminal = Term::new(term_config, &size, proxy.clone());
@@ -270,6 +273,7 @@ impl Session {
         let options = term::Config {
             scrolling_history: if scrollback == 0 { 10_000 } else { scrollback },
             default_cursor_style: cursor_style,
+            osc52: term::Osc52::CopyPaste,
             ..Default::default()
         };
         self.term.lock().set_options(options);
