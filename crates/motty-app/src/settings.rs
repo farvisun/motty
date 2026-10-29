@@ -929,6 +929,17 @@ impl SettingsWindow {
         rows.push(row(
             General,
             "Close Confirmation",
+            "Ignore Idle Coding Agents",
+            Some("An agent waiting at its prompt doesn't count as running"),
+            Control::Toggle {
+                key: "confirm-close-ignore-idle-agents",
+                on: c.close_ignores_idle_agents,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            General,
+            "Close Confirmation",
             "Hide Close Button Dot",
             Some("Never show the dot in the close button while a command runs"),
             Control::Toggle {

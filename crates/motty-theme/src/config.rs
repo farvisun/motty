@@ -43,6 +43,9 @@ pub struct Config {
     pub confirm_close_window: ConfirmClose,
     /// `window-hide-dirty-indicator`: never show the close button's dot.
     pub hide_dirty_indicator: bool,
+    /// `confirm-close-ignore-idle-agents`: an agent waiting at its prompt
+    /// doesn't count as running when closing.
+    pub close_ignores_idle_agents: bool,
     /// `on-launch = restore_session` (default) reopens the last session;
     /// `new_window` starts fresh (a crash still restores).
     pub restore_session: bool,
@@ -732,6 +735,9 @@ impl Config {
                 }
                 "window-hide-dirty-indicator" => {
                     out.hide_dirty_indicator = value.as_bool().unwrap_or(false)
+                }
+                "confirm-close-ignore-idle-agents" => {
+                    out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
                 }
                 "editor-show-line-numbers" => {
                     out.editor_line_numbers = value.as_bool().unwrap_or(true)

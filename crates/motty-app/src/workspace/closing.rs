@@ -37,6 +37,21 @@ fn detail(running: &[String], what: &str) -> Option<String> {
     })
 }
 
+/// What a close would end.
+#[derive(Default)]
+struct Running {
+    busy: Vec<String>,
+    /// Coding agents between turns.
+    idle_agents: Vec<String>,
+}
+
+impl Running {
+    /// Whether anything counts as running.
+    fn counts(&self, ignore_idle_agents: bool) -> bool {
+        !self.busy.is_empty() || (!ignore_idle_agents && !self.idle_agents.is_empty())
+    }
+}
+
 /// The tab's identity across reorders: its first pane or its editor.
 fn tab_key(tab: &Tab) -> EntityId {
     match &tab.content {
@@ -46,8 +61,9 @@ fn tab_key(tab: &Tab) -> EntityId {
 }
 
 impl Workspace {
-    /// What's running in the panes `closing` would take, by name.
-    fn running(&self, closing: &Closing, cx: &gpui::App) -> Vec<String> {
+    /// What's running in the panes `closing` would take, by name: busy
+    /// programs, and coding agents waiting at their prompt.
+    fn running(&self, closing: &Closing, cx: &gpui::App) -> Running {
         let panes: Vec<&Entity<TerminalView>> = match closing {
             Closing::Pane(view) => vec![view],
             Closing::Tab(ix) => self
@@ -63,17 +79,28 @@ impl Workspace {
                 .flat_map(|t| t.root.leaves())
                 .collect(),
         };
-        panes
-            .into_iter()
-            .filter_map(|v| {
-                let session = v.read(cx).session();
-                session.is_busy().then(|| {
+        let mut running = Running::default();
+        for view in panes {
+            let v = view.read(cx);
+            let session = v.session();
+            if !session.is_busy() {
+                continue;
+            }
+            match v
+                .status
+                .as_ref()
+                .filter(|s| !s.in_turn)
+                .and_then(|s| s.agent.clone())
+            {
+                Some(agent) => running.idle_agents.push(agent),
+                None => running.busy.push(
                     session
                         .foreground_process_name()
-                        .unwrap_or_else(|| "A command".into())
-                })
-            })
-            .collect()
+                        .unwrap_or_else(|| "A command".into()),
+                ),
+            }
+        }
+        running
     }
 
     /// Closes after asking, if the `confirm-close-*` rule says to. A tab
@@ -96,7 +123,17 @@ impl Workspace {
             Closing::Tab(_) if !last_tab => (self.config.confirm_close_tab, "tab"),
             _ => (self.config.confirm_close_window, "window"),
         };
-        let running = self.running(&closing, cx);
+        let Running { busy, idle_agents } = self.running(&closing, cx);
+        let ignore_idle = self.config.close_ignores_idle_agents;
+        // Only idle agents: Otty names them and offers not to ask again.
+        let only_idle = busy.is_empty() && !idle_agents.is_empty() && !ignore_idle;
+        let running = if ignore_idle {
+            busy
+        } else {
+            busy.into_iter()
+                .chain(idle_agents.iter().cloned())
+                .collect()
+        };
         if !asks(rule, !running.is_empty(), self.tabs.len()) {
             return self.close_now(closing, window, cx);
         }
@@ -105,17 +142,40 @@ impl Workspace {
             Closing::Tab(ix) => self.tabs.get(*ix).map(tab_key),
             _ => None,
         };
-        let detail = detail(&running, what);
+        let detail = if only_idle {
+            Some(format!(
+                "{} is waiting at its prompt. Closing the {what} will end it.",
+                idle_agents.join(", ")
+            ))
+        } else {
+            detail(&running, what)
+        };
+        let answers: &[&str] = if only_idle {
+            &["Close", "Cancel", "Don't Ask Again for Idle Coding Agents"]
+        } else {
+            &["Close", "Cancel"]
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Close this {what}?"),
             detail.as_deref(),
-            &["Close", "Cancel"],
+            answers,
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
-            if answer.await != Ok(0) {
-                return;
+            match answer.await {
+                Ok(0) => {}
+                Ok(2) => {
+                    let value = toml::Value::Boolean(true);
+                    if let Err(e) = motty_theme::config::save_values(&[(
+                        "confirm-close-ignore-idle-agents",
+                        value,
+                    )]) {
+                        tracing::warn!("couldn't save the close setting: {e}");
+                    }
+                    let _ = cx.update(|_, cx| cx.defer(super::reload_all));
+                }
+                _ => return,
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 let closing = match closing {
@@ -153,7 +213,9 @@ impl Workspace {
         if self.closing_window {
             return true;
         }
-        let running = !self.running(&Closing::Window, cx).is_empty();
+        let running = self
+            .running(&Closing::Window, cx)
+            .counts(self.config.close_ignores_idle_agents);
         if !asks(self.config.confirm_close_window, running, self.tabs.len()) {
             return true;
         }
