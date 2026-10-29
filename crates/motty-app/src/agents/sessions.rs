@@ -303,6 +303,72 @@ fn same_dir(a: &Path, b: &Path) -> bool {
             .is_some_and(|a| fs::canonicalize(b).is_ok_and(|b| a == b))
 }
 
+/// Where a running session's log is, from the id its hooks report: a
+/// file, or for OpenCode the folder of its message files.
+pub fn log_path(roots: &Roots, agent: &str, id: &str) -> Option<PathBuf> {
+    // Pi and omp ids may be the file itself.
+    if matches!(agent, "pi" | "omp") && Path::new(id).is_absolute() {
+        return Path::new(id).is_file().then(|| PathBuf::from(id));
+    }
+    // A name inside a folder, never a way out of it.
+    if id.is_empty() || id.contains(['/', '\\']) || id.starts_with('.') {
+        return None;
+    }
+    let newest = |dir: &Path| {
+        let mut dirs = subdirs(dir);
+        dirs.sort();
+        dirs.reverse();
+        dirs
+    };
+    match agent {
+        "claude" => roots
+            .claude
+            .iter()
+            .flat_map(|root| subdirs(&root.join("projects")))
+            .map(|project| project.join(format!("{id}.jsonl")))
+            .find(|p| p.is_file()),
+        "codex" => {
+            let suffix = format!("-{id}.jsonl");
+            for year in newest(&codex_home(roots).join("sessions")) {
+                for month in newest(&year) {
+                    for day in newest(&month) {
+                        let mut found = Vec::new();
+                        let rollout = |n: &str| n.starts_with("rollout-") && n.ends_with(&suffix);
+                        files(&day, "codex", rollout, &mut found);
+                        if let Some(f) = found.pop() {
+                            return Some(f.path);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "pi" | "omp" => {
+            let dir = roots.home.join(format!(".{agent}/agent/sessions"));
+            let suffix = format!("_{id}.jsonl");
+            let mut found = Vec::new();
+            for project in subdirs(&dir) {
+                files(&project, "pi", |n| n.ends_with(&suffix), &mut found);
+            }
+            found.sort_by_key(|f| f.modified);
+            found.pop().map(|f| f.path)
+        }
+        "opencode" => {
+            let dir = roots
+                .home
+                .join(".local/share/opencode/storage/message")
+                .join(id);
+            dir.is_dir().then_some(dir)
+        }
+        // `sessions/<folder key>/<id>/agents/main/wire.jsonl`
+        "kimi" => subdirs(&kimi_home(roots).join("sessions"))
+                .into_iter()
+                .map(|folder| folder.join(id).join("agents/main/wire.jsonl"))
+                .find(|p| p.is_file()),
+        _ => None,
+    }
+}
+
 fn codex_home(roots: &Roots) -> PathBuf {
     roots
         .codex
@@ -1960,6 +2026,37 @@ Done.
         remember_in(&file, &transcript);
         remember_in(&file, &home.join("elsewhere/abc.jsonl"));
         assert_eq!(read_roots(&file), [home.join("cfg")]);
+    }
+
+    #[test]
+    fn finds_a_running_sessions_log() {
+        let home = temp_home("log-path");
+        let r = roots(&home);
+        let touch = |rel: &str| {
+            let path = home.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "").unwrap();
+            path
+        };
+        let claude = touch(".claude/projects/-work-app/0b1c.jsonl");
+        let codex = touch(".codex/sessions/2026/10/29/rollout-2026-10-29T10-00-00-019a-ef.jsonl");
+        let pi = touch(".pi/agent/sessions/--work--/2026-10-29T10-00-00_77aa.jsonl");
+        let omp = touch(".omp/agent/sessions/-work/2026-10-29T10-00-00_0190ab.jsonl");
+        let kimi = touch(".kimi-code/sessions/wd_app_1a2b3c/01HZ9/agents/main/wire.jsonl");
+        fs::create_dir_all(home.join(".local/share/opencode/storage/message/ses_1")).unwrap();
+        assert_eq!(log_path(&r, "claude", "0b1c"), Some(claude));
+        assert_eq!(log_path(&r, "codex", "019a-ef"), Some(codex));
+        assert_eq!(log_path(&r, "pi", "77aa"), Some(pi.clone()));
+        assert_eq!(log_path(&r, "pi", pi.to_str().unwrap()), Some(pi));
+        assert_eq!(log_path(&r, "omp", "0190ab"), Some(omp));
+        assert_eq!(log_path(&r, "kimi", "01HZ9"), Some(kimi));
+        assert_eq!(
+            log_path(&r, "opencode", "ses_1"),
+            Some(home.join(".local/share/opencode/storage/message/ses_1"))
+        );
+        assert_eq!(log_path(&r, "claude", "../0b1c"), None);
+        assert_eq!(log_path(&r, "codex", "nope"), None);
+        assert_eq!(log_path(&r, "cursor", "0b1c"), None);
     }
 
     #[test]

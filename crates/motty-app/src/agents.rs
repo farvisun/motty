@@ -2,7 +2,9 @@
 //! shows about the one running in it, or about its last command.
 
 pub mod hooks;
+pub mod quota;
 pub mod sessions;
+pub mod usage;
 
 pub struct Agent {
     /// The id hooks report under (`motty hook claude`).
