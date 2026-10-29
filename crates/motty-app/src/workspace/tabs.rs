@@ -95,6 +95,8 @@ pub(super) struct Rename {
     pub text: String,
     /// Set Tab Prefix: the name goes before the title.
     pub prefix: bool,
+    /// The label of the divider below the tab, not the tab.
+    pub divider: bool,
     pub focus: FocusHandle,
 }
 
@@ -150,6 +152,7 @@ enum Pick {
     Privilege(Privilege),
     DefaultPrivileges,
     FocusPane(gpui::Entity<crate::terminal_view::TerminalView>),
+    RenameDivider,
     /// A row that only shows something.
     Nothing,
 }
@@ -370,6 +373,90 @@ impl Workspace {
                 });
             },
         );
+    }
+
+    /// Right-click on a divider.
+    fn show_divider_menu(
+        &mut self,
+        ix: usize,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let picks = [Pick::RenameDivider, Pick::Divider(false)];
+        let this = cx.entity().downgrade();
+        native_menu::popup(
+            vec![
+                Item::new("Rename Divider…").into(),
+                Item::new("Remove Divider").into(),
+            ],
+            at,
+            None,
+            window,
+            cx,
+            move |picked, window, cx| {
+                let Some(pick) = picks.into_iter().nth(picked) else {
+                    return;
+                };
+                let _ = this.update(cx, |this, cx| this.run_tab_pick(ix, pick, window, cx));
+            },
+        );
+    }
+
+    /// The divider below tab `ix`: a hairline, after its label when it has
+    /// one. Double-click to edit the label.
+    pub(super) fn render_divider(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use super::{DIVIDER_INSET, DIVIDER_SPACE, TAB_GAP};
+        let t = &self.theme;
+        let line = div()
+            .flex_1()
+            .h(px(1.))
+            .bg(motty_render::hsla(super::native_label(t, 0.1, 0.12)));
+        let label = self
+            .tabs
+            .get(ix)
+            .map(|t| t.divider_label.clone())
+            .unwrap_or_default();
+        let renaming = self.renaming.as_ref().filter(|r| r.divider && r.ix == ix);
+        // The row is taller than the line, so it's easy to hit; the
+        // margins keep the line where it was.
+        const PAD: f32 = 3.;
+        div()
+            .id(("divider", ix))
+            .mt(px(TAB_GAP + DIVIDER_SPACE - PAD))
+            .mb(px(DIVIDER_SPACE - PAD))
+            .py(px(PAD))
+            .mx(px(DIVIDER_INSET))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .text_size(px(11.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(motty_render::hsla(t.token.tertiary))
+            .map(|d| match renaming {
+                Some(rename) => d.child(self.rename_field(rename, cx)),
+                None if label.is_empty() => d.child(line),
+                None => d
+                    .child(div().flex_none().max_w(px(160.)).truncate().child(label))
+                    .child(line),
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        this.start_divider_rename(ix, window, cx);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.show_divider_menu(ix, event.position, window, cx);
+                }),
+            )
+            .into_any_element()
     }
 
     /// Right-click on a tab card.
@@ -711,8 +798,12 @@ impl Workspace {
             Pick::ClearBadge => self.clear_badge(ix, cx),
             Pick::Divider(on) => {
                 self.tabs[ix].divider = on;
+                if !on {
+                    self.tabs[ix].divider_label.clear();
+                }
                 cx.notify();
             }
+            Pick::RenameDivider => self.start_divider_rename(ix, window, cx),
             Pick::About => self.about_tab(ix, window, cx),
             Pick::FocusPane(view) => {
                 if ix == self.active {
@@ -793,6 +884,34 @@ impl Workspace {
             ix,
             text,
             prefix,
+            divider: false,
+            focus,
+        });
+        cx.notify();
+    }
+
+    /// Edits the label of the divider below tab `ix` in place.
+    pub(super) fn start_divider_rename(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(ix) else {
+            return;
+        };
+        let text = tab.divider_label.clone();
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        cx.on_focus_out(&focus, window, |this, _, window, cx| {
+            this.finish_rename(true, window, cx)
+        })
+        .detach();
+        self.renaming = Some(Rename {
+            ix,
+            text,
+            prefix: false,
+            divider: true,
             focus,
         });
         cx.notify();
@@ -830,7 +949,11 @@ impl Workspace {
         let Some(rename) = self.renaming.take() else {
             return;
         };
-        if keep && let Some(tab) = self.tabs.get_mut(rename.ix) {
+        if keep && rename.divider {
+            if let Some(tab) = self.tabs.get_mut(rename.ix) {
+                tab.divider_label = rename.text.trim().to_owned();
+            }
+        } else if keep && let Some(tab) = self.tabs.get_mut(rename.ix) {
             let text = rename.text.trim();
             tab.name = (!text.is_empty()).then(|| TabName {
                 text: text.to_owned(),

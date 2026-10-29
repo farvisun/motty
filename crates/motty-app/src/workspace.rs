@@ -113,6 +113,8 @@ pub(crate) struct Tab {
     content: Content,
     /// A divider follows this tab in the sidebar.
     divider: bool,
+    /// What the divider says; empty draws just the line.
+    divider_label: String,
     /// Last opened, looked at or reported on: Inbox orders by it.
     updated: std::time::SystemTime,
     /// When it was opened: the tabs panel's "Created Time" order.
@@ -151,6 +153,7 @@ impl Tab {
                 zoomed: false,
             }),
             divider: false,
+            divider_label: String::new(),
             updated: std::time::SystemTime::now(),
             created: std::time::SystemTime::now(),
             name: None,
@@ -164,6 +167,7 @@ impl Tab {
         Self {
             content: Content::Editor(editor),
             divider: false,
+            divider_label: String::new(),
             updated: std::time::SystemTime::now(),
             created: std::time::SystemTime::now(),
             name: None,
@@ -573,6 +577,7 @@ impl Workspace {
                 zoomed: state.zoomed,
             }),
             divider: state.divider,
+            divider_label: state.divider_label.clone(),
             updated: std::time::SystemTime::now(),
             created: std::time::SystemTime::now(),
             name: state.name.clone().map(|text| tabs::TabName {
@@ -1579,14 +1584,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .child(card)
-                            .child(
-                                div()
-                                    .mt(px(TAB_GAP + DIVIDER_SPACE))
-                                    .mb(px(DIVIDER_SPACE))
-                                    .mx(px(DIVIDER_INSET))
-                                    .h(px(1.))
-                                    .bg(hsla(native_label(t, 0.1, 0.12))),
-                            )
+                            .child(self.render_divider(ix, cx))
                             .into_any_element(),
                     );
                 }
@@ -1762,7 +1760,7 @@ impl Workspace {
             .pt(px(1.))
             .truncate()
             .child(summary.title.clone());
-        let renaming = self.renaming.as_ref().filter(|r| r.ix == ix);
+        let renaming = self.renaming.as_ref().filter(|r| r.ix == ix && !r.divider);
         let title = match (&line, renaming) {
             (_, Some(rename)) => self.rename_field(rename, cx),
             (None, None) => title.into_any_element(),
@@ -1810,7 +1808,11 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    if this.renaming.as_ref().is_some_and(|r| r.ix == ix) {
+                    if this
+                        .renaming
+                        .as_ref()
+                        .is_some_and(|r| r.ix == ix && !r.divider)
+                    {
                         return;
                     }
                     this.activate(ix, window, cx);
@@ -3308,6 +3310,7 @@ fn tab_state(
             .unwrap_or(0),
         zoomed: tab.zoomed,
         divider: whole.divider,
+        divider_label: whole.divider_label.clone(),
         name: whole.name.as_ref().map(|n| n.text.clone()),
         name_prefix: whole.name.as_ref().is_some_and(|n| n.prefix),
     })

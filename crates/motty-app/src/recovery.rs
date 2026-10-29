@@ -54,6 +54,9 @@ pub struct TabState {
     /// A divider follows the tab in the sidebar.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub divider: bool,
+    /// The divider's label (double-click it to edit).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub divider_label: String,
     /// The name given with Rename Tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
