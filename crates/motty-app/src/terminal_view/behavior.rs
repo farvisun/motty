@@ -84,6 +84,7 @@ impl TerminalView {
     /// Typing drops the selection unless `selection-clear-on-typing` is off.
     pub(super) fn typed(&mut self) {
         self.kb_select = None;
+        self.scroll_home();
         if self.behavior.clear_selection_on_typing {
             self.session.term.lock().selection = None;
         }

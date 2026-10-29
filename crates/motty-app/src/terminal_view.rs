@@ -6,8 +6,7 @@ use std::rc::Rc;
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
     FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, SharedString, Task, UTF16Selection, Window,
-    div, prelude::*,
+    MouseUpEvent, Pixels, SharedString, Task, UTF16Selection, Window, div, prelude::*,
 };
 use hints::HintAction;
 use motty_render::{TerminalElement, TerminalLayout, TerminalStyle};
@@ -37,6 +36,7 @@ mod links;
 mod paste;
 mod replay;
 mod rich_paste;
+mod scroll;
 mod vi;
 
 pub use composer::{Chip, is_pinned as composer_pinned};
@@ -118,8 +118,9 @@ pub struct TerminalView {
     drop_folder: bool,
     option_as_meta: bool,
     keys_down: keys::KeysDown,
-    /// Fractional lines carried between precise (trackpad) scroll events.
-    scroll_remainder: f32,
+    /// Smooth scrolling, the output slide, scrolling past the ends, the
+    /// scrollbar and the cursor's glide.
+    scrolling: scroll::Scrolling,
     selecting: bool,
     /// IME composition in progress.
     marked_text: Option<SharedString>,
@@ -215,7 +216,7 @@ impl TerminalView {
             drop_folder: false,
             option_as_meta,
             keys_down: Default::default(),
-            scroll_remainder: 0.,
+            scrolling: Default::default(),
             selecting: false,
             marked_text: None,
             blink: (cursor_blink != CursorBlink::AlwaysOff).then(|| BlinkState {
@@ -623,6 +624,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        self.cursor_clicked();
         if self.control_click(event, window, cx) {
             return;
         }
@@ -697,47 +699,6 @@ impl TerminalView {
                 event.position,
                 &event.modifiers,
             );
-        }
-    }
-
-    fn on_scroll(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(layout) = self.layout.get() else {
-            return;
-        };
-        let lines = match event.delta {
-            ScrollDelta::Lines(p) => p.y,
-            ScrollDelta::Pixels(p) => f32::from(p.y) / f32::from(layout.line_height),
-        } + self.scroll_remainder;
-        let whole = lines.trunc() as i32;
-        self.scroll_remainder = lines.fract();
-        if whole == 0 {
-            return;
-        }
-        let mode = self.term_mode();
-        if self.reports_mouse(mode) && !event.modifiers.shift && !self.read_only {
-            let button = if whole > 0 {
-                input::MouseButton::WheelUp
-            } else {
-                input::MouseButton::WheelDown
-            };
-            for _ in 0..whole.unsigned_abs().min(10) {
-                self.report_mouse(button, MouseAction::Press, event.position, &event.modifiers);
-            }
-        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-            let key: &[u8] = match (whole > 0, mode.contains(TermMode::APP_CURSOR)) {
-                (true, true) => b"\x1bOA",
-                (true, false) => b"\x1b[A",
-                (false, true) => b"\x1bOB",
-                (false, false) => b"\x1b[B",
-            };
-            self.session
-                .write(key.repeat(whole.unsigned_abs() as usize));
-        } else {
-            self.session
-                .term
-                .lock()
-                .scroll_display(Scroll::Delta(whole));
-            cx.notify();
         }
     }
 
@@ -908,6 +869,7 @@ impl Render for TerminalView {
         if focused {
             self.update_suggestion();
         }
+        let motion = self.frame_motion(focused, window);
         let element = TerminalElement::new(
             self.session.term.clone(),
             self.style.clone(),
@@ -921,6 +883,7 @@ impl Render for TerminalView {
                 }
             },
         )
+        .motion(motion)
         .preedit(self.marked_text.clone())
         .ghost(focused.then(|| self.ghost_text()).flatten())
         .highlights(self.find_highlights())
@@ -966,6 +929,7 @@ impl Render for TerminalView {
                 }),
             )
             .child(element)
+            .children(self.render_scrollbar(cx))
             .children(self.render_link_status())
             .children(self.render_vi_key_hints())
             .children(self.render_find_bar(cx))

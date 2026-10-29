@@ -952,6 +952,7 @@ impl Workspace {
             let mut view = TerminalView::new(id, session, events, style, meta, blink, window, cx);
             view.set_link_options(crate::terminal_view::LinkOptions::from_config(&self.config));
             view.set_behavior(self.config.behavior, self.config.progress_commands());
+            view.set_motion(self.config.motion);
             view.set_autocomplete(self.config.autocomplete.clone(), cx);
             view.refresh_process();
             view
@@ -1560,11 +1561,13 @@ impl Workspace {
         let links = crate::terminal_view::LinkOptions::from_config(&self.config);
         let autocomplete = self.config.autocomplete.clone();
         let (behavior, progress) = (self.config.behavior, self.config.progress_commands());
+        let motion = self.config.motion;
         cursor_hiding(&self.config, cx);
         for view in self.panes().map(|(_, v)| v) {
             view.update(cx, |t, cx| {
                 t.set_link_options(links.clone());
                 t.set_behavior(behavior, progress.clone());
+                t.set_motion(motion);
                 t.set_autocomplete(autocomplete.clone(), cx);
                 t.apply_config(meta, blink, cursor, scrollback, vt.clone(), cx)
             });
