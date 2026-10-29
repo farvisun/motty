@@ -414,6 +414,8 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <key>CFBundleURLSchemes</key><array><string>motty</string></array>
         </dict>
     </array>
+    <key>NSAppleScriptEnabled</key><true/>
+    <key>OSAScriptingDefinition</key><string>Motty.sdef</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -472,6 +474,11 @@ fn bundle(release: bool) -> Result<PathBuf> {
     let _ = std::fs::remove_file(&cli);
     std::fs::copy(profile.join("motty"), &cli)?;
     icns(&profile, &app.join("Contents/Resources/Motty.icns"))?;
+    // The AppleScript dictionary (OSAScriptingDefinition).
+    std::fs::copy(
+        root().join("crates/motty-app/resources/Motty.sdef"),
+        app.join("Contents/Resources/Motty.sdef"),
+    )?;
     let plist = INFO_PLIST.replace("{version}", env!("CARGO_PKG_VERSION"));
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
     run(Command::new("codesign")
