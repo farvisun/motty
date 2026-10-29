@@ -326,7 +326,7 @@ impl Workspace {
     }
 
     /// The focused pane's agent session, as its hooks reported it.
-    fn focused_session(&self, cx: &App) -> Option<ResumeSession> {
+    pub(super) fn focused_session(&self, cx: &App) -> Option<ResumeSession> {
         let view = self.focused_pane()?;
         let v = view.read(cx);
         let status = v.status.as_ref()?;

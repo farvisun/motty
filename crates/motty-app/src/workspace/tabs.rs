@@ -149,6 +149,7 @@ enum Pick {
     OpenIn(String, PathBuf),
     Privilege(Privilege),
     DefaultPrivileges,
+    FocusPane(gpui::Entity<crate::terminal_view::TerminalView>),
     /// A row that only shows something.
     Nothing,
 }
@@ -324,6 +325,53 @@ impl Menu {
 }
 
 impl Workspace {
+    /// Notifications & Privileges for `tab`, as the title menu and the
+    /// tab's context menu show it.
+    fn privileges_menu(&self, tab: &super::Tab, m: &mut Menu) {
+        let current = tab.privileges.unwrap_or(self.config.badges);
+        let mut privileges: Vec<(Item, Pick)> = Privilege::ALL
+            .into_iter()
+            .map(|p| {
+                (
+                    Item::new(p.label()).checked(p.get(&current)),
+                    Pick::Privilege(p),
+                )
+            })
+            .collect();
+        privileges.push((
+            Item::new("Use Settings Defaults").enabled(tab.privileges.is_some()),
+            Pick::DefaultPrivileges,
+        ));
+        m.status(
+            "Notifications & Privileges",
+            privilege_symbols(&current),
+            privileges,
+        );
+    }
+
+    /// Right-click in the gap below tab `ix`: a divider there.
+    pub(super) fn show_gap_menu(
+        &mut self,
+        ix: usize,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        native_menu::popup(
+            vec![Item::new("Insert Divider").into()],
+            at,
+            None,
+            window,
+            cx,
+            move |_, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.run_tab_pick(ix, Pick::Divider(true), window, cx)
+                });
+            },
+        );
+    }
+
     /// Right-click on a tab card.
     pub(super) fn show_tab_menu(
         &mut self,
@@ -358,6 +406,9 @@ impl Workspace {
             ],
         );
         m.item(Item::new("Clear Badge").enabled(badge), Pick::ClearBadge);
+        if tab.terms().is_some() {
+            self.privileges_menu(tab, &mut m);
+        }
         m.separator();
         if tab.divider {
             m.item(Item::new("Remove Divider Below"), Pick::Divider(false));
@@ -468,26 +519,36 @@ impl Workspace {
             m.separator();
         }
         if tab.terms().is_some() {
-            let current = tab.privileges.unwrap_or(self.config.badges);
-            let mut privileges: Vec<(Item, Pick)> = Privilege::ALL
-                .into_iter()
-                .map(|p| {
-                    (
-                        Item::new(p.label()).checked(p.get(&current)),
-                        Pick::Privilege(p),
-                    )
-                })
-                .collect();
-            privileges.push((
-                Item::new("Use Settings Defaults").enabled(tab.privileges.is_some()),
-                Pick::DefaultPrivileges,
-            ));
-            m.status(
-                "Notifications & Privileges",
-                privilege_symbols(&current),
-                privileges,
-            );
+            self.privileges_menu(tab, &mut m);
             m.separator();
+            if self.focused_session(cx).is_some() {
+                let (item, pick) = act(
+                    "Open History View",
+                    Box::new(crate::actions::ViewSessionHistory),
+                );
+                m.item(item, pick);
+                m.separator();
+            }
+            // A split tab lists its panes, the focused one checked.
+            if let Some(terms) = tab.terms()
+                && terms.root.leaves().len() > 1
+            {
+                let panes = terms
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .map(|pane| {
+                        let v = pane.read(cx);
+                        let program = v.process.clone().unwrap_or_else(|| "shell".into());
+                        let label = format!("{program} — {}", v.display_title());
+                        (
+                            Item::new(label).checked(*pane == terms.focused),
+                            Pick::FocusPane(pane.clone()),
+                        )
+                    })
+                    .collect();
+                m.sub("Panes", panes);
+            }
             use crate::actions::*;
             m.sub(
                 "Split View",
@@ -653,6 +714,11 @@ impl Workspace {
                 cx.notify();
             }
             Pick::About => self.about_tab(ix, window, cx),
+            Pick::FocusPane(view) => {
+                if ix == self.active {
+                    self.focus_pane(view, window, cx);
+                }
+            }
             Pick::Close => self.close_asking(super::closing::Closing::Tab(ix), window, cx),
             Pick::Group(g) => {
                 self.grouping = g;

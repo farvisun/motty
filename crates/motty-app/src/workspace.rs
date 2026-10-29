@@ -44,7 +44,7 @@ mod tabs;
 mod welcome;
 
 pub(crate) use agents::Place;
-pub(crate) use details::{listening_ports, open_in, open_with_apps, web_url};
+pub(crate) use details::{apps_for, listening_ports, open_in, open_with_apps, web_url};
 pub(crate) use palette::keycaps;
 pub(crate) use tabs::MovedTab;
 pub use welcome::first_run;
@@ -1533,14 +1533,43 @@ impl Workspace {
             let mut rows = Vec::new();
             let grouped = self.grouping != tabs::Grouping::None;
             for group in self.sidebar_groups(cx) {
+                let last = group.tabs.last().copied();
                 if let Some(heading) = group.heading {
                     rows.push(self.group_heading(heading, group.folder, cx));
                 }
                 for ix in group.tabs {
                     let card = self.render_tab_card(ix, None, cx);
-                    // Dividers mark places in the tabs' own order.
-                    if !self.tabs[ix].divider || grouped {
+                    if grouped || (Some(ix) == last && !self.tabs[ix].divider) {
                         rows.push(card);
+                        continue;
+                    }
+                    if !self.tabs[ix].divider {
+                        // Right-clicking the gap below a card offers a
+                        // divider there; the target overhangs the 2pt gap.
+                        rows.push(
+                            div()
+                                .relative()
+                                .child(card)
+                                .child(
+                                    div()
+                                        .id(("tab-gap", ix))
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(px(-TAB_GAP - 2.))
+                                        .h(px(TAB_GAP + 4.))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.show_gap_menu(ix, event.position, window, cx);
+                                                },
+                                            ),
+                                        ),
+                                )
+                                .into_any_element(),
+                        );
                         continue;
                     }
                     // Insert Divider: a hairline inset from the cards, in the

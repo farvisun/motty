@@ -1,7 +1,8 @@
 //! Right-click in a terminal: the native context menu (Otty's items), or
 //! what `right-click-action` says instead.
-//! On a path it also offers Open With, Change Directory Here and a new tab
-//! there; on a command's rows, About This Line.
+//! On a path or URL it also offers Open With (the apps macOS lists for
+//! it), Change Directory Here and Open in Motty; on a command's rows,
+//! About This Line.
 //! A program that captures the mouse gets the click; ⌃-click always opens
 //! the menu.
 
@@ -126,77 +127,93 @@ impl TerminalView {
         }
 
         if let Some(link) = self.link_at(at) {
-            match link.target.clone() {
-                Target::Url(url) => {
-                    add(
-                        &mut entries,
-                        &mut picks,
-                        Item::new("Open Link"),
-                        Pick::Open(Target::Url(url.clone())),
-                    );
-                    add(
-                        &mut entries,
-                        &mut picks,
-                        Item::new("Copy Link"),
-                        Pick::Copy(url),
-                    );
+            // Otty's order: open it, Open With, copy, reveal, then the
+            // terminal's own places for it.
+            let (open, target, copy) = match &link.target {
+                Target::Url(url) => ("Open Link", url.clone(), "Copy URL"),
+                Target::Path { path, .. } if path.is_dir() => (
+                    "Open Folder",
+                    path.to_string_lossy().into_owned(),
+                    "Copy Path",
+                ),
+                Target::Path { path, .. } => (
+                    "Open File",
+                    path.to_string_lossy().into_owned(),
+                    "Copy Path",
+                ),
+            };
+            add(
+                &mut entries,
+                &mut picks,
+                Item::new(open),
+                Pick::Open(link.target.clone()),
+            );
+            let apps = crate::workspace::apps_for(&target, &self.link_options.open_with);
+            if !apps.is_empty() {
+                let mut with = Vec::new();
+                for (name, bundle) in apps {
+                    with.push(Item::new(name).into());
+                    picks.push(Pick::OpenWith(bundle, PathBuf::from(&target)));
                 }
-                target @ Target::Path { .. } => {
-                    let Target::Path { path, .. } = &target else {
-                        unreachable!()
-                    };
-                    let path = path.clone();
+                entries.push(Entry::Submenu {
+                    label: "Open With".into(),
+                    entries: with,
+                });
+            }
+            add(
+                &mut entries,
+                &mut picks,
+                Item::new(copy),
+                Pick::Copy(target.clone()),
+            );
+            if let Target::Path { path, .. } = &link.target {
+                let path = path.clone();
+                add(
+                    &mut entries,
+                    &mut picks,
+                    Item::new("Reveal in Finder"),
+                    Pick::Reveal(path.clone()),
+                );
+                let folder = if path.is_dir() {
+                    Some(path.clone())
+                } else {
+                    path.parent().map(PathBuf::from)
+                };
+                if let Some(folder) = folder {
+                    entries.push(Entry::Separator);
+                    let idle = !self.read_only && !self.session.is_busy();
                     add(
                         &mut entries,
                         &mut picks,
-                        Item::new("Open"),
-                        Pick::Open(target),
+                        Item::new("Change Directory Here").enabled(idle),
+                        Pick::Cd(folder.clone()),
                     );
-                    add(
-                        &mut entries,
-                        &mut picks,
-                        Item::new("Reveal in Finder"),
-                        Pick::Reveal(path.clone()),
-                    );
-                    add(
-                        &mut entries,
-                        &mut picks,
-                        Item::new("Copy Path"),
-                        Pick::Copy(path.to_string_lossy().into_owned()),
-                    );
-                    let apps = &self.link_options.open_with;
-                    if !apps.is_empty() {
-                        let mut with = Vec::new();
-                        for (name, bundle) in apps {
-                            with.push(Item::new(name.clone()).into());
-                            picks.push(Pick::OpenWith(bundle.clone(), path.clone()));
-                        }
-                        entries.push(Entry::Submenu {
-                            label: "Open With".into(),
-                            entries: with,
-                        });
-                    }
-                    let folder = if path.is_dir() {
-                        Some(path.clone())
+                    // A folder opens as a shell there; a file in an editor
+                    // tab (Motty has no file panes in splits yet).
+                    let mut here = Vec::new();
+                    if path.is_dir() {
+                        here.push(Item::new("Current Pane").enabled(idle).into());
+                        picks.push(Pick::Cd(folder.clone()));
+                        here.push(Item::new("New Tab").into());
+                        picks.push(Pick::Action(Box::new(OpenFolder {
+                            path: folder.clone(),
+                        })));
+                        here.push(Item::new("Split").into());
+                        picks.push(Pick::Action(Box::new(DropSplit {
+                            pane: self.id,
+                            side: "right".into(),
+                            path: folder,
+                        })));
                     } else {
-                        path.parent().map(PathBuf::from)
-                    };
-                    if let Some(folder) = folder {
-                        entries.push(Entry::Separator);
-                        add(
-                            &mut entries,
-                            &mut picks,
-                            Item::new("Change Directory Here")
-                                .enabled(!self.read_only && !self.session.is_busy()),
-                            Pick::Cd(folder.clone()),
-                        );
-                        add(
-                            &mut entries,
-                            &mut picks,
-                            Item::new("Open in New Tab"),
-                            Pick::Action(Box::new(OpenFolder { path: folder })),
-                        );
+                        here.push(Item::new("New Tab").into());
+                        picks.push(Pick::Action(Box::new(EditFiles {
+                            paths: vec![path.clone()],
+                        })));
                     }
+                    entries.push(Entry::Submenu {
+                        label: "Open in Motty".into(),
+                        entries: here,
+                    });
                 }
             }
             entries.push(Entry::Separator);

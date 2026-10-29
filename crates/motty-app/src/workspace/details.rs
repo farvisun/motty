@@ -971,6 +971,49 @@ pub(crate) fn open_in(bundle: &str, path: &Path) {
     }
 }
 
+/// The installed apps that can open `target` (a path or a URL), the
+/// default first, then `extra` (the configured editors) not already there;
+/// as (name, bundle id).
+pub(crate) fn apps_for(target: &str, extra: &[(String, String)]) -> Vec<(String, String)> {
+    let mut apps = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::{NSBundle, NSString, NSURL};
+        let text = NSString::from_str(target);
+        let url = if target.contains("://") {
+            NSURL::URLWithString(&text)
+        } else {
+            Some(NSURL::fileURLWithPath(&text))
+        };
+        if let Some(url) = url {
+            let workspace = NSWorkspace::sharedWorkspace();
+            for app in workspace.URLsForApplicationsToOpenURL(&url).iter() {
+                let Some(id) = NSBundle::bundleWithURL(&app).and_then(|b| b.bundleIdentifier())
+                else {
+                    continue;
+                };
+                let Some(name) = app
+                    .lastPathComponent()
+                    .map(|n| n.to_string().trim_end_matches(".app").to_owned())
+                else {
+                    continue;
+                };
+                let id = id.to_string();
+                if !apps.iter().any(|(_, b)| *b == id) {
+                    apps.push((name, id));
+                }
+            }
+        }
+    }
+    for (name, bundle) in extra {
+        if !apps.iter().any(|(_, b)| b == bundle) {
+            apps.push((name.clone(), bundle.clone()));
+        }
+    }
+    apps
+}
+
 pub(super) fn tilde(path: &Path) -> String {
     match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok().map(Path::to_path_buf)) {
         Some(rel) if rel.as_os_str().is_empty() => "~".into(),
