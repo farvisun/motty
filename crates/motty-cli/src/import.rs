@@ -424,6 +424,7 @@ pub fn ghostty(text: &str) -> Vec<Row> {
                         .unwrap_or(v);
                     set("command", s(v))
                 }
+                "term" => set("term", s(v)),
                 "env" => match v.split_once('=') {
                     Some((name, _)) if !name.trim().is_empty() => set("env", s(v)),
                     _ => skip("expected NAME=value"),
@@ -749,6 +750,7 @@ pub fn kitty(text: &str) -> Vec<Row> {
                     },
                     _ => skip("Motty's palette has 16 colors"),
                 },
+                "term" => set("term", s(v)),
                 "shell" if v == "." => skip("kitty's default: your login shell, as in Motty"),
                 "shell" => set("command", s(v)),
                 "env" => match v.split_once('=') {

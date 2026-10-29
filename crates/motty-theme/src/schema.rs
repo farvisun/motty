@@ -256,6 +256,7 @@ pub const KEYS: &[KeySpec] = &[
     color("cursor-text", "Text color under the cursor, for themes that don't set one."),
     // Shell & environment
     key("command", Kind::Str, "$SHELL", "Shell › Shell", "Shell or command new terminals run (as a login shell).").alias(&["shell"]),
+    key("term", Kind::Str, "auto", "Shell › Shell", "$TERM for new terminals: auto (xterm-256color) or an installed terminfo name; a missing one falls back to xterm-256color."),
     key("env", Kind::Pair, "", "", "An environment variable for new terminals, NAME=value. One line each.").list(List::Repeated),
     key("working-directory", Kind::Dir, "", "", "Where new terminals start: inherit, home or a folder (~ allowed). The per-kind keys below win."),
     key("window-working-directory", Kind::Dir, "home", "", "Where a new window's first terminal starts."),
