@@ -1,6 +1,6 @@
 //! One terminal pane: owns the session and translates GPUI input into PTY bytes.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -80,6 +80,12 @@ pub struct TerminalView {
     base_font_size: f32,
     focus_handle: FocusHandle,
     layout: Rc<Cell<Option<TerminalLayout>>>,
+    /// Rows drawn reordered for right-to-left text in the last frame.
+    visual_map: Rc<RefCell<motty_render::bidi::VisualMap>>,
+    /// `text-blink`: blinking cells are in the off half of the cycle,
+    /// and the timer flipping it (running only while the key is on).
+    text_blink_off: bool,
+    text_blink: Option<Task<()>>,
     /// Title set by the running program (OSC 0/2).
     pub title: Option<String>,
     /// Shell name, foreground cwd and whether a command is running,
@@ -168,6 +174,8 @@ struct BlinkState {
 }
 
 const BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(530);
+/// Half of the `text-blink` cycle: on for 0.5 s, off for 0.5 s.
+const TEXT_BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -188,6 +196,7 @@ impl TerminalView {
         let focus_out = cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
             this.release_secret(cx)
         });
+        let text_blink = style.text.blink.then(|| Self::text_blink_task(cx));
         Self {
             id,
             session,
@@ -195,6 +204,9 @@ impl TerminalView {
             style: Rc::new(style),
             focus_handle,
             layout: Rc::new(Cell::new(None)),
+            visual_map: Default::default(),
+            text_blink_off: false,
+            text_blink,
             title: None,
             process: None,
             allow_title: true,
@@ -296,6 +308,26 @@ impl TerminalView {
                         blink.visible = !blink.visible;
                     }
                     cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    /// Flips blinking cells about once a second, repainting only while
+    /// some are on screen.
+    fn text_blink_task(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TEXT_BLINK_INTERVAL).await;
+                let alive = this.update(cx, |view, cx| {
+                    let on_screen = view.layout.get().is_some_and(|l| l.blinking);
+                    if on_screen || view.text_blink_off {
+                        view.text_blink_off = on_screen && !view.text_blink_off;
+                        cx.notify();
+                    }
                 });
                 if alive.is_err() {
                     break;
@@ -419,6 +451,10 @@ impl TerminalView {
     }
 
     pub fn set_style(&mut self, style: TerminalStyle, cx: &mut Context<Self>) {
+        if style.text.blink != self.text_blink.is_some() {
+            self.text_blink = style.text.blink.then(|| Self::text_blink_task(cx));
+            self.text_blink_off = false;
+        }
         self.base_font_size = f32::from(style.font_size);
         self.style = Rc::new(style);
         cx.notify();
@@ -569,6 +605,9 @@ impl TerminalView {
     fn hit(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, usize, Point, Side)> {
         let layout = self.layout.get()?;
         let (row, col, right_half) = layout.cell_at(pos);
+        // A cell drawn right to left starts at its right edge.
+        let (col, rtl) = self.visual_map.borrow().logical(row, col);
+        let right_half = right_half != rtl;
         let offset = self.session.term.lock().grid().display_offset();
         let point = viewport_to_point(offset, Point::new(row, Column(col)));
         Some((
@@ -889,6 +928,8 @@ impl Render for TerminalView {
         .highlights(self.find_highlights())
         .underlines(self.underlines())
         .labels(self.hint_labels())
+        .blink_off(self.text_blink_off)
+        .visual_map(self.visual_map.clone())
         .on_paint(move |bounds, window, cx| {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input_entity), cx);
         });

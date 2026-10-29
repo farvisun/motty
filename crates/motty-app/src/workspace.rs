@@ -564,6 +564,7 @@ pub fn cursor_style(config: &Config) -> CursorStyle {
 pub fn terminal_style(config: &Config, theme: &Theme, cx: &App) -> TerminalStyle {
     let family = crate::fonts::terminal_family(config, theme, cx);
     TerminalStyle::from_theme(theme, Some(&family), config.font_size, config.ligatures)
+        .with_text(config.text.clone())
 }
 
 impl Workspace {
