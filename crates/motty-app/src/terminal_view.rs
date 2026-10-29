@@ -126,6 +126,8 @@ pub struct TerminalView {
     blink_policy: CursorBlink,
     /// The find bar, while open.
     find: Option<find::Find>,
+    /// A row a `motty://` link pointed at, lit for a moment.
+    flash: Option<(u64, Task<()>)>,
     /// The last query and options, restored when the bar reopens.
     last_find: (String, SearchOptions),
     link_options: LinkOptions,
@@ -220,6 +222,7 @@ impl TerminalView {
             }),
             blink_policy: cursor_blink,
             find: None,
+            flash: None,
             last_find: Default::default(),
             link_options: LinkOptions::default(),
             hovered_link: None,

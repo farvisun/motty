@@ -1158,7 +1158,7 @@ impl Workspace {
 
     /// This window stops following a tab's panes; the one it moves to
     /// picks them up.
-    fn unwatch(&mut self, tab: &Tab) {
+    pub(super) fn unwatch(&mut self, tab: &Tab) {
         match &tab.content {
             Content::Panes(t) => {
                 for item in t.root.leaves() {

@@ -30,6 +30,7 @@ use crate::titlebar;
 
 mod agents;
 mod closing;
+mod control;
 mod details;
 mod files;
 mod global_search;
@@ -119,8 +120,18 @@ const MAX_CLOSED_TABS: usize = 10;
 const DIVIDER_INSET: f32 = 8.;
 const DIVIDER_SPACE: f32 = 4.;
 
+/// Ids for windows and tabs, as the CLI names them (`w_1`, `t_1`).
+static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_TAB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_id(counter: &std::sync::atomic::AtomicU64) -> u64 {
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A sidebar tab: panes in splits, or search results.
 pub(crate) struct Tab {
+    /// `t_<id>` to the CLI: unique for the run, kept across windows.
+    id: u64,
     content: Content,
     /// A divider follows this tab in the sidebar.
     divider: bool,
@@ -201,6 +212,7 @@ impl Tab {
 
     fn holding(content: Content) -> Self {
         Self {
+            id: next_id(&NEXT_TAB),
             content,
             divider: false,
             divider_label: String::new(),
@@ -250,6 +262,10 @@ impl Tab {
 }
 
 pub struct Workspace {
+    /// `w_<id>` to the CLI: unique for the run.
+    id: u64,
+    /// Set with `motty window rename`: the window's title from then on.
+    name: Option<String>,
     config: Config,
     theme: Theme,
     mode: Mode,
@@ -625,6 +641,8 @@ impl Workspace {
         };
 
         let mut this = Self {
+            id: next_id(&NEXT_WINDOW),
+            name: None,
             config,
             theme,
             mode,
@@ -763,6 +781,7 @@ impl Workspace {
             .cloned()
             .expect("a pane tree has a leaf");
         Ok(Tab {
+            id: next_id(&NEXT_TAB),
             content: Content::Panes(Panes {
                 root,
                 focused,
@@ -3287,11 +3306,7 @@ impl Render for Workspace {
             tab.zoomed = false;
             cx.defer(crate::menus::refresh);
         }
-        let title = self
-            .tabs
-            .get(self.active)
-            .map(|tab| tab_title(tab, cx))
-            .unwrap_or_default();
+        let title = self.title(cx);
         if title != self.window_title {
             window.set_window_title(&title);
             self.window_title = title.clone();

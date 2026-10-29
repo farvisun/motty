@@ -288,6 +288,35 @@ impl Workspace {
         self.apply_recipe(saved.recipe, bases, replay, window, cx);
     }
 
+    /// `motty recipe apply`: a saved recipe by id or name, a layout one as
+    /// tabs here or in a new window when `dest` says, its Current Folder
+    /// paths from `cwd` (else the active tab's folder).
+    pub(crate) fn apply_recipe_from_cli(
+        &mut self,
+        key: &str,
+        dest: Option<Scope>,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<String> {
+        let saved = recipes::find(key)
+            .ok_or_else(|| anyhow::anyhow!("no recipe {key:?} (see `motty recipe list`)"))?;
+        let mut recipe = saved.recipe;
+        if let Some(dest) = dest {
+            anyhow::ensure!(
+                matches!(recipe.recipe.scope, Scope::Tab | Scope::Window),
+                "--new-tab and --new-window are for layout recipes; {} is a {} recipe",
+                recipe.recipe.name,
+                recipe.recipe.scope.label().to_lowercase()
+            );
+            recipe.recipe.scope = dest;
+        }
+        let bases = Bases::new(cwd.or_else(|| self.active_folder(cx)), None);
+        let replay = self.config.replay_saved();
+        self.apply_recipe(recipe, bases, replay, window, cx);
+        Ok(saved.id)
+    }
+
     /// File › Open Recipe File…
     pub(super) fn open_recipe_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {

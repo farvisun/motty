@@ -653,6 +653,44 @@ fn chord(trigger: &str) -> anyhow::Result<String> {
     Ok(canonical(out, key))
 }
 
+/// `motty keybind list`: (chord, action, source) for every chord bound,
+/// the config's lines over the defaults, as `keybind` lines spell them.
+/// Placeholder bindings (keys an editor keeps from the terminal) are left
+/// out, and so are chords the config unbinds.
+pub fn keybind_list(keybinds: &[Keybind]) -> Vec<(String, String, &'static str)> {
+    // Normalized chords are in config order already; only the separator
+    // differs.
+    let spell = |keys: &str| {
+        let (mut parts, key) = split_chord(keys, '-');
+        parts.push(key);
+        parts.join("+")
+    };
+    let mut user: Vec<(String, String)> = Vec::new();
+    for k in keybinds {
+        if let Ok(keys) = chord(&k.trigger) {
+            user.retain(|(c, _)| *c != keys);
+            user.push((keys, k.action.trim().to_owned()));
+        }
+    }
+    let mut out = Vec::new();
+    for d in defaults() {
+        let keys = normalize(d.keys);
+        if d.action.partial_eq(&NoAction) || user.iter().any(|(k, _)| *k == keys) {
+            continue;
+        }
+        let entry = (spell(&keys), config_name(&*d.action), "default");
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    }
+    for (keys, action) in user {
+        if action.replace('-', "_") != "unbind" {
+            out.push((spell(&keys), action, "config"));
+        }
+    }
+    out
+}
+
 /// A GPUI keystroke such as `cmd-shift-[` in canonical modifier order, so
 /// it compares equal to the same chord from the config.
 fn normalize(keys: &str) -> String {

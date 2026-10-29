@@ -10,6 +10,7 @@ use gpui::{
 };
 use motty_render::{Highlight, hsla};
 use motty_term::alacritty_terminal::grid::{Dimensions, Scroll};
+use motty_term::alacritty_terminal::index::{Column, Line, Point};
 use motty_term::search::{self, SearchMatch, SearchOptions};
 use motty_theme::Rgba;
 
@@ -283,8 +284,53 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Matches on screen, for the terminal element.
+    /// Scrolls the stable `row` to the middle of the screen (as far as the
+    /// scrollback allows) and lights it for a moment: a `motty://` line
+    /// link. A row that has scrolled away is left alone.
+    pub fn flash_row(&mut self, row: u64, cx: &mut Context<Self>) {
+        const FLASH: Duration = Duration::from_millis(1200);
+        {
+            let mut term = self.session.term.lock();
+            let grid = term.grid();
+            let oldest = grid.lines_pushed() - grid.history_size() as u64;
+            let newest = grid.lines_pushed() + term.screen_lines() as u64;
+            if !(oldest..newest).contains(&row) {
+                return;
+            }
+            let rows = term.screen_lines() as i64;
+            let top = grid.lines_pushed() as i64 - grid.display_offset() as i64;
+            term.scroll_display(Scroll::Delta((top + rows / 2 - row as i64) as i32));
+        }
+        let clear = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH).await;
+            let _ = this.update(cx, |view, cx| {
+                view.flash = None;
+                cx.notify();
+            });
+        });
+        self.flash = Some((row, clear));
+        cx.notify();
+    }
+
+    /// Matches on screen, and a flashed row, for the terminal element.
     pub(super) fn find_highlights(&self) -> Vec<Highlight> {
+        let mut out = self.flash_highlight().into_iter().collect::<Vec<_>>();
+        out.extend(self.match_highlights());
+        out
+    }
+
+    fn flash_highlight(&self) -> Option<Highlight> {
+        let (row, _) = self.flash.as_ref()?;
+        let term = self.session.term.lock();
+        let line = i32::try_from(*row as i64 - term.grid().lines_pushed() as i64).ok()?;
+        Some(Highlight {
+            start: Point::new(Line(line), Column(0)),
+            end: Point::new(Line(line), term.grid().last_column()),
+            current: true,
+        })
+    }
+
+    fn match_highlights(&self) -> Vec<Highlight> {
         let Some(find) = &self.find else {
             return Vec::new();
         };

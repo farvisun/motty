@@ -203,6 +203,48 @@ impl Workspace {
         .detach();
     }
 
+    /// A close asked for over the control socket: one that would ask first
+    /// is refused instead, unless `force`. Unsaved files are always refused.
+    pub(super) fn close_unasked(
+        &mut self,
+        closing: Closing,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let dirty = match &closing {
+            Closing::Pane(PaneItem::File(editor)) => editor.read(cx).is_dirty(),
+            Closing::Pane(_) => false,
+            Closing::Tab(ix) => self
+                .tabs
+                .get(*ix)
+                .is_some_and(|t| t.dirty_editor(cx).is_some()),
+            Closing::Window => self.tabs.iter().any(|t| t.dirty_editor(cx).is_some()),
+        };
+        anyhow::ensure!(!dirty, "a file there has unsaved changes");
+        if !force {
+            let last_tab = matches!(closing, Closing::Tab(_)) && self.tabs.len() == 1;
+            let (rule, what) = match closing {
+                Closing::Pane(_) => (self.config.confirm_close_pane, "pane"),
+                Closing::Tab(_) if !last_tab => (self.config.confirm_close_tab, "tab"),
+                _ => (self.config.confirm_close_window, "window"),
+            };
+            let running = self.running(&closing, cx);
+            let ignore_idle = self.config.close_ignores_idle_agents;
+            if asks(rule, running.counts(ignore_idle), self.tabs.len()) {
+                let mut names = running.busy;
+                if !ignore_idle {
+                    names.extend(running.idle_agents);
+                }
+                let why = detail(&names, what)
+                    .unwrap_or_else(|| format!("confirm-close-{what} asks before closing it."));
+                anyhow::bail!("Motty would ask first: {why} Pass --force to close anyway.");
+            }
+        }
+        self.close_now(closing, window, cx);
+        Ok(())
+    }
+
     fn close_now(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) {
         match closing {
             Closing::Pane(item) => {
