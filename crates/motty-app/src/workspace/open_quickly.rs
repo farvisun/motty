@@ -11,17 +11,19 @@ use std::time::SystemTime;
 
 use gpui::{
     AnyWindowHandle, ClipboardItem, Context, Entity, FocusHandle, Hsla, KeyDownEvent,
-    ModifiersChangedEvent, MouseButton, ScrollHandle, SharedString, Task, Window, div, prelude::*,
-    px,
+    ModifiersChangedEvent, MouseButton, Pixels, Point, ScrollHandle, SharedString, Task, Window,
+    div, point, prelude::*, px,
 };
 use motty_render::hsla;
 use motty_term::links::{self, Matcher, Target as LinkTarget};
 use motty_theme::{Mode, Rgba};
 
+use super::agents::Place;
 use super::picker::{self, Colors, ROW_GAP, ROW_HEIGHT, ROW_INSET, ROW_RADIUS, edit_query, score};
 use super::{ClosedTabs, Workspace};
 use crate::actions::*;
 use crate::agents::{self, sessions::Session};
+use crate::panes::Direction;
 use crate::terminal_view::TerminalView;
 use crate::titlebar::{icon, stroke};
 
@@ -125,6 +127,23 @@ impl Kind {
     }
 }
 
+/// What an entry in a row's ⌘K menu does.
+enum Act {
+    /// The row's ↩ action.
+    Run,
+    Copy(String),
+    Reveal(PathBuf),
+    Forget(PathBuf),
+    Start(PathBuf, Place),
+    Ssh(String, Place),
+    /// The command, and whether in a new tab.
+    Rerun(String, bool),
+    Cd(PathBuf),
+    Edit(PathBuf),
+    CloseTab(AnyWindowHandle, Entity<TerminalView>),
+    TabToWindow(AnyWindowHandle, Entity<TerminalView>),
+}
+
 #[derive(Clone)]
 enum Target {
     Window(AnyWindowHandle),
@@ -145,6 +164,19 @@ struct Item {
     title: String,
     detail: String,
     target: Target,
+}
+
+/// The list child showing item `ix`: group headers are children too.
+fn row_child(items: &[Item], ix: usize) -> usize {
+    let mut group = "";
+    let mut headers = 0;
+    for item in &items[..=ix.min(items.len().saturating_sub(1))] {
+        if item.group != group {
+            group = item.group;
+            headers += 1;
+        }
+    }
+    ix + headers
 }
 
 /// `~` for the home folder.
@@ -732,17 +764,19 @@ impl Workspace {
         }
         let n = items.len() as isize;
         oq.selected = (oq.selected as isize + delta).clamp(0, n - 1) as usize;
-        // Headers are children of the list too.
-        let mut group = "";
-        let mut headers = 0;
-        for item in &items[..=oq.selected] {
-            if item.group != group {
-                group = item.group;
-                headers += 1;
-            }
-        }
-        oq.scroll.scroll_to_item(oq.selected + headers);
+        oq.scroll.scroll_to_item(row_child(&items, oq.selected));
         cx.notify();
+    }
+
+    /// Where ⌘K's menu opens: at the end of the highlighted row, else at
+    /// the pointer.
+    fn actions_anchor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Point<Pixels> {
+        let items = self.open_quickly_items(window, cx);
+        self.open_quickly
+            .as_ref()
+            .and_then(|oq| oq.scroll.bounds_for_item(row_child(&items, oq.selected)))
+            .map(|b| point(b.right() - px(160.), b.top()))
+            .unwrap_or_else(|| window.mouse_position())
     }
 
     fn run_open_quickly(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -824,18 +858,198 @@ impl Workspace {
         }
     }
 
-    /// ⌘K on a session: resume, fork it somewhere, read it, copy its id.
-    fn session_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// ⌘K: the Actions menu for the highlighted row, by kind (Otty's table:
+    /// tab, folder, SSH host, agent session, command, file or link).
+    fn item_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::native_menu::Item as MenuItem;
         let selected = self.open_quickly.as_ref().map_or(0, |oq| oq.selected);
-        let Some(Target::Session(session)) = self
+        let Some(item) = self
             .open_quickly_items(window, cx)
             .into_iter()
             .nth(selected)
-            .map(|i| i.target)
         else {
             return;
         };
-        let session = *session;
+        let actions: Vec<(&'static str, Act)> = match item.target {
+            Target::Session(session) => return self.session_actions(*session, window, cx),
+            Target::Tab(handle, view) => {
+                let cwd = view.read(cx).cwd.clone();
+                let mut v = vec![
+                    ("Switch to Tab", Act::Run),
+                    ("Close Tab", Act::CloseTab(handle, view.clone())),
+                    ("Move Tab to New Window", Act::TabToWindow(handle, view)),
+                ];
+                if let Some(cwd) = cwd {
+                    v.push(("Reveal CWD in Finder", Act::Reveal(cwd.clone())));
+                    v.push(("Copy CWD Path", Act::Copy(cwd.display().to_string())));
+                }
+                v
+            }
+            Target::Folder(path) => vec![
+                ("Open in New Tab", Act::Start(path.clone(), Place::Tab)),
+                (
+                    "Open in New Window",
+                    Act::Start(path.clone(), Place::Window),
+                ),
+                (
+                    "Split Right",
+                    Act::Start(path.clone(), Place::Split(Direction::Right)),
+                ),
+                (
+                    "Split Down",
+                    Act::Start(path.clone(), Place::Split(Direction::Down)),
+                ),
+                ("Change Directory Here", Act::Run),
+                ("Reveal in Finder", Act::Reveal(path.clone())),
+                ("Copy Path", Act::Copy(path.display().to_string())),
+                ("Forget This Folder", Act::Forget(path)),
+            ],
+            Target::Ssh(host) => vec![
+                ("Connect", Act::Run),
+                ("Connect in New Tab", Act::Ssh(host.clone(), Place::Tab)),
+                (
+                    "Connect in New Window",
+                    Act::Ssh(host.clone(), Place::Window),
+                ),
+                (
+                    "Copy Command",
+                    Act::Copy(format!("ssh {}", shell_quote(&host))),
+                ),
+            ],
+            Target::Row(_) => vec![
+                ("Jump to", Act::Run),
+                (
+                    "Re-Run in Current Pane",
+                    Act::Rerun(item.title.clone(), false),
+                ),
+                ("Re-Run in New Tab", Act::Rerun(item.title.clone(), true)),
+                ("Copy Command", Act::Copy(item.title)),
+            ],
+            Target::Link(LinkTarget::Url(url)) => {
+                vec![("Open in Browser", Act::Run), ("Copy URL", Act::Copy(url))]
+            }
+            Target::Link(LinkTarget::Path { path, .. }) | Target::File(path) => {
+                let dir = if path.is_dir() {
+                    Some(path.clone())
+                } else {
+                    path.parent().map(Path::to_path_buf)
+                };
+                let mut v = vec![("Open in Default App", Act::Run)];
+                if path.is_file() {
+                    v.push(("Open in Motty", Act::Edit(path.clone())));
+                }
+                if let Some(dir) = dir {
+                    v.push((
+                        "Open Folder in New Tab",
+                        Act::Start(dir.clone(), Place::Tab),
+                    ));
+                    v.push(("Change Directory Here", Act::Cd(dir)));
+                }
+                v.push(("Reveal in Finder", Act::Reveal(path.clone())));
+                v.push(("Copy Path", Act::Copy(path.display().to_string())));
+                v
+            }
+            Target::Closed(_) => vec![("Reopen Tab", Act::Run)],
+            Target::Window(_) => vec![("Switch to Window", Act::Run)],
+        };
+        let entries = actions
+            .iter()
+            .map(|(label, _)| MenuItem::new(*label).into())
+            .collect();
+        let at = self.actions_anchor(window, cx);
+        let this = cx.entity().downgrade();
+        crate::native_menu::popup(entries, at, Some(0), window, cx, move |ix, window, cx| {
+            let Some((_, act)) = actions.into_iter().nth(ix) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.run_item_action(selected, act, window, cx)
+            });
+        });
+    }
+
+    fn run_item_action(
+        &mut self,
+        selected: usize,
+        act: Act,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.open_quickly.as_ref().and_then(|oq| oq.target.clone());
+        match act {
+            Act::Run => return self.run_open_quickly(selected, window, cx),
+            Act::Copy(text) => return cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            Act::Reveal(path) => return cx.reveal_path(&path),
+            Act::Forget(path) => {
+                crate::folders::forget(&path);
+                return cx.notify();
+            }
+            _ => {}
+        }
+        self.close_open_quickly(window, cx);
+        match act {
+            Act::Start(dir, place) => {
+                self.start_in("", Some(dir), place, window, cx);
+            }
+            Act::Ssh(host, Place::Tab) => {
+                if let Err(e) = self.connect_to_host(&host, window, cx) {
+                    tracing::error!("failed to open a tab: {e:#}");
+                }
+            }
+            Act::Ssh(host, place) => {
+                self.start_in(
+                    &format!("ssh {}", shell_quote(&host)),
+                    None,
+                    place,
+                    window,
+                    cx,
+                );
+            }
+            Act::Rerun(command, new_tab) => match target.filter(|_| !new_tab) {
+                Some(view) => self.run_in_pane(&view, &command, None, window, cx),
+                None => {
+                    let cwd = self.active_folder(cx);
+                    self.start_in(&command, cwd, Place::Tab, window, cx);
+                }
+            },
+            Act::Cd(dir) => {
+                let line = format!("cd -- {}", shell_quote(&dir.to_string_lossy()));
+                match target {
+                    Some(view) => self.run_in_pane(&view, &line, Some(dir), window, cx),
+                    None => {
+                        self.start_in("", Some(dir), Place::Tab, window, cx);
+                    }
+                }
+            }
+            Act::Edit(path) => self.open_editor(Some(path), window, cx),
+            Act::CloseTab(handle, view) => {
+                let _ = handle.update(cx, |any, window, cx| {
+                    if let Ok(ws) = any.downcast::<Workspace>() {
+                        ws.update(cx, |ws, cx| {
+                            if let Some(ix) = ws.tab_of(&view) {
+                                ws.close_asking(super::closing::Closing::Tab(ix), window, cx)
+                            }
+                        })
+                    }
+                });
+            }
+            Act::TabToWindow(handle, view) => {
+                let _ = handle.update(cx, |any, window, cx| {
+                    if let Ok(ws) = any.downcast::<Workspace>() {
+                        ws.update(cx, |ws, cx| {
+                            if let Some(ix) = ws.tab_of(&view) {
+                                ws.move_tab_to_new_window(ix, window, cx)
+                            }
+                        })
+                    }
+                });
+            }
+            Act::Run | Act::Copy(_) | Act::Reveal(_) | Act::Forget(_) => {}
+        }
+    }
+
+    /// ⌘K on a session: resume, fork it somewhere, read it, copy its id.
+    fn session_actions(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
         let fork = crate::agents::sessions::fork_command(session.agent, &session.id).is_some();
         let label = crate::agents::sessions::fork_label(session.agent);
         let places = [
@@ -856,7 +1070,7 @@ impl Workspace {
         entries.push(crate::native_menu::Entry::Separator);
         entries.push(crate::native_menu::Item::new("View Session History").into());
         entries.push(crate::native_menu::Item::new("Copy Session ID").into());
-        let at = window.mouse_position();
+        let at = self.actions_anchor(window, cx);
         let this = cx.entity().downgrade();
         crate::native_menu::popup(entries, at, Some(0), window, cx, move |ix, window, cx| {
             let _ = this.update(cx, |this, cx| {
@@ -947,7 +1161,7 @@ impl Workspace {
                 return cx.stop_propagation();
             }
             if key == "k" {
-                self.session_actions(window, cx);
+                self.item_actions(window, cx);
                 return cx.stop_propagation();
             }
             // Other ⌘ shortcuts (paste, the palettes) go on.

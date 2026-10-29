@@ -65,6 +65,19 @@ pub fn record(path: &Path) {
         }
         serde_json::to_vec(db)
     });
+    save(snapshot);
+}
+
+/// Open Quickly's Forget This Folder.
+pub fn forget(path: &Path) {
+    let snapshot = with_db(|db| {
+        db.remove(path);
+        serde_json::to_vec(db)
+    });
+    save(snapshot);
+}
+
+fn save(snapshot: serde_json::Result<Vec<u8>>) {
     let result = snapshot.map_err(std::io::Error::other).and_then(|json| {
         let path = file();
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
