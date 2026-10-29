@@ -106,7 +106,18 @@ impl AssetSource for Assets {
             "maximize-2",
             "picture-in-picture-2",
             "square-split-horizontal",
-            "square-split-vertical"
+            "square-split-vertical",
+            // The details panel's outline gutter and Git actions.
+            "hash",
+            "square-function",
+            "box",
+            "key-round",
+            "plus",
+            "minus",
+            "undo-2",
+            "git-commit-horizontal",
+            "git-branch",
+            "square-chevron-right"
         )
         .map(Cow::Borrowed))
     }
