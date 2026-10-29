@@ -10,6 +10,7 @@ use crate::details_view::DetailsView;
 use crate::schema;
 use crate::store::Files;
 use crate::tab_rule::TabRule;
+use crate::text::{self as text_keys, CellHeight, FaceMode, FontBlending, TextPrefs};
 use crate::theme::{self, Mode, ParsedTheme, Theme};
 
 #[derive(Clone, Debug, Default)]
@@ -129,6 +130,8 @@ pub struct Config {
     pub editor: EditorPrefs,
     /// Terminal identity and the VT requests honoured.
     pub vt: VtPrefs,
+    /// How terminal text is drawn (see [`crate::text`]).
+    pub text: TextPrefs,
     /// Where the config was read from, if anywhere.
     pub path: Option<PathBuf>,
     pub warnings: Vec<String>,
@@ -1010,6 +1013,7 @@ impl Config {
                 && matches!(
                     key.as_str(),
                     "font-size"
+                        | "minimum-contrast"
                         | "sidebar-width"
                         | "unfocused-split-opacity"
                         | "details-panel-width"
@@ -1030,8 +1034,60 @@ impl Config {
                 "font-ligatures" | "ligatures" => {
                     out.ligatures = value
                         .as_bool()
-                        .unwrap_or_else(|| value.as_str() != Some("off"))
+                        .unwrap_or_else(|| value.as_str() != Some("off"));
+                    out.text.discretionary_ligatures =
+                        out.ligatures && value.as_str() != Some("calt");
                 }
+                "font-ligatures-alphabet" => {
+                    out.text.ligatures_alphabet = value.as_bool().unwrap_or(false)
+                }
+                "font-family-bold" => {
+                    out.text.family_bold = str_of(value).filter(|f| !f.is_empty())
+                }
+                "font-family-italic" => {
+                    out.text.family_italic = str_of(value).filter(|f| !f.is_empty())
+                }
+                "font-family-bold-italic" => {
+                    out.text.family_bold_italic = str_of(value).filter(|f| !f.is_empty())
+                }
+                "text-bold" | "font-bold" => match FaceMode::parse(value) {
+                    Some(mode) => out.text.bold = mode,
+                    None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "text-italic" | "font-italic" => match FaceMode::parse(value) {
+                    Some(mode) => out.text.italic = mode,
+                    None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                },
+                "text-underline" | "font-underline" => {
+                    out.text.underline = value.as_bool().unwrap_or(true)
+                }
+                "text-blink" | "font-blink" => out.text.blink = value.as_bool().unwrap_or(false),
+                "adjust-cell-height" => match CellHeight::parse(value) {
+                    Some(h) => out.text.cell_height = Some(h),
+                    None => unknown.push(format!("config.toml {key}: expected N, Npx or N%")),
+                },
+                "font-blending" | "font-smooth" | "font-antialiased" => {
+                    match FontBlending::parse(value) {
+                        Some(b) => out.text.blending = b,
+                        None => unknown.push(format!("config.toml {key}: unknown value {value}")),
+                    }
+                }
+                "font-thicken" => out.text.thicken = value.as_bool().unwrap_or(false),
+                "bidi" => out.text.bidi = value.as_bool().unwrap_or(true),
+                "minimum-contrast" => {
+                    out.text.minimum_contrast = num_of(value).map_or(1., |n| n.clamp(1., 21.))
+                }
+                "widen-ambiguous" => {
+                    let (blocks, bad) = text_keys::parse_blocks(value);
+                    out.text.widen_ambiguous = blocks;
+                    for name in bad {
+                        unknown.push(format!("config.toml {key}: no block named {name:?}"));
+                    }
+                }
+                "strip-cjk-wrap-pad" => {
+                    out.text.strip_cjk_wrap_pad = value.as_bool().unwrap_or(false)
+                }
+                "arrow-box-drawing-join" => out.text.arrow_join = value.as_bool().unwrap_or(true),
                 "sidebar-width" => out.sidebar_width = num_of(value),
                 "sidebar-visible" => out.sidebar_visible = value.as_bool().unwrap_or(true),
                 "unfocused-split-opacity" => {
@@ -2387,6 +2443,32 @@ mod tests {
             rest = &after[j + 1..];
         }
         keys
+    }
+
+    #[test]
+    fn text_rendering_keys() {
+        let d = Config::parse("");
+        assert_eq!(d.text, TextPrefs::default());
+        assert!(d.text.bidi && d.text.discretionary_ligatures && d.text.arrow_join);
+        let c = Config::parse(
+            "bidi = false\nminimum-contrast = 4.5\nfont-bold = \"synthetic\"\ntext-italic = off\n\
+             text-underline = false\ntext-blink = true\nfont-ligatures = \"calt\"\n\
+             adjust-cell-height = 10%\nfont-family-bold = \"Menlo\"\nfont-smooth = \"linear\"\n\
+             widen-ambiguous = [\"arrows\", \"emoji\"]\nstrip-cjk-wrap-pad = true\n",
+        );
+        let t = &c.text;
+        assert!(!t.bidi && t.blink && !t.underline && t.strip_cjk_wrap_pad);
+        assert_eq!(t.minimum_contrast, 4.5);
+        assert_eq!((t.bold, t.italic), (FaceMode::Synthetic, FaceMode::Off));
+        assert!(c.ligatures && !t.discretionary_ligatures);
+        assert_eq!(t.cell_height, Some(CellHeight::Percent(10.)));
+        assert_eq!(t.family_bold.as_deref(), Some("Menlo"));
+        assert_eq!(t.blending, FontBlending::Linear);
+        assert_eq!(t.widen_ambiguous, ["arrows"]);
+        assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
+        let c = Config::parse("minimum-contrast = 40\nadjust-cell-height = 2px\n");
+        assert_eq!(c.text.minimum_contrast, 21.);
+        assert_eq!(c.text.cell_height, Some(CellHeight::Points(2.)));
     }
 
     #[test]

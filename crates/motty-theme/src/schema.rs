@@ -45,6 +45,8 @@ pub enum Kind {
     TabRule,
     /// `field="value" …` pairs (see [`crate::details_view`]).
     DetailsView,
+    /// `N`, `Npx` or `N%` (see [`crate::text::CellHeight`]).
+    CellHeight,
 }
 
 /// How a key holding several values is written.
@@ -121,6 +123,7 @@ impl KeySpec {
             Kind::Keybind => "trigger=action",
             Kind::TabRule => "rule",
             Kind::DetailsView => "view",
+            Kind::CellHeight => "N | Npx | N%",
         };
         match self.list {
             Some(_) => format!("list<{one}>"),
@@ -223,6 +226,11 @@ const ACCESS: Kind = Kind::Enum {
     also: &[],
     bools: false,
 };
+const FACE: Kind = Kind::Enum {
+    values: &["off", "auto", "primary-only", "synthetic"],
+    also: &[],
+    bools: true,
+};
 const FLOAT_0_1: Kind = Kind::Float { min: 0., max: 1. };
 const WIDTH: Kind = Kind::Float {
     min: 0.,
@@ -248,7 +256,20 @@ pub const KEYS: &[KeySpec] = &[
     // Font
     key("font-family", Kind::Str, "JetBrains Mono", "Appearance › Font", "Terminal font family; falls back to the theme's font-mono list, then Menlo."),
     key("font-size", Kind::Float { min: 4., max: 200. }, "13", "Appearance › Font", "Font size in points."),
-    key("font-ligatures", Kind::Enum { values: &["off", "calt", "dlig"], also: &[], bools: true }, "dlig", "Appearance › Font", "Programming ligatures: off turns them off; calt and dlig keep them on.").alias(&["ligatures"]),
+    key("font-family-bold", Kind::Str, "", "", "Family for bold cells; empty reuses font-family (see text-bold)."),
+    key("font-family-italic", Kind::Str, "", "", "Family for italic cells; empty reuses font-family (see text-italic)."),
+    key("font-family-bold-italic", Kind::Str, "", "", "Family for bold italic cells; empty reuses font-family-bold, then font-family."),
+    key("font-ligatures", Kind::Enum { values: &["off", "calt", "dlig"], also: &[], bools: true }, "dlig", "Appearance › Text", "Ligature level: off, calt (standard and contextual) or dlig (discretionary too).").alias(&["ligatures"]),
+    bool("font-ligatures-alphabet", "false", "Advanced › Text Rendering", "Ligatures inside runs of letters, digits and CJK too; off keeps them to symbol runs."),
+    key("font-blending", Kind::Enum { values: &["srgb-over", "macos-like", "linear", "perceptual"], also: &[], bools: false }, "srgb-over", "Appearance › Text", "Glyph edge compositing. GPUI blends in gamma space, so srgb-over, macos-like and linear draw alike; perceptual thickens dark text on light backgrounds.").alias(&["font-smooth", "font-antialiased"]),
+    key("text-bold", FACE, "auto", "Appearance › Text", "Bold cells: off (normal weight), auto or primary-only (the family's bold face), synthetic (overstruck when the family has no bold).").alias(&["font-bold"]),
+    key("text-italic", FACE, "auto", "Appearance › Text", "Italic cells: off (upright), auto or primary-only (the family's italic face); synthetic acts as auto, since GPUI can't slant glyphs.").alias(&["font-italic"]),
+    bool("text-underline", "true", "Appearance › Text", "Draw SGR underlines; link underlines and strikethrough stay either way.").alias(&["font-underline"]),
+    bool("text-blink", "false", "Appearance › Text", "Blinking (SGR 5/6) cells blink about once a second; off draws them steady.").alias(&["font-blink"]),
+    bool("font-thicken", "false", "Advanced › Text Rendering", "Darken glyph stems with a half-pixel overstrike; on by itself when the background is translucent."),
+    key("adjust-cell-height", Kind::CellHeight, "", "Appearance › Text", "Cell height: N or Npx adds points, N% scales; negative compacts. Glyphs stay centred. Unset: the theme's adjust-cell-height."),
+    bool("arrow-box-drawing-join", "true", "Advanced › Text Rendering", "Arrows ← → ↑ ↓ and triangles ◀ ▶ ▲ ▼ next to a box rule meet it on the centre line."),
+    bool("strip-cjk-wrap-pad", "false", "Advanced › Text Rendering", "Hide the lone reverse-video space zsh leaves at a soft wrap before a wide character."),
     // Cursor
     key("cursor-style", Kind::Enum { values: &["block", "bar", "underline", "block_hollow"], also: &[], bools: false }, "block", "Appearance › Cursor", "Cursor shape programs get until they ask for another."),
     key("cursor-style-blink", BLINK, "default_off", "Appearance › Cursor", "default_* set the starting blink and let programs change it; always_* pin it.").alias(&["cursor-blink"]),
@@ -257,6 +278,8 @@ pub const KEYS: &[KeySpec] = &[
     color("cursor-text", "Text color under the cursor, for themes that don't set one."),
     // Shell & environment
     key("command", Kind::Str, "$SHELL", "Shell › Shell", "Shell or command new terminals run (as a login shell).").alias(&["shell"]),
+    key("widen-ambiguous", Kind::Enum { values: &["enclosed-alphanumerics", "number-forms", "math-operators", "misc-technical", "misc-symbols", "dingbats", "arrows", "geometric-shapes"], also: &[], bools: false }, "", "Advanced › Text Rendering", "Blocks whose East-Asian-Ambiguous characters take two cells, for new tabs. Only for fonts that draw them two cells wide.").list(List::Inline),
+    bool("bidi", "true", "Advanced › Text Rendering", "Show Hebrew, Arabic and Persian right to left (Unicode bidi), per line when drawing; copy, paste and find keep the logical order. Programs can opt out with BDSM (CSI 8 h)."),
     key("term", Kind::Str, "auto", "Shell › Shell", "$TERM for new terminals: auto (xterm-256color) or an installed terminfo name; a missing one falls back to xterm-256color."),
     key("env", Kind::Pair, "", "", "An environment variable for new terminals, NAME=value. One line each.").list(List::Repeated),
     key("working-directory", Kind::Dir, "", "", "Where new terminals start: inherit, home or a folder (~ allowed). The per-kind keys below win."),
@@ -298,6 +321,7 @@ pub const KEYS: &[KeySpec] = &[
     color("palette-13", "ANSI bright magenta, used when no theme is set."),
     color("palette-14", "ANSI bright cyan, used when no theme is set."),
     color("palette-15", "ANSI bright white, used when no theme is set."),
+    key("minimum-contrast", Kind::Float { min: 1., max: 21. }, "1.0", "Advanced › Text Rendering", "Lowest WCAG contrast text keeps against its background; text lightens or darkens to reach it. 1 turns it off."),
     // Theme
     key("theme", Kind::Theme, "", "Appearance › Theme", "Active theme (the light slot, and the dark one when theme-dark isn't set). Unset: Motty Light / Motty Dark."),
     key("theme-dark", Kind::Theme, "", "Appearance › Theme", "Theme while macOS is in dark mode."),
@@ -476,6 +500,10 @@ fn check_one(spec: &KeySpec, value: &Value) -> Result<(), String> {
             Some(s) => DetailsView::parse(s).map(|_| ()),
             None => want("a view such as 'id=\"git\"'"),
         },
+        Kind::CellHeight => match crate::text::CellHeight::parse(value) {
+            Some(_) => Ok(()),
+            None => want("N, Npx or N% (2, 2px, 10%)"),
+        },
         Kind::Str | Kind::Path | Kind::Dir => match value {
             Value::String(_) => Ok(()),
             _ => want("a string"),
@@ -518,6 +546,14 @@ pub fn parse_text(spec: &KeySpec, text: &str) -> Result<Value, String> {
                 text.parse()
                     .map_err(|_| format!("expected a number, got {text:?}"))?,
             ),
+        },
+        // `2` stays a number; `2px` and `10%` are strings.
+        Kind::CellHeight => match text.parse::<i64>() {
+            Ok(n) => Value::Integer(n),
+            Err(_) => match text.parse::<f64>() {
+                Ok(f) => Value::Float(f),
+                Err(_) => Value::String(text.to_owned()),
+            },
         },
         // `off` is a word of its own here.
         Kind::Enum { values, bools, .. } => match boolean {
@@ -610,6 +646,15 @@ mod tests {
         assert!(parse_text(lookup("env").unwrap(), "EDITOR").is_err());
         assert!(parse_text(lookup("keybind").unwrap(), "cmd+t=new_tab").is_ok());
         assert!(parse_text(lookup("cursor-color").unwrap(), "#zzzzzz").is_err());
+        let height = lookup("adjust-cell-height").unwrap();
+        assert_eq!(parse_text(height, "2"), Ok(Value::Integer(2)));
+        assert_eq!(parse_text(height, "10%"), Ok(Value::String("10%".into())));
+        assert!(parse_text(height, "tall").is_err());
+        let widen = lookup("widen-ambiguous").unwrap();
+        assert!(check(widen, &Value::Array(vec![Value::String("arrows".into())])).is_ok());
+        assert!(check(widen, &Value::Array(vec![Value::String("emoji".into())])).is_err());
+        assert_eq!(canonical("font-bold"), "text-bold");
+        assert_eq!(canonical("font-smooth"), "font-blending");
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod import;
 pub mod schema;
 pub mod store;
 pub mod tab_rule;
+pub mod text;
 pub mod theme;
 
 pub use config::{
@@ -17,4 +18,5 @@ pub use config::{
 pub use css::{Border, Edges, Rgba, Shadow};
 pub use details_view::{DetailsView, ViewKind};
 pub use tab_rule::{Facts, Look, TabRule};
+pub use text::{CellHeight, FaceMode, FontBlending, TextPrefs};
 pub use theme::{Material, Mode, ParsedTheme, Theme};
