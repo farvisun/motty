@@ -43,6 +43,8 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+    /// The agent's thinking (Claude) or reasoning summary (Codex).
+    Reasoning,
 }
 
 /// One turn of a transcript. A tool call reads `⏺ Name  summary`, and its
@@ -210,6 +212,63 @@ fn found(roots: &Roots) -> Vec<Found> {
     }
     // Kimi Code: its session store isn't read yet.
     out
+}
+
+/// The session stored at `path`, when it's under a known agent's store
+/// (the History view opens these as transcripts).
+pub fn at(path: &Path, roots: &Roots) -> Option<Session> {
+    let agent = agent_of(path, roots)?;
+    let modified = file_modified(path)?;
+    let found = Found {
+        agent,
+        path: path.to_path_buf(),
+        modified,
+    };
+    read_session(found, roots, &mut Lookups::default())
+}
+
+/// Which agent's store `path` is in, by the layouts [`found`] walks.
+fn agent_of(path: &Path, roots: &Roots) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    let jsonl = name.ends_with(".jsonl");
+    // `levels` folders up from the file is `dir`.
+    let under = |dir: &Path, levels: usize| {
+        path.ancestors()
+            .nth(levels)
+            .is_some_and(|a| same_dir(a, dir))
+    };
+    if jsonl && roots.claude.iter().any(|r| under(&r.join("projects"), 2)) {
+        return Some("claude");
+    }
+    if name.starts_with("rollout-") && jsonl && under(&codex_home(roots).join("sessions"), 4) {
+        return Some("codex");
+    }
+    let opencode = roots.home.join(".local/share/opencode/storage/session");
+    if name.starts_with("ses_") && name.ends_with(".json") && under(&opencode, 2) {
+        return Some("opencode");
+    }
+    for (agent, dir) in [("pi", ".pi/agent/sessions"), ("omp", ".omp/agent/sessions")] {
+        if jsonl && under(&roots.home.join(dir), 2) {
+            return Some(agent);
+        }
+    }
+    let chat = path.parent()?;
+    if jsonl
+        && chat.file_name()?.to_str()? == name.trim_end_matches(".jsonl")
+        && chat.parent()?.file_name()? == "agent-transcripts"
+        && under(&roots.home.join(".cursor/projects"), 4)
+    {
+        return Some("cursor");
+    }
+    None
+}
+
+/// Whether two paths name the same folder, through symlinks (`/tmp`).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || fs::canonicalize(a)
+            .ok()
+            .is_some_and(|a| fs::canonicalize(b).is_ok_and(|b| a == b))
 }
 
 fn codex_home(roots: &Roots) -> PathBuf {
@@ -634,6 +693,11 @@ fn claude_messages(v: &Value) -> Vec<Message> {
                         &block["input"],
                         time,
                     )),
+                    Some("thinking") => out.extend(
+                        block["thinking"]
+                            .as_str()
+                            .and_then(|t| message(Role::Reasoning, t, time)),
+                    ),
                     _ => {}
                 }
             }
@@ -671,6 +735,15 @@ fn codex_messages(v: &Value) -> Vec<Message> {
         Some("local_shell_call") => tool_call("shell", &p["action"], time),
         Some("function_call_output" | "custom_tool_call_output") => {
             tool_output(&output_text(&p["output"]), time)
+        }
+        Some("reasoning") => {
+            let summary: Vec<&str> = p["summary"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["text"].as_str())
+                .collect();
+            message(Role::Reasoning, &summary.join("\n\n"), time)
         }
         _ => None,
     };
@@ -903,7 +976,7 @@ pub fn render(session: &Session, messages: &[Message], width: usize) -> String {
     }
     let mut in_reply = false;
     let mut fresh = false;
-    for m in messages {
+    for m in messages.iter().filter(|m| m.role != Role::Reasoning) {
         let heading = match m.role {
             Role::User => Some(match m.time.as_deref() {
                 Some(t) => format!("You · {}", short_time(t)),
@@ -1234,6 +1307,29 @@ mod tests {
     }
 
     #[test]
+    fn knows_a_session_by_its_path() {
+        let home = temp_home("at");
+        claude_fixture(&home);
+        let roots = roots(&home);
+        let path = home.join(".claude/projects/-work-app/aaa.jsonl");
+        let session = at(&path, &roots).unwrap();
+        assert_eq!((session.agent, session.id.as_str()), ("claude", "aaa"));
+        assert_eq!(session.title, "Fixing the build");
+        // A subagent's log, and a .jsonl elsewhere, aren't sessions.
+        assert!(
+            at(
+                &home.join(".claude/projects/-work-app/aaa/subagents/agent-1.jsonl"),
+                &roots
+            )
+            .is_none()
+        );
+        let elsewhere = home.join("notes/aaa.jsonl");
+        fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        fs::write(&elsewhere, "{}\n").unwrap();
+        assert!(at(&elsewhere, &roots).is_none());
+    }
+
+    #[test]
     fn reads_and_renders_a_claude_transcript() {
         let home = temp_home("claude-render");
         claude_fixture(&home);
@@ -1241,9 +1337,10 @@ mod tests {
         let messages = transcript(&session);
         let roles: Vec<Role> = messages.iter().map(|m| m.role).collect();
         use Role::*;
-        assert_eq!(roles, [User, Assistant, Tool, Tool, Assistant]);
+        assert_eq!(roles, [User, Reasoning, Assistant, Tool, Tool, Assistant]);
         assert_eq!(messages[0].text, "Fix   the\nbuild please");
-        assert_eq!(messages[2].text, "⏺ Bash  ls -la");
+        assert_eq!(messages[1].text, "hmm");
+        assert_eq!(messages[3].text, "⏺ Bash  ls -la");
         let text = render(&session, &messages, 80);
         let expected = "\
 Claude Code · Fixing the build

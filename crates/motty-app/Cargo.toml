@@ -46,7 +46,7 @@ objc2-app-kit = { version = "0.3", features = ["NSView", "NSVisualEffectView", "
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSBundle", "NSString", "NSError", "NSArray", "NSAttributedString", "NSRange", "NSDictionary", "NSURL", "NSURLRequest", "NSKeyValueCoding", "NSValue", "NSData", "NSFileManager"] }
 objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotification", "block2"] }
 block2 = "0.6"
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebpagePreferences", "WKNavigation", "WKNavigationAction", "WKUIDelegate", "WKWindowFeatures", "WKFindConfiguration", "WKFindResult"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebpagePreferences", "WKNavigation", "WKNavigationAction", "WKUIDelegate", "WKWindowFeatures", "WKFindConfiguration", "WKFindResult", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController"] }
 objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "QLPreviewView", "QLPreviewItem"] }
 
 [features]

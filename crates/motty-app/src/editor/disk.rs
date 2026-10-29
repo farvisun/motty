@@ -29,7 +29,7 @@ fn stash_path(path: &Path) -> PathBuf {
 
 impl FileEditor {
     pub(super) fn toggle_read_only(&mut self, cx: &mut Context<Self>) {
-        if self.name.is_none() && !self.lockable && self.path.is_some() {
+        if !self.lockable && self.path.is_some() {
             self.set_read_only(!self.read_only, cx);
         }
     }

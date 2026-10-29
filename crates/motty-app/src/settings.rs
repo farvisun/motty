@@ -64,6 +64,7 @@ impl AssetSource for Assets {
         }
         Ok(icons!(
             "circle-alert",
+            "circle-play",
             "terminal",
             "mouse-pointer-2",
             "file-text",

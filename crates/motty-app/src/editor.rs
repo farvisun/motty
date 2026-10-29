@@ -134,10 +134,6 @@ pub struct FileEditor {
     layout: Rc<RefCell<Layout>>,
     /// A text field rather than a file (see `prose`).
     prose: Option<prose::Prose>,
-    /// A document's name, for one that isn't a file (a transcript).
-    name: Option<String>,
-    /// Buttons on the toolbar's right, each sending its action.
-    buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
     /// Settings › Editor.
     prefs: EditorPrefs,
     /// Bumped on every change to the text, so rows are worked out again.
@@ -152,6 +148,16 @@ pub struct FileEditor {
     /// The language picked from the toolbar (`Some(None)`: plain text),
     /// over the detected one.
     language_override: Option<Option<&'static str>>,
+    /// The agent session this file is, shown as its History (see
+    /// `preview_mode`).
+    transcript: Option<crate::agents::sessions::Session>,
+    /// View as › JSONL: a transcript's log as text.
+    raw: bool,
+    /// What's selected on the History page.
+    page_selection: String,
+    /// A right-click on the History page to answer with a menu, at this
+    /// point of the page.
+    page_menu: Option<Point<Pixels>>,
 }
 
 impl EventEmitter<EditorEvent> for FileEditor {}
@@ -200,8 +206,6 @@ impl FileEditor {
             style: Rc::new(style),
             layout: Rc::default(),
             prose: None,
-            name: None,
-            buttons: Vec::new(),
             prefs: EditorPrefs::default(),
             revision: 0,
             rows: Rc::default(),
@@ -209,6 +213,10 @@ impl FileEditor {
             center: false,
             diff: false,
             language_override: None,
+            transcript: None,
+            raw: false,
+            page_selection: String::new(),
+            page_menu: None,
         };
         if let Some(path) = path {
             editor.load(path);
@@ -227,8 +235,16 @@ impl FileEditor {
                     crate::file_kind::extension(&path).as_str(),
                     "diff" | "patch"
                 );
-                self.read_only = !editable || self.diff;
-                self.can_edit = editable && !self.diff;
+                // An agent's session log reads as its History, and is only read.
+                self.transcript = crate::history_page::is_session_log(&path)
+                    .then(|| {
+                        let roots = crate::agents::sessions::Roots::current();
+                        crate::agents::sessions::at(&path, &roots)
+                    })
+                    .flatten();
+                let log = self.diff || self.transcript.is_some();
+                self.read_only = !editable || log;
+                self.can_edit = editable && !log;
                 self.error = None;
             }
             Err(e) => {
@@ -246,32 +262,11 @@ impl FileEditor {
         self.path = Some(path);
     }
 
-    /// `text` to read, not edit, under `name`, with `buttons` on the
-    /// toolbar (History's Resume).
-    pub fn viewer(
-        name: String,
-        text: String,
-        buttons: Vec<(SharedString, Box<dyn gpui::Action>)>,
-        style: TerminalStyle,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut editor = Self::new(None, style, cx);
-        editor.buffer = Buffer::from_text(&text);
-        editor.saved = text;
-        editor.read_only = true;
-        editor.name = Some(name);
-        editor.buttons = buttons;
-        editor
-    }
-
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
     pub fn title(&self) -> String {
-        if let Some(name) = &self.name {
-            return name.clone();
-        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -640,6 +635,9 @@ impl FileEditor {
     }
 
     pub fn selected_text(&self) -> Option<String> {
+        if self.transcript.is_some() && self.previewing() {
+            return self.page_text();
+        }
         let (a, b) = self.selection()?;
         Some(self.buffer.slice(a, b))
     }
@@ -1047,8 +1045,14 @@ impl Render for FileEditor {
         } else {
             None
         };
+        if let Some(at) = self.page_menu.take() {
+            cx.defer_in(window, move |this, window, cx| {
+                this.show_page_menu(at, window, cx)
+            });
+        }
 
         let focused = self.focus.is_focused(window);
+        self.sync_page_focus(focused, cx);
         let reveal = std::mem::take(&mut self.reveal);
         let center = reveal && std::mem::take(&mut self.center);
         let paint_state = PaintState {
@@ -1062,7 +1066,7 @@ impl Render for FileEditor {
             focused,
             style: style.clone(),
             fg: hsla(fg),
-            numbers: self.name.is_none() && self.prefs.line_numbers,
+            numbers: self.prefs.line_numbers,
             gutter_bg: ink(if dark { 0.04 } else { 0.025 }),
             number: ink(0.38),
             current_line: if dark {
@@ -1146,6 +1150,14 @@ impl Render for FileEditor {
                         .overflow_hidden()
                         .cursor_text()
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                        .when(self.transcript.is_some(), |d| {
+                            d.on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(|this, e: &gpui::MouseDownEvent, window, cx| {
+                                    this.show_page_menu(e.position, window, cx)
+                                }),
+                            )
+                        })
                         .on_mouse_move(cx.listener(Self::on_mouse_move))
                         .on_mouse_up(
                             MouseButton::Left,

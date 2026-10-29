@@ -5,14 +5,12 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, Entity, EntityId, Global, PromptLevel, SharedString,
-    Window,
+    AnyWindowHandle, App, AppContext, Context, Entity, EntityId, Global, PromptLevel, Window,
 };
 
-use super::{Tab, Workspace, terminal_style};
+use super::Workspace;
 use crate::actions::ResumeSession;
 use crate::agents::{self, sessions};
-use crate::editor::FileEditor;
 use crate::native_menu::{self, Entry, Item};
 use crate::panes::Direction;
 use crate::terminal_view::{Chip, TerminalView};
@@ -386,55 +384,15 @@ impl Workspace {
         .detach();
     }
 
-    /// Opens `session`'s transcript in a tab, with Resume and Fork on top.
+    /// Opens `session`'s History: its log in a file pane, shown as a
+    /// transcript with Resume on top.
     pub(super) fn view_history(
         &mut self,
         session: sessions::Session,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn_in(window, async move |this, cx| {
-            let (session, text) = cx
-                .background_spawn(async move {
-                    let messages = sessions::transcript(&session);
-                    let text = sessions::render(&session, &messages, 100);
-                    (session, text)
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.open_transcript(session, text, window, cx)
-            });
-        })
-        .detach();
-    }
-
-    fn open_transcript(
-        &mut self,
-        session: sessions::Session,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let resume = |fork: bool| ResumeSession {
-            agent: session.agent.to_owned(),
-            id: session.id.clone(),
-            cwd: session.cwd.clone(),
-            fork,
-            place: "tab".into(),
-        };
-        let mut buttons: Vec<(SharedString, Box<dyn gpui::Action>)> =
-            vec![("Resume".into(), Box::new(resume(false)))];
-        if sessions::fork_command(session.agent, &session.id).is_some() {
-            let label = format!("{} in New Tab", sessions::fork_label(session.agent));
-            buttons.push((label.into(), Box::new(resume(true))));
-        }
-        let title: String = session.title.chars().take(40).collect();
-        let name = format!("{} — {title}", agents::label_for(session.agent));
-        let style = terminal_style(&self.config, &self.theme, cx);
-        let editor = cx.new(|cx| FileEditor::viewer(name, text, buttons, style, cx));
-        self.watch_editor(&editor, cx);
-        self.tabs.push(Tab::editor(editor));
-        self.activate(self.tabs.len() - 1, window, cx);
+        self.open_editor(Some(session.path), window, cx);
     }
 
     /// Open Quickly on its Agents list.

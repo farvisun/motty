@@ -1,19 +1,25 @@
 //! Markdown, SVG and HTML files show rendered while read-only (Otty's
-//! Preview), in a web view over the text; editing shows their source.
+//! Preview), in a web view over the text; editing shows their source. An
+//! agent's session log shows as its History the same way, until View as ›
+//! JSONL.
 
 use std::path::{Path, PathBuf};
 
-use gpui::{AppContext, Context, Entity};
+use gpui::{AppContext, ClipboardItem, Context, Entity, Pixels, Point, Subscription, Window, px};
 
 use super::FileEditor;
+use crate::agents::sessions;
+use crate::history_page::{self, PageFont, PageMessage};
 use crate::preview::{self, PreviewColors};
-use crate::web_view::{WebView, WebViewOptions};
+use crate::web_view::{WebEvent, WebView, WebViewOptions};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Markdown,
     Svg,
     Html,
+    /// An agent session's History.
+    Transcript,
 }
 
 impl Kind {
@@ -33,42 +39,92 @@ pub(super) struct Preview {
     pub view: Entity<WebView>,
     /// The text revision and theme last loaded.
     shown: Option<(u64, bool, [u8; 4])>,
+    /// The web view has the keyboard (a History page scrolls by keys).
+    keyboard: bool,
+    _messages: Option<Subscription>,
 }
 
 impl FileEditor {
     /// Whether the pane shows the rendered file rather than its text.
     pub fn previewing(&self) -> bool {
-        self.read_only && self.name.is_none() && self.path.as_deref().and_then(Kind::of).is_some()
+        if self.transcript.is_some() {
+            return !self.raw;
+        }
+        self.read_only && self.path.as_deref().and_then(Kind::of).is_some()
+    }
+
+    fn kind(&self) -> Option<Kind> {
+        if self.transcript.is_some() {
+            return Some(Kind::Transcript);
+        }
+        self.path.as_deref().and_then(Kind::of)
     }
 
     /// The page for the current text, made or refreshed as needed.
     pub(super) fn preview_view(&mut self, cx: &mut Context<Self>) -> Option<Entity<WebView>> {
         let path = self.path.clone()?;
-        let kind = Kind::of(&path)?;
-        let preview = self.preview.get_or_insert_with(|| {
+        let kind = self.kind()?;
+        if self.preview.is_none() {
             let options = WebViewOptions {
                 javascript: true,
                 non_persistent: true,
                 mobile: false,
+                // Only Motty's own History page talks back.
+                messages: kind == Kind::Transcript,
             };
-            Preview {
-                view: cx.new(|cx| WebView::new(options, cx)),
+            let view = cx.new(|cx| WebView::new(options, cx));
+            let messages = (kind == Kind::Transcript).then(|| {
+                cx.subscribe(&view, |this, _, event: &WebEvent, cx| {
+                    if let WebEvent::Message(message) = event {
+                        this.on_page_message(message, cx);
+                    }
+                })
+            });
+            self.preview = Some(Preview {
+                view,
                 shown: None,
-            }
-        });
+                keyboard: false,
+                _messages: messages,
+            });
+        }
+        let preview = self.preview.as_mut()?;
         let style = &self.style;
         let bg = style.background;
-        let key = (
-            self.revision,
+        let theme = (
             style.dark,
             [bg.r, bg.g, bg.b, bg.a].map(|c| (c * 255.) as u8),
         );
+        let key = (self.revision, theme.0, theme.1);
         if preview.shown != Some(key) {
+            // Same theme, newer text: a History page updates in place.
+            let in_place = kind == Kind::Transcript
+                && preview
+                    .shown
+                    .is_some_and(|(_, dark, bg)| (dark, bg) == theme);
             preview.shown = Some(key);
             let colors = PreviewColors::from_style(style);
             let view = preview.view.clone();
             let text = self.buffer.text();
+            let font = page_font(style);
+            let session = self.transcript.clone();
             view.update(cx, |web, cx| {
+                if let Some(session) = session {
+                    let messages = sessions::transcript(&session);
+                    if in_place {
+                        let main = history_page::main_html(&session, &messages, &colors);
+                        web.evaluate_js(&history_page::update_script(&main));
+                        return;
+                    }
+                    web.set_appearance(style.dark);
+                    web.set_background(motty_render::hsla(bg).to_rgb(), cx);
+                    let html = history_page::html(&session, &messages, &colors, &font);
+                    let page = page_path(cx.entity_id().as_u64(), "html");
+                    // It reads only its own folder: the page and the font.
+                    if write(&page, &html) {
+                        web.load_file(&page, page.parent());
+                    }
+                    return;
+                }
                 web.set_appearance(style.dark);
                 web.set_background(motty_render::hsla(bg).to_rgb(), cx);
                 load(web, kind, &path, &text, &colors, cx.entity_id().as_u64());
@@ -76,6 +132,154 @@ impl FileEditor {
         }
         Some(preview.view.clone())
     }
+
+    /// What the History page reported.
+    fn on_page_message(&mut self, message: &str, cx: &mut Context<Self>) {
+        match PageMessage::parse(message) {
+            Some(PageMessage::Selection(text)) => self.page_selection = text,
+            Some(PageMessage::Menu { x, y }) => {
+                self.page_menu = Some(gpui::point(px(x), px(y)));
+                cx.notify();
+            }
+            Some(PageMessage::Open(url))
+                if url.starts_with("https://") || url.starts_with("http://") =>
+            {
+                cx.open_url(&url);
+            }
+            Some(PageMessage::Open(_)) | None => {}
+        }
+    }
+
+    /// The History's selection, else the whole transcript as text (what
+    /// Send to Chat takes).
+    pub(super) fn page_text(&self) -> Option<String> {
+        if !self.page_selection.trim().is_empty() {
+            return Some(self.page_selection.clone());
+        }
+        let session = self.transcript.as_ref()?;
+        let messages = sessions::transcript(session);
+        Some(sessions::render(session, &messages, 100))
+    }
+
+    /// A History pane's right-click menu at `at` (on the page while it
+    /// shows, else in the window): Copy, Send to Chat, and View as.
+    pub(super) fn show_page_menu(
+        &mut self,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::native_menu::{Entry, Item};
+        let Some(session) = &self.transcript else {
+            return;
+        };
+        let previewing = self.previewing();
+        let at = match (&self.preview, previewing) {
+            (Some(preview), true) => preview.view.read(cx).to_window(at),
+            _ => at,
+        };
+        let selection = if previewing {
+            Some(self.page_selection.clone()).filter(|s| !s.is_empty())
+        } else {
+            self.selected_text()
+        };
+        let history = format!("{} History", crate::agents::label_for(session.agent));
+        let entries: Vec<Entry> = vec![
+            Item::new("Copy").enabled(selection.is_some()).into(),
+            Item::new("Send to Chat").into(),
+            Entry::Separator,
+            Entry::Submenu {
+                label: "View as".into(),
+                entries: vec![
+                    Item::new(history).checked(!self.raw).into(),
+                    Item::new("JSONL (Syntax Highlight)")
+                        .checked(self.raw)
+                        .into(),
+                ],
+            },
+        ];
+        let editor = cx.entity().downgrade();
+        crate::native_menu::popup(
+            entries,
+            at,
+            None,
+            window,
+            cx,
+            move |ix, window, cx| match ix {
+                0 => {
+                    if let Some(text) = selection {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                }
+                1 => window.dispatch_action(Box::new(crate::actions::SendToChat), cx),
+                2 | 3 => {
+                    let _ = editor.update(cx, |this, cx| this.set_raw(ix == 3, cx));
+                }
+                _ => {}
+            },
+        );
+    }
+
+    /// View as › JSONL, or back to the History.
+    fn set_raw(&mut self, raw: bool, cx: &mut Context<Self>) {
+        self.raw = raw;
+        if let Some(preview) = &mut self.preview {
+            preview.keyboard = false;
+        }
+        cx.notify();
+    }
+
+    /// While a History page shows in the focused pane, its web view takes
+    /// the keyboard, so Page Up/Down, Home/End, the arrows and Space scroll
+    /// it as in any document window.
+    pub(super) fn sync_page_focus(&mut self, focused: bool, cx: &mut Context<Self>) {
+        let showing = self.transcript.is_some() && self.previewing();
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        let want = focused && showing;
+        if want != preview.keyboard {
+            preview.keyboard = want;
+            let web = preview.view.read(cx);
+            if want {
+                web.focus_native();
+            } else {
+                web.blur_native();
+            }
+        }
+    }
+}
+
+/// The terminal's font for a page; the bundled one is copied beside the
+/// page so WebKit can load it.
+fn page_font(style: &motty_render::TerminalStyle) -> PageFont {
+    let family = style.font.family.to_string();
+    let mut faces = String::new();
+    if family.eq_ignore_ascii_case(crate::fonts::BUNDLED_FAMILY) {
+        let dir = page_path(0, "html").with_file_name("fonts");
+        for (name, bytes, weight, italic) in crate::fonts::BUNDLED_FILES {
+            let file = dir.join(name);
+            if (file.exists() || write_bytes(&file, bytes)) && dir.is_dir() {
+                faces.push_str(&format!(
+                    "@font-face{{font-family:'{family}';src:url('{}');font-weight:{weight};\
+font-style:{}}}",
+                    preview::file_url(&file),
+                    if italic { "italic" } else { "normal" }
+                ));
+            }
+        }
+    }
+    PageFont {
+        family,
+        size: f32::from(style.font_size),
+        faces,
+    }
+}
+
+fn write_bytes(path: &Path, bytes: &[u8]) -> bool {
+    path.parent()
+        .is_some_and(|d| std::fs::create_dir_all(d).is_ok())
+        && std::fs::write(path, bytes).is_ok()
 }
 
 /// Loads `text` (the file's current, maybe unsaved, contents) rendered.
@@ -92,6 +296,7 @@ fn load(web: &WebView, kind: Kind, path: &Path, text: &str, colors: &PreviewColo
             }
             return;
         }
+        Kind::Transcript => return,
     };
     // A page in the cache folder, so it can read mermaid.js beside it and
     // the file's own images through its <base>.

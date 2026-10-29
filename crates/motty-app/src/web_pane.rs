@@ -98,6 +98,7 @@ impl WebPane {
             javascript: true,
             non_persistent: true,
             mobile: false,
+            messages: false,
         };
         let web = cx.new(|cx| WebView::new(options, cx));
         let address = cx.new(|cx| {
@@ -211,6 +212,8 @@ impl WebPane {
                     *matched = Some(*found);
                 }
             }
+            // Web pages can't post to Motty (`messages` is off).
+            WebEvent::Message(_) => {}
         }
         cx.notify();
     }

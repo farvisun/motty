@@ -197,10 +197,6 @@ impl Tab {
         Self::holding(Content::Panes(Panes::new(view.into())))
     }
 
-    fn editor(editor: Entity<FileEditor>) -> Self {
-        Self::holding(Content::Panes(Panes::new(editor.into())))
-    }
-
     fn holding(content: Content) -> Self {
         Self {
             content,

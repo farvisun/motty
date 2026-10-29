@@ -10,6 +10,7 @@ mod folder_view;
 mod folders;
 mod fonts;
 mod history;
+mod history_page;
 mod image_view;
 mod ipc;
 mod materials;

@@ -119,10 +119,10 @@ impl FileEditor {
                 .tooltip(move |_, cx| crate::tooltip::text(tip, cx))
                 .child(gpui::svg().path(path).size(px(ICON)).text_color(ink(0.8)))
         };
-        let file = self.name.is_none() && self.path.is_some();
+        let file = self.path.is_some();
 
         let mut left = div().flex().items_center().gap(px(4.));
-        if file && !self.lockable && !self.diff {
+        if file && !self.lockable && !self.diff && self.transcript.is_none() {
             let on = self.read_only;
             let enabled = self.can_edit;
             let track = match (on, active) {
@@ -217,7 +217,12 @@ impl FileEditor {
                     },
                 ))
             });
-        if self.read_only && !self.lockable && self.name.is_none() && !self.can_edit && !self.diff {
+        if self.read_only
+            && !self.lockable
+            && !self.can_edit
+            && !self.diff
+            && self.transcript.is_none()
+        {
             left = left.child(
                 div()
                     .ml(px(6.))
@@ -257,11 +262,6 @@ impl FileEditor {
             .when(file && self.shows_language(), |d| {
                 d.child(self.language_dropdown(ink, cx))
             })
-            .children(self.buttons.iter().enumerate().map(|(ix, (text, action))| {
-                let action = action.boxed_clone();
-                button_row(("editor-button", ix), text.clone(), ink(0.85), ink(0.07))
-                    .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-            }))
             .when(file && !self.read_only, |d| {
                 if dirty {
                     d.child(
@@ -277,6 +277,28 @@ impl FileEditor {
                 } else {
                     d.child(label("editor-saved", "icons/check.svg", "Saved", ink(0.5)))
                 }
+            })
+            .when_some(self.transcript.as_ref(), |d, session| {
+                // Continues the session: its live tab if it's still running.
+                let resume = crate::actions::ResumeSession {
+                    agent: session.agent.to_owned(),
+                    id: session.id.clone(),
+                    cwd: session.cwd.clone(),
+                    fork: false,
+                    place: "tab".into(),
+                };
+                d.child(
+                    label(
+                        "editor-resume",
+                        "icons/circle-play.svg",
+                        "Resume",
+                        ink(0.85),
+                    )
+                    .hover(move |s| s.bg(ink(0.07)))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(resume.clone()), cx)
+                    }),
+                )
             })
             .when(!self.lockable, |d| {
                 d.child(

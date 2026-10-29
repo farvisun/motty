@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use gpui::{
     Bounds, Context, DispatchPhase, ElementId, EntityId, EventEmitter, MouseDownEvent, Pixels,
-    Rgba, Task, Window, canvas, div, prelude::*,
+    Point, Rgba, Task, Window, canvas, div, prelude::*,
 };
 
 #[cfg(target_os = "macos")]
@@ -37,6 +37,10 @@ pub struct WebViewOptions {
     pub non_persistent: bool,
     /// Identifies as Safari on iPhone, for mobile layouts.
     pub mobile: bool,
+    /// The page may talk back: `window.webkit.messageHandlers.motty
+    /// .postMessage(string)` arrives as [`WebEvent::Message`]. Only for
+    /// Motty's own pages.
+    pub messages: bool,
 }
 
 impl Default for WebViewOptions {
@@ -45,6 +49,7 @@ impl Default for WebViewOptions {
             javascript: true,
             non_persistent: false,
             mobile: false,
+            messages: false,
         }
     }
 }
@@ -62,6 +67,8 @@ pub enum WebEvent {
     FindResult {
         found: bool,
     },
+    /// A string the page posted (see [`WebViewOptions::messages`]).
+    Message(String),
 }
 
 /// The page state that [`WebEvent`]s report changes of.
@@ -77,6 +84,8 @@ struct Snapshot {
 pub struct WebView {
     native: Option<Rc<Native>>,
     background: Option<Rgba>,
+    /// Where it was last drawn, in window coordinates.
+    bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
     snapshot: Snapshot,
     _poll: Task<()>,
 }
@@ -85,9 +94,23 @@ impl EventEmitter<WebEvent> for WebView {}
 
 impl WebView {
     pub fn new(options: WebViewOptions, cx: &mut Context<Self>) -> Self {
-        let native = Native::new(options).map(Rc::new);
+        let (sender, messages) = async_channel::unbounded();
+        let native = Native::new(options, sender).map(Rc::new);
         if native.is_none() && cfg!(target_os = "macos") {
             tracing::warn!("could not create a web view");
+        }
+        if options.messages {
+            cx.spawn(async move |this, cx| {
+                while let Ok(message) = messages.recv().await {
+                    if this
+                        .update(cx, |_, cx| cx.emit(WebEvent::Message(message)))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
         }
         let poll = cx.spawn(async move |this, cx| {
             loop {
@@ -100,9 +123,15 @@ impl WebView {
         Self {
             native,
             background: None,
+            bounds: Rc::default(),
             snapshot: Snapshot::default(),
             _poll: poll,
         }
+    }
+
+    /// A point on the page as a point in the window, for a menu there.
+    pub fn to_window(&self, at: Point<Pixels>) -> Point<Pixels> {
+        self.bounds.get().origin + at
     }
 
     pub fn load_url(&self, url: &str) {
@@ -285,6 +314,7 @@ impl Render for WebView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let native = self.native.clone();
         let id = cx.entity_id();
+        let drawn = self.bounds.clone();
         div()
             .size_full()
             .when_some(self.background, |div, color| div.bg(color))
@@ -292,6 +322,7 @@ impl Render for WebView {
                 canvas(
                     |_, _, _| {},
                     move |bounds, (), window, _| {
+                        drawn.set(bounds);
                         if let Some(native) = native {
                             paint_overlay(native, "web-view", id, bounds, window);
                         }
@@ -423,6 +454,7 @@ mod mac {
 
     use block2::RcBlock;
     use gpui::{Bounds, Pixels, Rgba, Window};
+    use objc2::DefinedClass;
     use objc2::rc::Retained;
     use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
     use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -436,8 +468,8 @@ mod mac {
     };
     use objc2_web_kit::{
         WKAudiovisualMediaTypes, WKFindConfiguration, WKFindResult, WKNavigationAction,
-        WKUIDelegate, WKWebView, WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
-        WKWindowFeatures,
+        WKScriptMessage, WKScriptMessageHandler, WKUIDelegate, WKUserContentController, WKWebView,
+        WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore, WKWindowFeatures,
     };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -471,6 +503,40 @@ mod mac {
             }
         }
     );
+
+    define_class!(
+        // Hands what the page posts to `window.webkit.messageHandlers.motty`
+        // to the GPUI side.
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "MottyWebMessages"]
+        #[ivars = async_channel::Sender<String>]
+        struct Messages;
+
+        unsafe impl NSObjectProtocol for Messages {}
+
+        unsafe impl WKScriptMessageHandler for Messages {
+            #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+            fn did_receive(&self, _controller: &WKUserContentController, message: &WKScriptMessage) {
+                // SAFETY: the message is valid for the call, on the main thread.
+                let body = unsafe { message.body() };
+                if let Some(text) = body.downcast_ref::<NSString>() {
+                    let _ = self.ivars().try_send(text.to_string());
+                }
+            }
+        }
+    );
+
+    impl Messages {
+        fn new(mtm: MainThreadMarker, sender: async_channel::Sender<String>) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(sender);
+            // SAFETY: `NSObject`'s `init` on a freshly allocated object.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    /// The name pages post to.
+    const MESSAGES: &str = "motty";
 
     /// A native view over GPUI's, inside a view that clips it to the
     /// visible part of its element; hidden while it isn't painted.
@@ -615,7 +681,7 @@ mod mac {
     }
 
     impl Native {
-        pub fn new(options: WebViewOptions) -> Option<Self> {
+        pub fn new(options: WebViewOptions, sender: async_channel::Sender<String>) -> Option<Self> {
             let mtm = MainThreadMarker::new()?;
             let frame = NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.));
             // SAFETY: plain WebKit configuration on the main thread; the
@@ -628,6 +694,14 @@ mod mac {
                 config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
                 if options.non_persistent {
                     config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
+                }
+                if options.messages {
+                    // The controller keeps the handler until `detach`.
+                    let handler = Messages::new(mtm, sender);
+                    config.userContentController().addScriptMessageHandler_name(
+                        ProtocolObject::from_ref(&*handler),
+                        &NSString::from_str(MESSAGES),
+                    );
                 }
                 WKWebView::initWithFrame_configuration(mtm.alloc(), frame, &config)
             };
@@ -670,6 +744,11 @@ mod mac {
             unsafe {
                 self.web.stopLoading();
                 self.web.setUIDelegate(None);
+                // It holds its message handler, which would outlive the view.
+                self.web
+                    .configuration()
+                    .userContentController()
+                    .removeScriptMessageHandlerForName(&NSString::from_str(MESSAGES));
             }
         }
 
@@ -912,7 +991,7 @@ mod stub {
     pub enum Native {}
 
     impl Native {
-        pub fn new(_: WebViewOptions) -> Option<Self> {
+        pub fn new(_: WebViewOptions, _: async_channel::Sender<String>) -> Option<Self> {
             None
         }
         pub fn painted(&self) -> u64 {

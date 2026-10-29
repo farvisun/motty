@@ -94,18 +94,18 @@ impl PreviewColors {
     }
 }
 
-fn hex(c: Rgba) -> String {
+pub(crate) fn hex(c: Rgba) -> String {
     let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
     format!("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b))
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     escape_into(&mut out, s);
     out
 }
 
-fn escape_into(out: &mut String, s: &str) {
+pub(crate) fn escape_into(out: &mut String, s: &str) {
     for c in s.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -118,7 +118,7 @@ fn escape_into(out: &mut String, s: &str) {
     }
 }
 
-fn nonce() -> String {
+pub(crate) fn nonce() -> String {
     let state = RandomState::new();
     format!(
         "{:016x}{:016x}",
@@ -129,7 +129,7 @@ fn nonce() -> String {
 
 /// The page around `body`: the theme's colors, the shared styles, and a
 /// policy that only runs scripts carrying `nonce`.
-fn page(colors: &PreviewColors, nonce: &str, css: &str, body: &str) -> String {
+pub(crate) fn page(colors: &PreviewColors, nonce: &str, css: &str, body: &str) -> String {
     let c = colors;
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
@@ -280,7 +280,7 @@ pub fn markdown_html(source: &str, colors: &PreviewColors, mermaid_js_url: Optio
     page(colors, &nonce, MARKDOWN_CSS, &body)
 }
 
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -329,7 +329,7 @@ fn safe_event(event: Event) -> Event {
 }
 
 /// A fenced code block, colored like the editor.
-fn code_block(code: &str, lang: Option<&str>, colors: &PreviewColors) -> String {
+pub(crate) fn code_block(code: &str, lang: Option<&str>, colors: &PreviewColors) -> String {
     let code = code.strip_suffix('\n').unwrap_or(code);
     let lines: Vec<&str> = code.split('\n').collect();
     let mut highlighter = Highlighter::new(lang);

@@ -12,6 +12,16 @@ const BUNDLED: [&[u8]; 4] = [
     include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf"),
 ];
 
+/// The bundled family, and its files as a web page loads them: name,
+/// bytes, CSS weight and whether it's italic.
+pub const BUNDLED_FAMILY: &str = "JetBrains Mono";
+pub const BUNDLED_FILES: [(&str, &[u8], u16, bool); 4] = [
+    ("JetBrainsMono-Regular.ttf", BUNDLED[0], 400, false),
+    ("JetBrainsMono-Bold.ttf", BUNDLED[1], 700, false),
+    ("JetBrainsMono-Italic.ttf", BUNDLED[2], 400, true),
+    ("JetBrainsMono-BoldItalic.ttf", BUNDLED[3], 700, true),
+];
+
 /// Registers bundled fonts plus any files in `~/.config/{motty,otty}/fonts`.
 pub fn load(cx: &mut App) {
     let mut fonts: Vec<Cow<'static, [u8]>> = BUNDLED.iter().map(|b| Cow::Borrowed(*b)).collect();
