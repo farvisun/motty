@@ -1157,6 +1157,61 @@ pub(crate) fn listening_ports(pids: &[i32]) -> Vec<(u16, i32)> {
     parse_lsof(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// The current user's other listening TCP ports, with their process
+/// names: Shell › Ports' Other group. Root-owned system services, Motty
+/// itself and `listed` are left out. Nothing is connected to.
+pub(crate) fn other_listening_ports(listed: &[i32]) -> Vec<(u16, String)> {
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() }.to_string();
+    let Ok(out) = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpcn", "-u", &uid])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let me = std::process::id() as i32;
+    parse_lsof_named(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter(|(_, pid, _)| *pid != me && !listed.contains(pid) && !system_process(*pid))
+        .map(|(port, _, name)| (port, name))
+        .collect()
+}
+
+/// A macOS service (AirPlay's ControlCenter and the like), by where its
+/// executable is.
+fn system_process(pid: i32) -> bool {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer is as large as the call is told it is.
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return true;
+    }
+    let path = String::from_utf8_lossy(&buf[..n as usize]);
+    ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/"]
+        .iter()
+        .any(|p| path.starts_with(p))
+}
+
+fn parse_lsof_named(out: &str) -> Vec<(u16, i32, String)> {
+    let mut pid = 0;
+    let mut name = String::new();
+    let mut ports: Vec<(u16, i32, String)> = Vec::new();
+    for line in out.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse().unwrap_or(0);
+        } else if let Some(c) = line.strip_prefix('c') {
+            name = c.to_owned();
+        } else if let Some(addr) = line.strip_prefix('n')
+            && let Some(port) = addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+            && !ports.iter().any(|(p, _, _)| *p == port)
+        {
+            ports.push((port, pid, name.clone()));
+        }
+    }
+    ports.sort_unstable();
+    ports
+}
+
 fn parse_lsof(out: &str) -> Vec<(u16, i32)> {
     let mut pid = 0;
     let mut ports = Vec::new();
@@ -1376,6 +1431,19 @@ fn tab_icon(tab: DetailsTab, color: Hsla) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_lsof_names() {
+        let out =
+            "p664\ncControlCenter\nf9\nn*:7000\nf10\nn*:7000\np900\ncnode\nf3\nn127.0.0.1:5173\n";
+        assert_eq!(
+            parse_lsof_named(out),
+            vec![
+                (5173, 900, "node".to_owned()),
+                (7000, 664, "ControlCenter".to_owned())
+            ]
+        );
+    }
+
     use super::*;
 
     #[test]

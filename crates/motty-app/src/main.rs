@@ -64,6 +64,7 @@ fn main() {
             cx.quit()
         });
         cx.on_action(|_: &actions::MinimizeAll, _| minimize_all());
+        cx.on_action(|_: &actions::MemoryReport, cx| workspace::memory_report(cx));
         cx.on_action(|_: &actions::ClearRecentFiles, cx| {
             folders::clear_recent_files();
             menus::refresh(cx);

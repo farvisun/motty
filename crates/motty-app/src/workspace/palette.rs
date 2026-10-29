@@ -110,6 +110,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("Window", "Close All", CloseAll),
         Command::new("Window", "Minimize", Minimize),
         Command::new("Window", "Minimize All", MinimizeAll),
+        Command::new("Window", "Memory Report", MemoryReport),
         Command::new("Window", "Zoom", ZoomWindow),
         Command::new("Window", "Pin Window", PinWindow).checked(ws.pinned),
         Command::new("Window", "Merge All Windows", MergeAllWindows),

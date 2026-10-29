@@ -67,6 +67,10 @@ struct Git {
     branch: String,
     worktree: bool,
     web: Option<String>,
+    /// The other local branches, for Merge and Rebase.
+    branches: Vec<String>,
+    /// The repository's other worktrees.
+    worktrees: Vec<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -165,6 +169,11 @@ fn look_up(s: &Snapshot) -> Live {
             }
         }
     }
+    // Servers started elsewhere, or left running detached.
+    let other = crate::workspace::other_listening_ports(&pids);
+    if !other.is_empty() {
+        ports.push(("Other".to_owned(), other));
+    }
     Live {
         git,
         ports,
@@ -204,10 +213,27 @@ fn git_info(dir: &std::path::Path) -> Option<Git> {
     let web = git(&["remote", "get-url", "origin"])
         .filter(|r| !r.is_empty())
         .map(|r| crate::workspace::web_url(&r));
+    let branches = git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .unwrap_or_default()
+        .lines()
+        .filter(|b| *b != branch)
+        .take(30)
+        .map(str::to_owned)
+        .collect();
+    let top = git(&["rev-parse", "--show-toplevel"]).map(std::path::PathBuf::from);
+    let worktrees = git(&["worktree", "list", "--porcelain"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(std::path::PathBuf::from)
+        .filter(|w| Some(w) != top.as_ref())
+        .collect();
     Some(Git {
         branch,
         worktree: git_dir != common,
         web,
+        branches,
+        worktrees,
     })
 }
 
@@ -242,6 +268,8 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
             MenuItem::action("Show Unread Tab", ShowNextUnread),
             MenuItem::action("Move Tab to New Window", MoveTabToNewWindow),
             MenuItem::action("Merge All Windows", MergeAllWindows),
+            MenuItem::separator(),
+            MenuItem::action("Memory Report", MemoryReport),
             MenuItem::separator(),
         ]),
         Menu::new("Help").items([
@@ -610,6 +638,44 @@ fn git_menu(live: &Live) -> Menu {
         MenuItem::action("Pull…", TypeCommand::new("git pull", true)),
         MenuItem::action("Push…", TypeCommand::new("git push", true)),
     ];
+    // Merge and Rebase type the command for you to check, not run it.
+    if !git.branches.is_empty() {
+        items.push(MenuItem::separator());
+        for (label, verb) in [("Merge…", "merge"), ("Rebase…", "rebase")] {
+            items.push(MenuItem::submenu(Menu::new(label).items(
+                git.branches.iter().map(|b| {
+                    MenuItem::action(
+                        b.clone(),
+                        TypeCommand::new(&format!("git {verb} {b}"), false),
+                    )
+                }),
+            )));
+        }
+    }
+    if !git.worktrees.is_empty() {
+        items.push(MenuItem::submenu(Menu::new("Switch to Worktree").items(
+            git.worktrees.iter().map(|w| {
+                let line = format!("cd -- '{}'", w.display().to_string().replace('\'', "'\\''"));
+                MenuItem::action(
+                    tilde(w, &dirs::home_dir().unwrap_or_default()),
+                    TypeCommand::new(&line, true),
+                )
+            }),
+        )));
+    }
+    let clients = git_clients();
+    if !clients.is_empty() {
+        items.push(MenuItem::submenu(Menu::new("Open in").items(
+            clients.into_iter().map(|(name, bundle)| {
+                MenuItem::action(
+                    name,
+                    OpenIn {
+                        bundle: bundle.to_owned(),
+                    },
+                )
+            }),
+        )));
+    }
     if let Some(web) = &git.web {
         items.push(MenuItem::separator());
         items.push(MenuItem::action(
@@ -618,6 +684,26 @@ fn git_menu(live: &Live) -> Menu {
         ));
     }
     Menu::new("Git").items(items)
+}
+
+/// The Git clients installed, as (name, bundle id).
+fn git_clients() -> Vec<(&'static str, &'static str)> {
+    [
+        (
+            "GitHub Desktop",
+            "GitHub Desktop",
+            "com.github.GitHubClient",
+        ),
+        ("Tower", "Tower", "com.fournova.Tower3"),
+        ("Fork", "Fork", "com.DanPristupov.Fork"),
+        ("Sublime Merge", "Sublime Merge", "com.sublimemerge"),
+        ("GitKraken", "GitKraken", "com.axosoft.gitkraken"),
+        ("Sourcetree", "Sourcetree", "com.torusknot.SourceTreeNotMac"),
+    ]
+    .into_iter()
+    .filter(|(_, app, _)| std::path::Path::new(&format!("/Applications/{app}.app")).exists())
+    .map(|(name, _, bundle)| (name, bundle))
+    .collect()
 }
 
 fn truncate(text: &str, max: usize) -> String {

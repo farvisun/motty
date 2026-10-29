@@ -44,7 +44,9 @@ mod tabs;
 mod welcome;
 
 pub(crate) use agents::Place;
-pub(crate) use details::{apps_for, listening_ports, open_in, open_with_apps, web_url};
+pub(crate) use details::{
+    apps_for, listening_ports, open_in, open_with_apps, other_listening_ports, web_url,
+};
 pub(crate) use palette::keycaps;
 pub(crate) use tabs::MovedTab;
 pub use welcome::first_run;
@@ -317,6 +319,78 @@ pub fn cli_path() -> Option<std::path::PathBuf> {
 }
 
 /// Re-reads the config in every window now, rather than at the next poll.
+/// Window › Memory Report: Motty's footprint, then each window's tabs,
+/// panes and scrollback, shown over the front window.
+pub fn memory_report(cx: &mut App) {
+    // Actions arrive while a window is being updated; read it after that.
+    cx.defer(show_memory_report);
+}
+
+fn show_memory_report(cx: &mut App) {
+    use motty_term::alacritty_terminal::grid::Dimensions;
+    let mut rusage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is the struct the flavor fills.
+    let ok = unsafe {
+        libc::proc_pid_rusage(
+            std::process::id() as i32,
+            libc::RUSAGE_INFO_V2,
+            (&mut rusage as *mut libc::rusage_info_v2).cast(),
+        )
+    } == 0;
+    let mb = |bytes: u64| format!("{:.0} MB", bytes as f64 / 1_048_576.);
+    let mut lines = Vec::new();
+    if ok {
+        lines.push(format!("Motty is using {}.", mb(rusage.ri_phys_footprint)));
+        lines.push(String::new());
+    }
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Workspace>())
+        .collect();
+    for (n, handle) in windows.iter().enumerate() {
+        let Ok(ws) = handle.read(cx) else { continue };
+        let (mut panes, mut rows, mut editors) = (0, 0, 0);
+        for tab in &ws.tabs {
+            match tab.terms() {
+                Some(t) => {
+                    for view in t.root.leaves() {
+                        panes += 1;
+                        rows += view.read(cx).session().term.lock().grid().history_size();
+                    }
+                }
+                None => editors += 1,
+            }
+        }
+        let plural = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        let mut line = format!(
+            "Window {}: {}, {}, {} of scrollback",
+            n + 1,
+            plural(ws.tabs.len(), "tab"),
+            plural(panes, "pane"),
+            plural(rows, "line"),
+        );
+        if editors > 0 {
+            line.push_str(&format!(", {}", plural(editors, "file")));
+        }
+        lines.push(line);
+    }
+    let detail = lines.join("\n");
+    let Some(front) = windows.first().copied() else {
+        return;
+    };
+    let _ = front.update(cx, |_, window, cx| {
+        // Nothing to do with the answer.
+        drop(window.prompt(
+            gpui::PromptLevel::Info,
+            "Memory Report",
+            Some(&detail),
+            &["OK"],
+            cx,
+        ));
+    });
+}
+
 pub fn reload_all(cx: &mut App) {
     for window in cx.windows() {
         if let Some(w) = window.downcast::<Workspace>() {

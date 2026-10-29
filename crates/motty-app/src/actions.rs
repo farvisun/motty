@@ -145,6 +145,7 @@ actions!(
         CloseAll,
         QuitKeepWindows,
         MinimizeAll,
+        MemoryReport,
         MergeAllWindows,
         ReloadTerminalView,
         OpenConfigFolder,
