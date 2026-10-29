@@ -236,6 +236,13 @@ enum Control {
         min: f32,
         max: f32,
     },
+    /// A switch for one entry of a list key: clicking writes `next`, the
+    /// list with the entry added or taken out (`None` removes the key).
+    Entry {
+        key: &'static str,
+        on: bool,
+        next: Option<Value>,
+    },
     Button(&'static str, Command),
     /// Text shown as is, and copied with a button.
     Copy(String),
@@ -317,6 +324,42 @@ impl Row {
 
 fn s(v: &str) -> Option<Value> {
     Some(Value::String(v.into()))
+}
+
+/// An on/off switch writing `value` to `key` when clicked.
+fn switch(
+    ix: usize,
+    on: bool,
+    c: &Colors,
+    key: &'static str,
+    value: Option<Value>,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let (track, knob_left) = if on {
+        (c.accent, 18.)
+    } else {
+        (c.switch_off, 2.)
+    };
+    div()
+        .id(("toggle", ix))
+        .flex_none()
+        .relative()
+        .w(px(38.))
+        .h(px(22.))
+        .rounded_full()
+        .bg(track)
+        .child(
+            div()
+                .absolute()
+                .top(px(2.))
+                .left(px(knob_left))
+                .size(px(18.))
+                .rounded_full()
+                .bg(hsla(Rgba::rgb(0xffffff)))
+                .shadow_sm(),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| this.apply(key, value.clone(), cx)))
+        .into_any_element()
 }
 
 /// A choice among fixed `(label, value)` pairs, `current` matched by label.
@@ -2003,15 +2046,127 @@ impl SettingsWindow {
                 max: 72.,
             },
         ));
+        let t = &c.text;
         rows.push(row(
             Appearance,
-            "Font",
+            "Text",
             "Ligatures",
             Some("Join character pairs like -> and != where the font has them"),
+            choice(
+                "font-ligatures",
+                &[
+                    ("Off", "off"),
+                    ("Standard (calt)", "calt"),
+                    ("Discretionary (dlig)", "dlig"),
+                ],
+                match (c.ligatures, t.discretionary_ligatures) {
+                    (false, _) => "Off",
+                    (true, false) => "Standard (calt)",
+                    (true, true) => "Discretionary (dlig)",
+                },
+            ),
+        ));
+        let faces = [
+            ("Auto", "auto"),
+            ("Off", "off"),
+            ("Primary Only", "primary-only"),
+            ("Synthetic", "synthetic"),
+        ];
+        let face = |m: motty_theme::FaceMode| match m {
+            motty_theme::FaceMode::Auto => "Auto",
+            motty_theme::FaceMode::Off => "Off",
+            motty_theme::FaceMode::PrimaryOnly => "Primary Only",
+            motty_theme::FaceMode::Synthetic => "Synthetic",
+        };
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Bold",
+            Some("Synthetic overstrikes the regular face when the font has no bold"),
+            choice("text-bold", &faces, face(t.bold)),
+        ));
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Italic",
+            Some("Off keeps italic text upright"),
+            choice("text-italic", &faces, face(t.italic)),
+        ));
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Underline",
+            Some("Underlines programs ask for; link underlines show either way"),
             Control::Toggle {
-                key: "font-ligatures",
-                on: c.ligatures,
+                key: "text-underline",
+                on: t.underline,
                 invert: false,
+            },
+        ));
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Blink",
+            Some("Blinking text blinks about once a second; off draws it steady"),
+            Control::Toggle {
+                key: "text-blink",
+                on: t.blink,
+                invert: false,
+            },
+        ));
+        let mut heights: Vec<(SharedString, Option<Value>)> = vec![
+            ("Theme Default".into(), None),
+            ("Compact (1.0)".into(), Some(Value::Integer(0))),
+            ("Loose (1.2)".into(), s("20%")),
+        ];
+        let height = match t.cell_height {
+            None => 0,
+            Some(motty_theme::CellHeight::Points(0.)) => 1,
+            Some(motty_theme::CellHeight::Percent(20.)) => 2,
+            Some(other) => {
+                let label = match other {
+                    motty_theme::CellHeight::Points(p) => format!("{p:+} pt"),
+                    motty_theme::CellHeight::Percent(p) => format!("{p:+}%"),
+                };
+                let value = match other {
+                    motty_theme::CellHeight::Points(p) => Value::Float(p as f64),
+                    motty_theme::CellHeight::Percent(p) => Value::String(format!("{p}%")),
+                };
+                heights.push((label.into(), Some(value)));
+                3
+            }
+        };
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Line Height",
+            Some("adjust-cell-height in config.toml takes N, Npx or N%"),
+            Control::Choice {
+                key: "adjust-cell-height",
+                options: heights,
+                current: height,
+            },
+        ));
+        rows.push(row(
+            Appearance,
+            "Text",
+            "Font Blending",
+            Some("Perceptual keeps dark text on light backgrounds at full weight"),
+            Control::Choice {
+                key: "font-blending",
+                options: vec![
+                    ("Default".into(), None),
+                    ("srgb-over".into(), s("srgb-over")),
+                    ("macos-like".into(), s("macos-like")),
+                    ("linear".into(), s("linear")),
+                    ("perceptual".into(), s("perceptual")),
+                ],
+                current: match t.blending {
+                    motty_theme::FontBlending::SrgbOver => 0,
+                    motty_theme::FontBlending::MacosLike => 2,
+                    motty_theme::FontBlending::Linear => 3,
+                    motty_theme::FontBlending::Perceptual => 4,
+                },
             },
         ));
         rows.push(row(
@@ -2386,6 +2541,107 @@ impl SettingsWindow {
             Some("A program copying to your clipboard"),
             choice("clipboard-write", &accesses, access(c.clipboard_write)),
         ));
+        let t = &c.text;
+        for (title, note, key, on) in [
+            (
+                "Bidirectional (RTL) Text",
+                "Show Hebrew, Arabic and Persian right to left; copy and find keep the typed order",
+                "bidi",
+                t.bidi,
+            ),
+            (
+                "Join Arrows & Triangles to Box-Drawing Rules",
+                "\u{2192} and \u{25B6} next to a rule meet it on its centre line",
+                "arrow-box-drawing-join",
+                t.arrow_join,
+            ),
+            (
+                "Hide CJK Wrap Pad",
+                "The lone reverse-video cell zsh leaves when a wide character wraps",
+                "strip-cjk-wrap-pad",
+                t.strip_cjk_wrap_pad,
+            ),
+            (
+                "Ligatures in Words",
+                "Also join letters and digits, not only symbols",
+                "font-ligatures-alphabet",
+                t.ligatures_alphabet,
+            ),
+            (
+                "Thicken Glyphs",
+                "Heavier strokes; always on over a translucent background",
+                "font-thicken",
+                t.thicken,
+            ),
+        ] {
+            rows.push(row(
+                Advanced,
+                "Text Rendering",
+                title,
+                Some(note),
+                Control::Toggle {
+                    key,
+                    on,
+                    invert: false,
+                },
+            ));
+        }
+        let contrasts = [1., 3., 4.5, 7.];
+        let mut options: Vec<(SharedString, Option<Value>)> = vec![
+            ("Off".into(), None),
+            ("3 : 1".into(), Some(Value::Float(3.))),
+            ("4.5 : 1 (WCAG AA)".into(), Some(Value::Float(4.5))),
+            ("7 : 1 (WCAG AAA)".into(), Some(Value::Float(7.))),
+        ];
+        let current = contrasts
+            .iter()
+            .position(|&r| r == t.minimum_contrast)
+            .unwrap_or_else(|| {
+                let r = t.minimum_contrast;
+                options.push((format!("{r} : 1").into(), Some(Value::Float(r as f64))));
+                options.len() - 1
+            });
+        rows.push(row(
+            Advanced,
+            "Text Rendering",
+            "Minimum Contrast",
+            Some("Text too close to its background is lightened or darkened"),
+            Control::Choice {
+                key: "minimum-contrast",
+                options,
+                current,
+            },
+        ));
+        for (name, _) in &motty_theme::text::AMBIGUOUS_BLOCKS {
+            let on = t.widen_ambiguous.iter().any(|b| b == name);
+            let next: Vec<Value> = t
+                .widen_ambiguous
+                .iter()
+                .filter(|b| b != name)
+                .chain((!on).then_some(&name.to_string()))
+                .map(|b| Value::String(b.clone()))
+                .collect();
+            let title = name
+                .split('-')
+                .map(|w| {
+                    let mut w = w.to_owned();
+                    w[..1].make_ascii_uppercase();
+                    w
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            rows.push(row(
+                Advanced,
+                "Widen East-Asian-Ambiguous Blocks",
+                format!("Widen {title}"),
+                Some("Two cells wide in new tabs; only for fonts that draw them so"),
+                Control::Entry {
+                    key: "widen-ambiguous",
+                    on,
+                    next: (!next.is_empty()).then_some(Value::Array(next)),
+                },
+            ));
+        }
         rows.push(row(
             Advanced,
             "Mouse",
@@ -3377,35 +3633,9 @@ impl SettingsWindow {
         let entity = cx.entity();
         match control {
             Control::Toggle { key, on, invert } => {
-                let (track, knob_left) = if on {
-                    (c.accent, 18.)
-                } else {
-                    (c.switch_off, 2.)
-                };
-                div()
-                    .id(("toggle", ix))
-                    .flex_none()
-                    .relative()
-                    .w(px(38.))
-                    .h(px(22.))
-                    .rounded_full()
-                    .bg(track)
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(2.))
-                            .left(px(knob_left))
-                            .size(px(18.))
-                            .rounded_full()
-                            .bg(hsla(Rgba::rgb(0xffffff)))
-                            .shadow_sm(),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let next = !on;
-                        this.apply(key, Some(Value::Boolean(next != invert)), cx)
-                    }))
-                    .into_any_element()
+                switch(ix, on, c, key, Some(Value::Boolean(!on != invert)), cx)
             }
+            Control::Entry { key, on, next } => switch(ix, on, c, key, next, cx),
             Control::Choice {
                 key,
                 options,
