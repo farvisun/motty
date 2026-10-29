@@ -5,14 +5,15 @@
 //! (glyphs snapped to the cell grid with `force_width`), quads for box-drawing
 //! characters, and the cursor.
 
-use std::cell::Cell as StdCell;
+use std::borrow::Cow;
+use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, ElementId, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, PaintQuad, Pixels, ShapedLine, SharedString, Size, StrikethroughStyle,
-    Style, TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    App, Bounds, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
+    LineLayout, PaintQuad, Path, Pixels, ShapedLine, SharedString, Size, StrikethroughStyle, Style,
+    TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Line, Point as GridPoint};
@@ -21,10 +22,12 @@ use motty_term::alacritty_terminal::term::TermMode;
 use motty_term::alacritty_terminal::term::cell::Flags;
 use motty_term::alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 use motty_term::{GridSize, Terminal};
-use motty_theme::Rgba;
+use motty_theme::{FaceMode, FontBlending, Rgba};
 
+use crate::bidi::{self, BidiCell, LineOrder, VisualMap};
 use crate::box_drawing;
 use crate::motion::FrameMotion;
+use crate::contrast::Contrast;
 use crate::style::{TerminalStyle, hsla};
 
 /// Geometry of the last painted frame, shared with the view for hit-testing.
@@ -37,8 +40,11 @@ pub struct TerminalLayout {
     pub line_height: Pixels,
     pub cols: usize,
     pub rows: usize,
-    /// Cursor cell (row, col) in the viewport, when visible.
+    /// Cursor cell (row, col) in the viewport, when visible; the column
+    /// is where it is drawn (rows with right-to-left text are reordered).
     pub cursor: Option<(usize, usize)>,
+    /// Cells set to blink (SGR 5) are on screen and `text-blink` is on.
+    pub blinking: bool,
 }
 
 impl TerminalLayout {
@@ -101,9 +107,17 @@ pub fn measure(style: &TerminalStyle, window: &mut Window) -> CellMetrics {
     // The advance stays fractional (JetBrains Mono at 13pt is 7.8pt); glyphs
     // are positioned at col * width so rounding would drift across a line.
     let cell_width = advance;
-    let line_height = px((f32::from(natural) * style.line_height_scale * scale).ceil() / scale);
+    let device = |v: f32| (v * scale).ceil() / scale;
+    let natural_height = device(f32::from(natural));
+    let line_height = px(style
+        .cell_height
+        .map_or(natural_height, |h| device(h.apply(f32::from(natural)))));
     let centered_baseline = (line_height - natural) / 2. + ascent;
-    let baseline = px((f32::from(line_height - descent) * scale).ceil() / scale);
+    // At the natural height the baseline sits one descent above the cell
+    // bottom; added or removed height is split above and below.
+    let extra = f32::from(line_height) - natural_height;
+    let baseline =
+        px(device(natural_height - f32::from(descent)) + (extra / 2. * scale).floor() / scale);
     CellMetrics {
         cell_width,
         line_height,
@@ -154,6 +168,10 @@ pub struct TerminalElement {
     labels: Vec<(GridPoint, SharedString)>,
     /// Smooth scrolling and the cursor's glide (see [`crate::motion`]).
     motion: FrameMotion,
+    /// The off half of the `text-blink` cycle: blinking cells are hidden.
+    blink_off: bool,
+    /// Where rows were reordered for right-to-left text, for hit-testing.
+    visual_map: Option<Rc<RefCell<VisualMap>>>,
 }
 
 impl TerminalElement {
@@ -179,12 +197,28 @@ impl TerminalElement {
             underlines: Vec::new(),
             labels: Vec::new(),
             motion: FrameMotion::default(),
+            blink_off: false,
+            visual_map: None,
         }
     }
 
     /// Where scrolling and the cursor are this frame, between rows and cells.
     pub fn motion(mut self, motion: FrameMotion) -> Self {
         self.motion = motion;
+        self
+    }
+
+
+    /// Hides blinking cells (the off half of the blink cycle).
+    pub fn blink_off(mut self, off: bool) -> Self {
+        self.blink_off = off;
+        self
+    }
+
+    /// Receives each frame's right-to-left reordering, so a pointer
+    /// position can be turned back into a grid column.
+    pub fn visual_map(mut self, map: Rc<RefCell<VisualMap>>) -> Self {
+        self.visual_map = Some(map);
         self
     }
 
@@ -231,12 +265,30 @@ impl TerminalElement {
 struct TextSegment {
     origin: gpui::Point<Pixels>,
     line: ShapedLine,
+    /// Drawn again this far to the right: faux bold, or thickened stems.
+    overstrike: Option<Pixels>,
+}
+
+impl TextSegment {
+    fn paint(&self, line_height: Pixels, window: &mut Window, cx: &mut App) {
+        let _ = self
+            .line
+            .paint(self.origin, line_height, TextAlign::Left, None, window, cx);
+        if let Some(dx) = self.overstrike {
+            let origin = point(self.origin.x + dx, self.origin.y);
+            let _ = self
+                .line
+                .paint(origin, line_height, TextAlign::Left, None, window, cx);
+        }
+    }
 }
 
 pub struct Prepaint {
     backgrounds: Vec<PaintQuad>,
     segments: Vec<TextSegment>,
     glyph_quads: Vec<PaintQuad>,
+    /// Joined arrows' heads and triangles.
+    glyph_paths: Vec<(Path<Pixels>, Hsla)>,
     cursor: Option<PaintQuad>,
     cursor_text: Option<TextSegment>,
     preedit: Option<(PaintQuad, PaintQuad, TextSegment)>,
@@ -261,6 +313,13 @@ struct Snapshot {
     rows: Vec<Vec<SnapCell>>,
     /// How much of the first row is above the top edge, in rows.
     shift: f32,
+    /// Drawing order of rows holding right-to-left text.
+    orders: Vec<Option<LineOrder>>,
+    /// Blinking cells are on screen.
+    blinking: bool,
+    /// The grid's first row is this row of the snapshot (one more
+    /// while a smooth scroll shows part of the row above).
+    grid_row0: usize,
     cursor: Option<(usize, usize, CursorShape, bool)>,
     /// Cursor cell even when the cursor itself is hidden (for IME placement).
     cursor_cell: Option<(usize, usize)>,
@@ -347,16 +406,28 @@ impl gpui::Element for TerminalElement {
         // The snapshot's rows start `shift` of a row above the top edge;
         // the grid's rows (for hit-testing) sit `scroll` rows further down.
         let rows_origin = point(origin.x, origin.y - lh * snapshot.shift);
+        let visual = |row: usize, col: usize| match snapshot.orders.get(row + snapshot.grid_row0) {
+            Some(Some(order)) => order.to_visual(col),
+            _ => col,
+        };
+        let cursor_cell = snapshot
+            .cursor_cell
+            .map(|(row, col)| (row, visual(row, col)));
         let layout = TerminalLayout {
             origin: point(origin.x, origin.y + lh * self.motion.scroll),
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             cols,
             rows,
-            cursor: snapshot.cursor_cell,
+            cursor: cursor_cell,
+            blinking: snapshot.blinking,
         };
         self.layout_sink.set(Some(layout));
-        let mut prepaint = build(&snapshot, &style, metrics, rows_origin, window);
+        if let Some(map) = &self.visual_map {
+            map.borrow_mut().rows = snapshot.orders[snapshot.grid_row0.min(snapshot.orders.len())..].to_vec();
+        }
+        let faces = Faces::new(&style, window);
+        let mut prepaint = build(&snapshot, &style, &faces, metrics, rows_origin, window);
         if self.motion.scroll != 0. {
             prepaint.clip = Some(Bounds::new(
                 point(bounds.origin.x, origin.y),
@@ -371,6 +442,7 @@ impl gpui::Element for TerminalElement {
             }
         }
         for &(row, col, width) in &snapshot.labels {
+            let col = visual(row, col);
             prepaint.glyph_quads.push(outline(
                 Bounds::new(
                     point(
@@ -384,7 +456,7 @@ impl gpui::Element for TerminalElement {
             ));
         }
         if let (Some(text), Some((row, col)), None) =
-            (self.ghost.clone(), snapshot.cursor_cell, &self.preedit)
+            (self.ghost.clone(), cursor_cell, &self.preedit)
         {
             let room = layout.cols.saturating_sub(col);
             let text: String = text.chars().take(room).collect();
@@ -403,10 +475,14 @@ impl gpui::Element for TerminalElement {
                         .text_system()
                         .shape_line(text.into(), style.font_size, &[run], None);
                 let origin = layout.cell_bounds(row, col).origin;
-                prepaint.ghost = Some(TextSegment { origin, line });
+                prepaint.ghost = Some(TextSegment {
+                    origin,
+                    line,
+                    overstrike: None,
+                });
             }
         }
-        if let (Some(text), Some((row, col))) = (self.preedit.clone(), snapshot.cursor_cell) {
+        if let (Some(text), Some((row, col))) = (self.preedit.clone(), cursor_cell) {
             prepaint.preedit = Some(build_preedit(text, &style, &layout, row, col, window));
             prepaint.cursor = None;
             prepaint.cursor_text = None;
@@ -430,17 +506,13 @@ impl gpui::Element for TerminalElement {
                 window.paint_quad(quad);
             }
             for seg in &prepaint.segments {
-                let _ = seg.line.paint(
-                    seg.origin,
-                    prepaint.line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                seg.paint(prepaint.line_height, window, cx);
             }
             for quad in prepaint.glyph_quads.drain(..) {
                 window.paint_quad(quad);
+            }
+            for (path, color) in prepaint.glyph_paths.drain(..) {
+                window.paint_path(path, color);
             }
             if let Some(seg) = &prepaint.ghost {
                 let _ = seg.line.paint(
@@ -456,14 +528,7 @@ impl gpui::Element for TerminalElement {
                 window.paint_quad(cursor);
             }
             if let Some(seg) = &prepaint.cursor_text {
-                let _ = seg.line.paint(
-                    seg.origin,
-                    prepaint.line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                seg.paint(prepaint.line_height, window, cx);
             }
             if let Some((bg, underline, seg)) = prepaint.preedit.take() {
                 window.paint_quad(bg);
@@ -529,6 +594,9 @@ impl TerminalElement {
             })
             .collect();
         let dark = motty_theme::theme::luminance(opaque_bg) < 0.5;
+        let text = &style.text;
+        let mut contrast = Contrast::new(text.minimum_contrast);
+        let mut blinking = false;
 
         let grid = term.grid();
         let start = first.max(grid.topmost_line().0);
@@ -547,6 +615,21 @@ impl TerminalElement {
             }
             let cell = indexed.cell;
             let mut flags = cell.flags;
+            if !text.underline {
+                flags.remove(Flags::ALL_UNDERLINES);
+            }
+            if text.blink && flags.contains(Flags::BLINK) {
+                blinking = true;
+                if self.blink_off {
+                    flags.insert(Flags::HIDDEN);
+                }
+            }
+            if text.strip_cjk_wrap_pad
+                && indexed.point.column.0 + 1 == cols_n
+                && crate::wrap_pad::is_wrap_pad(term.grid(), indexed.point)
+            {
+                flags.remove(Flags::INVERSE);
+            }
             if cell.hyperlink().is_some()
                 || self
                     .underlines
@@ -596,6 +679,9 @@ impl TerminalElement {
                     fg = sfg;
                 }
             }
+            if let Some(contrast) = contrast.as_mut() {
+                fg = contrast.apply(fg, if bg.a < 0.5 { opaque_bg } else { bg });
+            }
             rows[row].push(SnapCell {
                 c: cell.c,
                 zerowidth: cell.zerowidth().map(<[char]>::to_vec),
@@ -632,14 +718,44 @@ impl TerminalElement {
                 (cursor_point.line.0 + display_offset) as usize,
                 cursor_point.column.0,
             ));
+        // A program in explicit mode (BDSM) lays out bidi text itself.
+        let reorder = text.bidi && !content.mode.contains(TermMode::BIDI_EXPLICIT);
+        let orders = rows
+            .iter()
+            .map(|cells| reorder.then(|| row_order(cells)).flatten())
+            .collect();
+        let grid_row0 = (-(display_offset + first)).max(0) as usize;
         Snapshot {
             rows,
             shift,
+            grid_row0,
+            orders,
+            blinking,
             cursor,
             cursor_cell,
             labels,
         }
     }
+}
+
+/// The drawing order of a row with right-to-left text in it.
+fn row_order(cells: &[SnapCell]) -> Option<LineOrder> {
+    // Nothing below U+0590 reads right to left: most rows stop here.
+    if !cells
+        .iter()
+        .any(|c| c.c >= '\u{0590}' || c.zerowidth.is_some())
+    {
+        return None;
+    }
+    let cells: Vec<BidiCell> = cells
+        .iter()
+        .map(|c| BidiCell {
+            c: c.c,
+            extra: c.zerowidth.as_deref().unwrap_or_default(),
+            spacer: c.flags.contains(Flags::WIDE_CHAR_SPACER),
+        })
+        .collect();
+    bidi::reorder(&cells)
 }
 
 /// Maps the 8 normal named colors to their dim variants when DIM is set.
@@ -662,16 +778,87 @@ fn dim_color(color: Color, flags: Flags) -> Color {
     }
 }
 
+/// Per-frame choices of face and overstrike (`text-bold`, `text-italic`,
+/// `font-thicken`, `font-blending`).
+struct Faces {
+    /// Bold cells use the bold face rather than the regular one.
+    bold: bool,
+    italic: bool,
+    /// Bold cells are overstruck this far: synthetic bold, as the family
+    /// has no bold face.
+    faux_bold: Option<Pixels>,
+    /// All text is overstruck this far, darkening stems.
+    thicken: Option<Pixels>,
+    /// Only text darker than its background is (`perceptual` blending).
+    thicken_dark: Option<Pixels>,
+    /// What default-background cells sit on.
+    backdrop: Rgba,
+}
+
+impl Faces {
+    fn new(style: &TerminalStyle, window: &mut Window) -> Self {
+        let text = &style.text;
+        let scale = window.scale_factor();
+        // GPUI picks the closest face in the family, so a family without a
+        // bold face resolves bold to the regular one.
+        let real_bold = text.family_bold.is_some() || {
+            let ts = window.text_system();
+            ts.resolve_font(&style.faces[1]) != ts.resolve_font(&style.faces[0])
+        };
+        let synthetic = text.bold == FaceMode::Synthetic && !real_bold;
+        // Half a device pixel: GPUI positions glyphs at subpixel offsets,
+        // so the overstrike widens stems without doubling them.
+        let thin = px(0.5 / scale);
+        Self {
+            bold: text.bold != FaceMode::Off && !synthetic,
+            // GPUI can't slant glyphs, so synthetic italic is the closest
+            // face, as with auto.
+            italic: text.italic != FaceMode::Off,
+            faux_bold: synthetic.then(|| px((f32::from(style.font_size) / 16.).max(1. / scale))),
+            thicken: (text.thicken || style.background.a < 1.).then_some(thin),
+            thicken_dark: (text.blending == FontBlending::Perceptual).then_some(thin),
+            backdrop: if style.background.a > 0.5 {
+                style.background
+            } else {
+                style.palette[NamedColor::Background as usize].with_alpha(1.)
+            },
+        }
+    }
+
+    fn overstrike(&self, cell: &SnapCell) -> Option<Pixels> {
+        let luma = |c: Rgba| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+        let mut dx = self.thicken;
+        if let Some(thin) = self.thicken_dark {
+            let bg = if cell.bg.a < 0.5 {
+                self.backdrop
+            } else {
+                cell.bg
+            };
+            if luma(cell.fg) < luma(bg) {
+                dx = Some(thin);
+            }
+        }
+        match self.faux_bold {
+            Some(bold) if cell.flags.contains(Flags::BOLD) => {
+                Some(dx.map_or(bold, |d| d.max(bold)))
+            }
+            _ => dx,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct RunStyle {
     fg: Hsla,
     bold: bool,
     italic: bool,
+    /// Ligatures off: letters and digits when they only form in symbols.
+    plain: bool,
     underline: Option<(bool, f32)>,
     strike: bool,
 }
 
-fn run_style(cell: &SnapCell) -> RunStyle {
+fn run_style(cell: &SnapCell, faces: &Faces, style: &TerminalStyle) -> RunStyle {
     let f = cell.flags;
     let underline = if f.contains(Flags::UNDERCURL) {
         Some((true, 1.))
@@ -684,24 +871,18 @@ fn run_style(cell: &SnapCell) -> RunStyle {
     };
     RunStyle {
         fg: hsla(cell.fg),
-        bold: f.contains(Flags::BOLD),
-        italic: f.contains(Flags::ITALIC),
+        bold: faces.bold && f.contains(Flags::BOLD),
+        italic: faces.italic && f.contains(Flags::ITALIC),
+        plain: style.plain_faces.is_some() && cell.c.is_alphanumeric(),
         underline,
         strike: f.contains(Flags::STRIKEOUT),
     }
 }
 
 fn text_run(style: &TerminalStyle, rs: &RunStyle, len: usize) -> TextRun {
-    let mut font = style.font.clone();
-    if rs.bold {
-        font.weight = FontWeight::BOLD;
-    }
-    if rs.italic {
-        font.style = FontStyle::Italic;
-    }
     TextRun {
         len,
-        font,
+        font: style.face(rs.bold, rs.italic, rs.plain).clone(),
         color: rs.fg,
         background_color: None,
         underline: rs.underline.map(|(wavy, t)| UnderlineStyle {
@@ -724,20 +905,28 @@ struct SegmentBuilder {
     current: Option<(RunStyle, usize)>,
     /// Byte length up to the last cell that has visible content.
     visible_len: usize,
+    overstrike: Option<Pixels>,
 }
 
 impl SegmentBuilder {
-    fn new(start_col: usize) -> Self {
+    fn new(start_col: usize, overstrike: Option<Pixels>) -> Self {
         Self {
             start_col,
             text: String::new(),
             runs: Vec::new(),
             current: None,
             visible_len: 0,
+            overstrike,
         }
     }
 
-    fn push(&mut self, style: &TerminalStyle, cell: &SnapCell, rs: RunStyle) {
+    fn push(&mut self, style: &TerminalStyle, cell: &SnapCell, mut rs: RunStyle) {
+        // Spaces never ligate: keep the run going rather than split it.
+        if cell.c == ' '
+            && let Some((cur, _)) = &self.current
+        {
+            rs.plain = cur.plain;
+        }
         let before = self.text.len();
         self.text.push(cell.c);
         if let Some(zw) = &cell.zerowidth {
@@ -799,13 +988,119 @@ impl SegmentBuilder {
             origin.x + metrics.cell_width * self.start_col as f32,
             origin.y + metrics.line_height * row as f32 + metrics.text_dy,
         );
-        Some(TextSegment { origin, line })
+        Some(TextSegment {
+            origin,
+            line,
+            overstrike: self.overstrike,
+        })
     }
+}
+
+/// A right-to-left run, `cells` in drawing order from visual column
+/// `start_col`: shaped in logical order inside RLO…PDF, then its glyphs
+/// placed on the run's cells (see [`bidi::place_rtl`]).
+#[allow(clippy::too_many_arguments)]
+fn rtl_segment(
+    style: &TerminalStyle,
+    rs: &RunStyle,
+    overstrike: Option<Pixels>,
+    cells: &[SnapCell],
+    start_col: usize,
+    metrics: CellMetrics,
+    origin: gpui::Point<Pixels>,
+    row: usize,
+    window: &mut Window,
+) -> Option<TextSegment> {
+    let decorated = |c: &SnapCell| c.flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+    if cells.iter().all(|c| c.c == ' ' && !decorated(c)) {
+        return None;
+    }
+    let mut text = String::with_capacity(cells.len() * 4 + 6);
+    text.push(bidi::RLO);
+    let mut starts = Vec::with_capacity(cells.len());
+    let mut joining = false;
+    for cell in cells.iter().rev() {
+        starts.push(text.len());
+        text.push(cell.c);
+        if let Some(zw) = &cell.zerowidth {
+            text.extend(zw.iter());
+        }
+        joining |= bidi::joins(cell.c);
+    }
+    let text_end = text.len();
+    text.push(bidi::PDF);
+    let run = text_run(style, rs, text.len());
+    let mut line =
+        window
+            .text_system()
+            .shape_line(SharedString::from(text), style.font_size, &[run], None);
+    let shaped: Vec<(usize, f32)> = line
+        .runs
+        .iter()
+        .flat_map(|r| r.glyphs.iter())
+        .map(|g| (g.index, f32::from(g.position.x)))
+        .collect();
+    let mut xs = bidi::place_rtl(
+        &shaped,
+        &starts,
+        text_end,
+        f32::from(metrics.cell_width),
+        f32::from(line.width),
+        joining,
+    )
+    .into_iter();
+    // Rebuilt rather than edited: the shaped layout is shared with GPUI's
+    // cache. Glyphs go left to right so decorations start at the left.
+    let mut runs = Vec::with_capacity(line.runs.len());
+    for run in &line.runs {
+        let mut glyphs = Vec::with_capacity(run.glyphs.len());
+        for glyph in &run.glyphs {
+            if let Some(Some(x)) = xs.next() {
+                let mut glyph = glyph.clone();
+                glyph.position.x = px(x);
+                glyphs.push(glyph);
+            }
+        }
+        glyphs.sort_by(|a, b| f32::from(a.position.x).total_cmp(&f32::from(b.position.x)));
+        if !glyphs.is_empty() {
+            runs.push(gpui::ShapedRun {
+                font_id: run.font_id,
+                glyphs,
+            });
+        }
+    }
+    runs.sort_by(|a, b| {
+        f32::from(a.glyphs[0].position.x).total_cmp(&f32::from(b.glyphs[0].position.x))
+    });
+    let layout = LineLayout {
+        font_size: line.font_size,
+        width: metrics.cell_width * cells.len() as f32,
+        ascent: line.ascent,
+        descent: line.descent,
+        runs,
+        len: line.len,
+    };
+    *line = Arc::new(layout);
+    let origin = point(
+        origin.x + metrics.cell_width * start_col as f32,
+        origin.y + metrics.line_height * row as f32 + metrics.text_dy,
+    );
+    Some(TextSegment {
+        origin,
+        line,
+        overstrike,
+    })
+}
+
+/// Box-drawing and block elements, drawn as quads.
+fn is_box(c: char) -> bool {
+    ('\u{2500}'..='\u{259F}').contains(&c)
 }
 
 fn build(
     snapshot: &Snapshot,
     style: &TerminalStyle,
+    faces: &Faces,
     metrics: CellMetrics,
     origin: gpui::Point<Pixels>,
     window: &mut Window,
@@ -824,8 +1119,23 @@ fn build(
     let mut backgrounds = Vec::new();
     let mut segments = Vec::new();
     let mut glyph_quads = Vec::new();
+    let mut glyph_paths = Vec::new();
+    let tint = |color: Hsla, alpha: f32| Hsla {
+        a: color.a * alpha,
+        ..color
+    };
 
-    for (row, cells) in snapshot.rows.iter().enumerate() {
+    for (row, logical_cells) in snapshot.rows.iter().enumerate() {
+        // Rows with right-to-left text are drawn in visual order.
+        let order = snapshot.orders.get(row).and_then(Option::as_ref);
+        let cells: Cow<[SnapCell]> = match order {
+            Some(order) => order
+                .visual
+                .iter()
+                .map(|&l| logical_cells[l as usize].clone())
+                .collect(),
+            None => Cow::Borrowed(logical_cells),
+        };
         // Backgrounds: merge horizontal runs of the same non-default color.
         let mut col = 0;
         while col < cells.len() {
@@ -852,51 +1162,146 @@ fn build(
                 segments.push(t);
             }
         };
-        for (col, cell) in cells.iter().enumerate() {
+        let mut col = 0;
+        while col < cells.len() {
+            let cell = &cells[col];
             let flags = cell.flags;
             if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                col += 1;
                 continue;
             }
             if flags.contains(Flags::HIDDEN) || (cell.c == ' ' && seg.is_none()) {
                 if flags.contains(Flags::HIDDEN) {
                     flush(&mut seg, &mut segments, window);
                 }
+                col += 1;
                 continue;
+            }
+            let wide = flags.contains(Flags::WIDE_CHAR);
+            if style.text.arrow_join && !wide && box_drawing::is_arrow(cell.c) {
+                let at = |row: Option<usize>| {
+                    row.and_then(|r| snapshot.rows.get(r))
+                        .and_then(|r| r.get(col))
+                        .map_or(' ', |c| c.c)
+                };
+                let around = [
+                    at(row.checked_sub(1)),
+                    cells.get(col + 1).map_or(' ', |c| c.c),
+                    at(Some(row + 1)),
+                    col.checked_sub(1).map_or(' ', |c| cells[c].c),
+                ];
+                if let Some((quads, polygons)) = box_drawing::arrow(
+                    cell.c,
+                    cell_bounds(row, col, 1),
+                    style.font_size,
+                    scale,
+                    around,
+                ) {
+                    flush(&mut seg, &mut segments, window);
+                    let color = hsla(cell.fg);
+                    glyph_quads.extend(
+                        quads
+                            .into_iter()
+                            .map(|q| fill(q.bounds, tint(color, q.alpha))),
+                    );
+                    for polygon in polygons {
+                        let mut points = polygon.points.into_iter();
+                        if let Some(first) = points.next() {
+                            let mut path = Path::new(first);
+                            for p in points {
+                                path.line_to(p);
+                            }
+                            glyph_paths.push((path, color));
+                        }
+                    }
+                    col += 1;
+                    continue;
+                }
             }
             if let Some(quads) =
                 box_drawing::quads(cell.c, cell_bounds(row, col, 1), style.font_size, scale)
             {
                 flush(&mut seg, &mut segments, window);
                 let color = hsla(cell.fg);
-                glyph_quads.extend(quads.into_iter().map(|q| {
-                    fill(
-                        q.bounds,
-                        Hsla {
-                            a: color.a * q.alpha,
-                            ..color
-                        },
-                    )
-                }));
+                glyph_quads.extend(
+                    quads
+                        .into_iter()
+                        .map(|q| fill(q.bounds, tint(color, q.alpha))),
+                );
+                col += 1;
                 continue;
             }
-            if flags.contains(Flags::WIDE_CHAR) {
+            if wide {
                 flush(&mut seg, &mut segments, window);
-                let mut wide = SegmentBuilder::new(col);
-                wide.push(style, cell, run_style(cell));
+                let mut wide = SegmentBuilder::new(col, faces.overstrike(cell));
+                wide.push(style, cell, run_style(cell, faces, style));
                 if let Some(t) = wide.finish(style, metrics, origin, row, false, window) {
                     segments.push(t);
                 }
+                col += 1;
                 continue;
             }
-            seg.get_or_insert_with(|| SegmentBuilder::new(col))
-                .push(style, cell, run_style(cell));
+            if let Some(order) = order
+                && order.is_rtl(order.visual[col] as usize)
+            {
+                // The longest run drawn right to left in one style.
+                flush(&mut seg, &mut segments, window);
+                let rtl_style = |c: &SnapCell| RunStyle {
+                    plain: false,
+                    ..run_style(c, faces, style)
+                };
+                let rs = rtl_style(cell);
+                let overstrike = faces.overstrike(cell);
+                let level = order.levels[order.visual[col] as usize];
+                let mut end = col + 1;
+                while let Some(next) = cells.get(end) {
+                    let l = order.visual[end] as usize;
+                    let joins = order.levels[l] == level
+                        && l + 1 == order.visual[end - 1] as usize
+                        && !next.flags.intersects(
+                            Flags::WIDE_CHAR
+                                | Flags::WIDE_CHAR_SPACER
+                                | Flags::LEADING_WIDE_CHAR_SPACER
+                                | Flags::HIDDEN,
+                        )
+                        && !is_box(next.c)
+                        && rtl_style(next) == rs
+                        && faces.overstrike(next) == overstrike;
+                    if !joins {
+                        break;
+                    }
+                    end += 1;
+                }
+                if let Some(t) = rtl_segment(
+                    style,
+                    &rs,
+                    overstrike,
+                    &cells[col..end],
+                    col,
+                    metrics,
+                    origin,
+                    row,
+                    window,
+                ) {
+                    segments.push(t);
+                }
+                col = end;
+                continue;
+            }
+            let overstrike = faces.overstrike(cell);
+            if seg.as_ref().is_some_and(|s| s.overstrike != overstrike) {
+                flush(&mut seg, &mut segments, window);
+            }
+            seg.get_or_insert_with(|| SegmentBuilder::new(col, overstrike))
+                .push(style, cell, run_style(cell, faces, style));
+            col += 1;
         }
         flush(&mut seg, &mut segments, window);
     }
 
     let (cursor, cursor_text) = match snapshot.cursor {
         Some((row, col, shape, wide)) => build_cursor(
-            snapshot, style, metrics, origin, row, col, shape, wide, window,
+            snapshot, style, faces, metrics, origin, row, col, shape, wide, window,
         ),
         None => (None, None),
     };
@@ -905,6 +1310,7 @@ fn build(
         backgrounds,
         segments,
         glyph_quads,
+        glyph_paths,
         cursor,
         cursor_text,
         preedit: None,
@@ -967,13 +1373,22 @@ fn build_preedit(
         ),
         hsla(fg),
     );
-    (bg_quad, underline, TextSegment { origin, line })
+    (
+        bg_quad,
+        underline,
+        TextSegment {
+            origin,
+            line,
+            overstrike: None,
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_cursor(
     snapshot: &Snapshot,
     style: &TerminalStyle,
+    faces: &Faces,
     metrics: CellMetrics,
     origin: gpui::Point<Pixels>,
     row: usize,
@@ -983,7 +1398,12 @@ fn build_cursor(
     window: &mut Window,
 ) -> (Option<PaintQuad>, Option<TextSegment>) {
     let width = if wide { 2. } else { 1. };
-    let x = origin.x + metrics.cell_width * col as f32;
+    // Drawn where its cell is drawn; `col` stays the logical one.
+    let visual = match snapshot.orders.get(row) {
+        Some(Some(order)) => order.to_visual(col),
+        _ => col,
+    };
+    let x = origin.x + metrics.cell_width * visual as f32;
     let y = origin.y + metrics.line_height * row as f32;
     let full = Bounds::new(
         point(x, y),
@@ -1001,8 +1421,8 @@ fn build_cursor(
                 } else {
                     style.palette[NamedColor::Background as usize].with_alpha(1.)
                 });
-                let mut seg = SegmentBuilder::new(col);
-                seg.push(style, &c, run_style(&c));
+                let mut seg = SegmentBuilder::new(visual, faces.overstrike(&c));
+                seg.push(style, &c, run_style(&c, faces, style));
                 seg.finish(style, metrics, origin, row, !wide, window)
             });
             (Some(quad), text)

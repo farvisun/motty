@@ -4,7 +4,7 @@
 use gpui::{Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, Rgba as GpuiRgba, px};
 use motty_term::alacritty_terminal::term::color::COUNT;
 use motty_term::alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
-use motty_theme::{Rgba, Theme};
+use motty_theme::{CellHeight, Rgba, TextPrefs, Theme};
 
 pub fn hsla(c: Rgba) -> Hsla {
     GpuiRgba {
@@ -28,9 +28,18 @@ fn rgb_to_rgba(c: Rgb) -> Rgba {
 #[derive(Clone)]
 pub struct TerminalStyle {
     pub font: Font,
+    /// Regular, bold, italic and bold italic (indexed by `bold | italic << 1`).
+    pub faces: [Font; 4],
+    /// The same faces with ligatures off, for letters and digits when
+    /// ligatures only form in symbol runs; `None` when that changes nothing.
+    pub plain_faces: Option<[Font; 4]>,
     pub font_size: Pixels,
-    /// Multiplier on the font's natural line height (`1 + adjust-cell-height`).
-    pub line_height_scale: f32,
+    /// `adjust-cell-height` (config, else the theme's); `None` keeps the
+    /// font's natural line height.
+    pub cell_height: Option<CellHeight>,
+    /// How text is drawn: bidi, contrast, faces, blinking, joins.
+    pub text: TextPrefs,
+    ligatures: bool,
     /// Indexed like alacritty's `Colors`: 0..256 palette, then the named slots.
     pub palette: Box<[Rgba; COUNT]>,
     pub background: Rgba,
@@ -64,17 +73,9 @@ impl TerminalStyle {
                     .cloned()
             })
             .unwrap_or_else(|| "Menlo".into());
-        let features = if ligatures {
-            FontFeatures(std::sync::Arc::new(vec![
-                ("calt".into(), 1),
-                ("liga".into(), 1),
-            ]))
-        } else {
-            FontFeatures::disable_ligatures()
-        };
         let font = Font {
             family: family.into(),
-            features,
+            features: ligature_features(ligatures, true),
             fallbacks: None,
             weight: FontWeight::NORMAL,
             style: FontStyle::Normal,
@@ -112,10 +113,15 @@ impl TerminalStyle {
         palette[NamedColor::DimForeground as usize] =
             motty_theme::theme::mix(t.foreground, opaque_bg, 0.34);
 
-        Self {
+        let token = theme.token.adjust_cell_height;
+        let mut style = Self {
+            faces: faces(&font, &TextPrefs::default()),
+            plain_faces: None,
             font,
             font_size: px(font_size.unwrap_or(theme.token.font_size)),
-            line_height_scale: 1. + theme.token.adjust_cell_height,
+            cell_height: (token != 0.).then_some(CellHeight::Percent(token * 100.)),
+            text: TextPrefs::default(),
+            ligatures,
             palette,
             background: bg,
             cursor: theme.cursor.block,
@@ -127,7 +133,38 @@ impl TerminalStyle {
             padding: theme.container.padding,
             panel_background: theme.panel.background.with_alpha(1.),
             dark: theme.meta.mode == motty_theme::Mode::Dark,
+        };
+        style.set_text(TextPrefs::default());
+        style
+    }
+
+    /// Applies the config's text-rendering keys.
+    pub fn with_text(mut self, text: TextPrefs) -> Self {
+        self.set_text(text);
+        self
+    }
+
+    fn set_text(&mut self, text: TextPrefs) {
+        if text.cell_height.is_some() {
+            self.cell_height = text.cell_height;
         }
+        self.font.features = ligature_features(self.ligatures, text.discretionary_ligatures);
+        self.faces = faces(&self.font, &text);
+        self.plain_faces = (self.ligatures && !text.ligatures_alphabet).then(|| {
+            let mut plain = self.font.clone();
+            plain.features = no_ligatures();
+            faces(&plain, &text)
+        });
+        self.text = text;
+    }
+
+    /// The face for a cell's bold and italic flags.
+    pub fn face(&self, bold: bool, italic: bool, plain: bool) -> &Font {
+        let faces = match &self.plain_faces {
+            Some(p) if plain => p,
+            _ => &self.faces,
+        };
+        &faces[bold as usize | (italic as usize) << 1]
     }
 
     /// Resolves a cell color, honoring runtime overrides (OSC 4/10/11).
@@ -150,4 +187,54 @@ impl TerminalStyle {
     pub fn default_background(&self) -> Rgba {
         self.background
     }
+}
+
+/// `calt` and `liga` (`dlig` too at the discretionary level), or none.
+fn ligature_features(on: bool, discretionary: bool) -> FontFeatures {
+    if !on {
+        return FontFeatures::disable_ligatures();
+    }
+    let mut tags = vec![("calt".into(), 1), ("liga".into(), 1)];
+    if discretionary {
+        tags.push(("dlig".into(), 1));
+    }
+    FontFeatures(std::sync::Arc::new(tags))
+}
+
+fn no_ligatures() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![
+        ("calt".into(), 0),
+        ("liga".into(), 0),
+        ("dlig".into(), 0),
+    ]))
+}
+
+/// Regular, bold, italic and bold italic of `font`, with the families
+/// `font-family-bold` and friends name.
+fn faces(font: &Font, text: &TextPrefs) -> [Font; 4] {
+    let face = |bold: bool, italic: bool, family: Option<&String>| {
+        let mut f = font.clone();
+        if bold {
+            f.weight = FontWeight::BOLD;
+        }
+        if italic {
+            f.style = FontStyle::Italic;
+        }
+        if let Some(family) = family {
+            f.family = family.clone().into();
+        }
+        f
+    };
+    [
+        face(false, false, None),
+        face(true, false, text.family_bold.as_ref()),
+        face(false, true, text.family_italic.as_ref()),
+        face(
+            true,
+            true,
+            text.family_bold_italic
+                .as_ref()
+                .or(text.family_bold.as_ref()),
+        ),
+    ]
 }
