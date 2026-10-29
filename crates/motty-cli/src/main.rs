@@ -4,7 +4,10 @@
 //! commands act on the pane they run in unless `--pane` says otherwise.
 
 mod agent;
+mod config_cmd;
+mod fonts;
 mod mcp;
+mod themes;
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -178,6 +181,21 @@ enum Command {
         #[arg(long)]
         pane: Option<u64>,
     },
+    /// Read and change settings: config.toml and config.local.toml.
+    Config {
+        #[command(subcommand)]
+        command: config_cmd::ConfigCommand,
+    },
+    /// List and import color themes.
+    Theme {
+        #[command(subcommand)]
+        command: themes::ThemeCommand,
+    },
+    /// List, apply and import fonts.
+    Font {
+        #[command(subcommand)]
+        command: fonts::FontCommand,
+    },
     /// Serve Motty's panes to a coding agent over MCP (stdio), e.g.
     /// `claude mcp add motty -- motty mcp`.
     Mcp,
@@ -267,6 +285,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Skill { command } => return skill(command),
+        Command::Config { command } => return config_cmd::run(command, cli.json),
+        Command::Theme { command } => return themes::run(command, cli.json),
+        Command::Font { command } => return fonts::run(command, cli.json),
         _ => {}
     }
     let mut client = Client::connect()?;
@@ -523,7 +544,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Close { pane: id } => {
             let _: Value = client.call(method::CLOSE, &pane(id))?;
         }
-        Command::Mcp | Command::Hook { .. } | Command::Skill { .. } => {
+        Command::Mcp
+        | Command::Hook { .. }
+        | Command::Skill { .. }
+        | Command::Config { .. }
+        | Command::Theme { .. }
+        | Command::Font { .. } => {
             unreachable!("handled above")
         }
     }

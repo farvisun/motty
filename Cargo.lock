@@ -3139,8 +3139,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs 6.0.0",
+ "fontdb",
  "motty-ipc",
+ "motty-theme",
+ "serde",
  "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
