@@ -123,6 +123,9 @@ pub(crate) struct Tab {
     /// The title menu's Notifications & Privileges, when changed for this
     /// tab; config.toml's otherwise.
     privileges: Option<motty_theme::Badges>,
+    /// In Inbox's Continue group: put there by dragging, or by being the
+    /// tab you were on when Inbox opened.
+    continued: bool,
 }
 
 enum Content {
@@ -152,6 +155,7 @@ impl Tab {
             name: None,
             mark: None,
             privileges: None,
+            continued: false,
         }
     }
 
@@ -164,6 +168,7 @@ impl Tab {
             name: None,
             mark: None,
             privileges: None,
+            continued: false,
         }
     }
 
@@ -575,6 +580,7 @@ impl Workspace {
             }),
             mark: None,
             privileges: None,
+            continued: false,
         })
     }
 
@@ -1787,6 +1793,14 @@ impl Workspace {
             })
             .drag_over::<tabs::TabDrag>(move |s, _, _, _| s.bg(hsla(hover_bg)))
             .on_drop(cx.listener(move |this, drag: &tabs::TabDrag, window, cx| {
+                // In Inbox a drop joins the row's Continue group, or leaves it.
+                if this.inbox {
+                    let continued = this.tabs.get(ix).is_some_and(|t| t.continued);
+                    if let Some(tab) = this.tabs.get_mut(drag.ix) {
+                        tab.continued = continued;
+                    }
+                    return cx.notify();
+                }
                 this.move_tab(drag.ix, ix, window, cx)
             }))
             // `indicator = "bar"`: Otty puts it 8pt into the card,
@@ -1882,9 +1896,10 @@ impl Workspace {
         let t = &self.theme;
         let now = std::time::SystemTime::now();
         let today = days_ago(now, now);
-        let mut groups: [InboxGroup; 5] = [
+        let mut groups: [InboxGroup; 6] = [
             ("Needs You", Vec::new()),
             ("Running", Vec::new()),
+            ("Continue", Vec::new()),
             ("Today", Vec::new()),
             ("Yesterday", Vec::new()),
             ("Earlier", Vec::new()),
@@ -1897,10 +1912,11 @@ impl Workspace {
                 Some(b) if b.needs_you() || b == Badge::Finished => 0,
                 Some(Badge::Running) => 1,
                 _ if summary.running => 1,
+                _ if self.tabs[ix].continued => 2,
                 _ => match today - days_ago(self.tabs[ix].updated, now) {
-                    0 => 2,
-                    1 => 3,
-                    _ => 4,
+                    0 => 3,
+                    1 => 4,
+                    _ => 5,
                 },
             };
             let line = summary.line.or_else(|| {
@@ -1917,8 +1933,20 @@ impl Workspace {
             });
             groups[group].1.push((ix, line));
         }
-        let heading = |name: &'static str| {
+        let hover_bg = hsla(t.tabs.hover.background);
+        // Dropping a row on Continue keeps it there; on a date, lets it go.
+        let heading = |name: &'static str, cx: &mut Context<Self>| {
+            let continued = name == "Continue";
             div()
+                .id(name)
+                .rounded(px(4.))
+                .drag_over::<tabs::TabDrag>(move |s, _, _, _| s.bg(hover_bg))
+                .on_drop(cx.listener(move |this, drag: &tabs::TabDrag, _, cx| {
+                    if let Some(tab) = this.tabs.get_mut(drag.ix) {
+                        tab.continued = continued;
+                        cx.notify();
+                    }
+                }))
                 .pt(px(8.))
                 .pl(px(SIDEBAR_TEXT_INSET))
                 .text_size(px(10.))
@@ -1929,10 +1957,11 @@ impl Workspace {
         };
         let mut rows = Vec::new();
         for (name, tabs) in groups {
-            if tabs.is_empty() {
+            // Continue stays as somewhere to drop rows.
+            if tabs.is_empty() && name != "Continue" {
                 continue;
             }
-            rows.push(heading(name));
+            rows.push(heading(name, cx));
             for (ix, line) in tabs {
                 rows.push(self.render_tab_card(ix, line, cx));
             }
@@ -2232,6 +2261,12 @@ fn badge_icon(badge: Badge, ix: usize, t: &Theme) -> AnyElement {
 impl Workspace {
     fn toggle_inbox(&mut self, _: &ToggleInbox, _: &mut Window, cx: &mut Context<Self>) {
         self.inbox = !self.inbox;
+        // Entering Inbox puts the tab you are on under Continue.
+        if self.inbox
+            && let Some(tab) = self.tabs.get_mut(self.active)
+        {
+            tab.continued = true;
+        }
         // Inbox lives in the sidebar.
         self.sidebar_visible |= self.inbox;
         cx.notify();
