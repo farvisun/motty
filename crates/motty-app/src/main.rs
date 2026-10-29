@@ -1,6 +1,7 @@
 mod actions;
 mod agents;
 mod dock;
+mod dock_click;
 mod editor;
 mod folders;
 mod fonts;
@@ -39,19 +40,24 @@ fn main() {
 
     let app = application().with_assets(settings::Assets);
     // A Dock click with no window open opens one.
+    // A Dock click opens a window when there's none (with windows open,
+    // `dock_click` goes to the next tab that failed).
     app.on_reopen(|cx| {
         if cx
             .windows()
             .iter()
-            .all(|w| w.downcast::<Workspace>().is_none())
-            && let Err(e) = open_window(load_config(), None, None, cx)
+            .any(|w| w.downcast::<Workspace>().is_some())
         {
+            return workspace::show_next_failing(cx);
+        }
+        if let Err(e) = open_window(load_config(), None, None, cx) {
             tracing::error!("failed to open a window: {e:#}");
         }
     });
     app.run(|cx: &mut App| {
         fonts::load(cx);
         ipc::start(cx);
+        dock_click::install(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::QuitKeepWindows, cx| {
             recovery::keep_windows();

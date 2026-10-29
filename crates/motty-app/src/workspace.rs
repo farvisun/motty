@@ -2076,6 +2076,36 @@ pub(crate) fn cursor_hiding(config: &Config, cx: &mut App) {
 
 /// The Dock icon from every window's tabs: red while a failure waits to
 /// be looked at, a bar while something reports progress.
+/// A Dock click: the next tab that failed (a triangle, or OSC 9;4 error
+/// progress), front window first; looking at it clears the red tint.
+pub(crate) fn show_next_failing(cx: &mut App) {
+    use motty_term::shell::Progress;
+    let windows = cx.window_stack().unwrap_or_else(|| cx.windows());
+    for window in windows {
+        let Some(workspace) = window.downcast::<Workspace>() else {
+            continue;
+        };
+        let Ok(this) = workspace.read(cx) else {
+            continue;
+        };
+        let n = this.tabs.len();
+        // After the active tab, wrapping, so repeated clicks walk them.
+        let failing = (1..=n).map(|d| (this.active + d) % n).find(|&ix| {
+            let summary = this.tab_summary(&this.tabs[ix], cx);
+            summary.badge == Some(Badge::Error)
+                || matches!(summary.progress, Some(Progress::Error(_)))
+        });
+        if let Some(ix) = failing {
+            let _ = workspace.update(cx, |this, window, cx| {
+                this.activate(ix, window, cx);
+                window.activate_window();
+            });
+            cx.defer(refresh_dock);
+            return;
+        }
+    }
+}
+
 pub(crate) fn refresh_dock(cx: &mut App) {
     use motty_term::shell::Progress;
     let mut error = false;
