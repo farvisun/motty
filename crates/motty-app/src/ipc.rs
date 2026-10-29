@@ -269,7 +269,6 @@ pub fn resolve_window(selector: &str, cx: &App) -> anyhow::Result<WindowHandle<W
 
 /// A tab by selector: `t_<id>`, a 1-based index in the current window, or
 /// `current`.
-#[allow(dead_code)] // For `motty://tab/…` links.
 pub fn resolve_tab(selector: &str, cx: &App) -> anyhow::Result<(WindowHandle<Workspace>, usize)> {
     resolve_tab_in(selector, None, cx)
 }
@@ -308,7 +307,6 @@ fn resolve_tab_in(
 
 /// A pane by selector: its id (`$MOTTY_PANE_ID`), `p_<id>`, `index:<n>`
 /// (in the current tab) or `current`.
-#[allow(dead_code)] // For `motty://pane/…` links.
 pub fn resolve_pane(selector: &str, cx: &App) -> anyhow::Result<Pane> {
     resolve(
         &PaneRef {

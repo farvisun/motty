@@ -11,7 +11,7 @@ use motty_term::alacritty_terminal::term::TermMode;
 use crate::terminal_view::TerminalView;
 use crate::workspace::Workspace;
 
-pub const SCHEME: &str = "motty://";
+pub use motty_ipc::link::SCHEME;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Link {
@@ -113,31 +113,20 @@ pub fn open_clicked(url: &str, window: &mut Window, cx: &mut App) {
 /// Focuses what the link names; an unknown or stale one just brings Motty
 /// to the front.
 fn navigate(link: Link, cx: &mut App) {
-    let target = match &link {
-        Link::Window(sel) => resolve_window(sel, cx).map(|w| (w, None)),
-        Link::Tab(sel) => resolve_tab(sel, cx).map(|(w, ix)| (w, Some(Ok(ix)))),
-        Link::Pane { pane, .. } => resolve_pane(pane, cx).map(|(w, v)| (w, Some(Err(v)))),
-        Link::Run { .. } => None,
-    };
-    let Some((handle, inside)) = target.or_else(|| front_workspace(cx).map(|w| (w, None))) else {
-        return;
-    };
-    let _ = handle.update(cx, |workspace, window, cx| {
-        match inside {
-            Some(Ok(tab)) => workspace.activate(tab, window, cx),
-            Some(Err(view)) => {
-                workspace.reveal_pane(&view, window, cx);
-                if let Link::Pane {
-                    line: Some(line), ..
-                } = link
-                {
-                    view.update(cx, |v, cx| v.reveal_row(line, cx));
-                }
-            }
-            None => {}
+    use crate::ipc;
+    let done = match link {
+        Link::Window(sel) => ipc::resolve_window(&sel, cx).and_then(|w| ipc::focus_window(w, cx)),
+        Link::Tab(sel) => ipc::resolve_tab(&sel, cx).and_then(|(w, ix)| ipc::focus_tab(w, ix, cx)),
+        Link::Pane { pane, line } => {
+            ipc::resolve_pane(&pane, cx).and_then(|(w, view)| ipc::focus_pane(w, &view, line, cx))
         }
-        window.activate_window();
-    });
+        Link::Run { .. } => return,
+    };
+    if done.is_err()
+        && let Some(w) = front_workspace(cx)
+    {
+        let _ = w.update(cx, |_, window, _| window.activate_window());
+    }
 }
 
 /// Opens a tab (or window) and types `command` at its prompt, once the
@@ -226,58 +215,6 @@ fn alert(reason: String, cx: &mut App) {
             ));
         });
     }
-}
-
-/// Windows front to back, then any not in the stack.
-fn workspaces(cx: &App) -> Vec<WindowHandle<Workspace>> {
-    let mut out: Vec<WindowHandle<Workspace>> = Vec::new();
-    for w in cx.window_stack().into_iter().flatten().chain(cx.windows()) {
-        if let Some(w) = w.downcast::<Workspace>()
-            && !out.contains(&w)
-        {
-            out.push(w);
-        }
-    }
-    out
-}
-
-/// `current`, `last` (the window behind it), a 1-based index in opening
-/// order, or `title:<pattern>`.
-fn resolve_window(sel: &str, cx: &App) -> Option<WindowHandle<Workspace>> {
-    let stack = workspaces(cx);
-    match sel {
-        "current" | "" => stack.first().copied(),
-        "last" => stack.get(1).copied(),
-        _ => {
-            if let Some(pattern) = sel.strip_prefix("title:") {
-                let pattern = pattern.to_lowercase();
-                return stack.into_iter().find(|w| {
-                    w.read(cx)
-                        .is_ok_and(|ws| ws.title().to_lowercase().contains(&pattern))
-                });
-            }
-            let ix: usize = sel.parse().ok()?;
-            cx.windows()
-                .into_iter()
-                .filter_map(|w| w.downcast::<Workspace>())
-                .nth(ix.checked_sub(1)?)
-        }
-    }
-}
-
-/// A 1-based tab index in the front window.
-fn resolve_tab(sel: &str, cx: &App) -> Option<(WindowHandle<Workspace>, usize)> {
-    let front = *workspaces(cx).first()?;
-    let ix = sel.parse::<usize>().ok()?.checked_sub(1)?;
-    (ix < front.read(cx).ok()?.tab_count()).then_some((front, ix))
-}
-
-/// A pane id, as `$MOTTY_PANE_ID` holds it.
-fn resolve_pane(sel: &str, cx: &App) -> Option<(WindowHandle<Workspace>, Entity<TerminalView>)> {
-    let id: u64 = sel.trim_start_matches("p_").parse().ok()?;
-    workspaces(cx)
-        .into_iter()
-        .find_map(|w| Some((w, w.read(cx).ok()?.find_pane(id, cx)?)))
 }
 
 fn front_workspace(cx: &App) -> Option<WindowHandle<Workspace>> {
