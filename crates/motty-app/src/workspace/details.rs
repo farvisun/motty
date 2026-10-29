@@ -311,8 +311,10 @@ impl Workspace {
                 let d = &mut this.details;
                 d.pending = None;
                 if let Some(git) = git {
+                    // The first answer turns Loading… into what it found.
+                    let first = d.git_at.is_none();
                     d.git_at = Some(Instant::now());
-                    if d.git != git {
+                    if first || d.git != git {
                         d.git = git;
                         cx.notify();
                     }
