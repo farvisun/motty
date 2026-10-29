@@ -32,7 +32,7 @@ pub use buffer::{Buffer, Pos};
 use motty_theme::EditorPrefs;
 use rows::{DisplayRow, Rows};
 
-use crate::actions::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+use crate::actions::{Copy, Cut, Paste, PastePlainText, Redo, Save, SelectAll, Undo};
 
 /// The toolbar above the text.
 /// Space between the gutter's numbers and the text.
@@ -672,6 +672,14 @@ impl FileEditor {
         }
     }
 
+    /// ⇧⌘V: the clipboard's text alone, never its files' paths.
+    fn paste_plain(&mut self, _: &PastePlainText, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.typing_at = None;
+            self.insert(&text, cx);
+        }
+    }
+
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.anchor = Some(Pos::default());
         self.cursor = self.buffer.end();
@@ -1114,6 +1122,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_plain))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))

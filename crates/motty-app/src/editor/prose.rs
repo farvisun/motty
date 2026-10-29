@@ -84,6 +84,12 @@ impl FileEditor {
         self.changed(cx);
     }
 
+    /// Inserts `text` at the cursor, over the selection, as a paste does.
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.typing_at = None;
+        self.insert(text, cx);
+    }
+
     fn font_size(&self) -> Pixels {
         self.prose
             .as_ref()
@@ -241,6 +247,7 @@ impl FileEditor {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_plain))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))

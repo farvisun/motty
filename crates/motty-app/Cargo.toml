@@ -39,6 +39,8 @@ sha2 = "0.10"
 syntect = { version = "5.3", default-features = false, features = ["parsing", "dump-load", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# The Composer pastes styled text (HTML, RTF via AppKit) as Markdown.
+htmd = "0.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

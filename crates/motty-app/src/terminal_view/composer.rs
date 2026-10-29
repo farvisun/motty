@@ -15,6 +15,7 @@ use motty_theme::Rgba;
 
 use super::TerminalView;
 use super::find::Colors;
+use crate::actions::Paste;
 use crate::editor::FileEditor;
 use crate::titlebar::{icon, stroke};
 
@@ -41,12 +42,26 @@ pub fn is_pinned(cx: &gpui::App) -> bool {
     cx.try_global::<Pinned>().is_some_and(|p| p.0)
 }
 
-/// Context from Send to Chat, sent ahead of the draft.
+/// Context from Send to Chat, or a pasted picture, sent ahead of the draft.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chip {
     /// What it is: `Selection`, `Output of cargo test`.
     pub label: String,
+    /// The context; a picture's file.
     pub text: String,
+    /// A picture, sent as its path for the agent to read.
+    pub image: bool,
+}
+
+impl Chip {
+    /// The `n`th picture pasted into the draft, saved at `path`.
+    pub(super) fn image(path: &std::path::Path, n: usize) -> Self {
+        Self {
+            label: format!("Image {n}"),
+            text: path.to_string_lossy().into_owned(),
+            image: true,
+        }
+    }
 }
 
 pub(super) struct Composer {
@@ -71,10 +86,14 @@ pub(super) struct Queue {
     pub(super) replayed: Vec<String>,
 }
 
-/// The chips as fenced blocks, then the draft.
+/// The chips as fenced blocks (pictures as their paths), then the draft.
 fn compose(chips: &[Chip], draft: &str) -> String {
     let mut text = String::new();
     for chip in chips {
+        if chip.image {
+            text.push_str(&format!("{}\n\n", super::shell_escape(&chip.text)));
+            continue;
+        }
         let body = chip.text.trim_end_matches('\n');
         text.push_str(&format!("{}:\n```\n{body}\n```\n\n", chip.label));
     }
@@ -146,6 +165,13 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Pictures among the chips.
+    pub(super) fn composer_images(&self) -> usize {
+        self.composer
+            .as_ref()
+            .map_or(0, |c| c.chips.iter().filter(|chip| chip.image).count())
+    }
+
     /// What Send to Chat takes from here: the selection, else the last
     /// command with its output.
     pub fn chat_context(&self) -> Option<Chip> {
@@ -153,6 +179,7 @@ impl TerminalView {
             return Some(Chip {
                 label: format!("Selection from {}", self.display_title()),
                 text,
+                image: false,
             });
         }
         let block = self.session.shell().last_finished()?.clone();
@@ -161,6 +188,7 @@ impl TerminalView {
         Some(Chip {
             label: format!("Output of `{}`", truncate(&command, 40)),
             text: format!("$ {command}\n{}", output.trim_end()),
+            image: false,
         })
     }
 
@@ -576,6 +604,15 @@ impl TerminalView {
         };
         let chips = composer.chips.iter().enumerate().map(|(ix, chip)| {
             let lines = chip.text.lines().count();
+            let label = if chip.image {
+                chip.label.clone()
+            } else {
+                format!(
+                    "{} · {lines} line{}",
+                    chip.label,
+                    if lines == 1 { "" } else { "s" }
+                )
+            };
             div()
                 .id(("chip", ix))
                 .max_w(px(320.))
@@ -591,11 +628,7 @@ impl TerminalView {
                 .bg(accent.opacity(0.1))
                 .text_size(px(11.5))
                 .text_color(c.text)
-                .child(div().min_w_0().truncate().child(SharedString::from(format!(
-                    "{} · {lines} line{}",
-                    chip.label,
-                    if lines == 1 { "" } else { "s" }
-                ))))
+                .child(div().min_w_0().truncate().child(SharedString::from(label)))
                 .child(
                     div()
                         .id(("chip-remove", ix))
@@ -679,6 +712,9 @@ impl TerminalView {
         card(c)
             .id("composer")
             .capture_key_down(cx.listener(Self::on_composer_key))
+            .capture_action(cx.listener(|this, action: &Paste, window, cx| {
+                this.composer_paste(action, window, cx)
+            }))
             .child(header)
             .when(!composer.chips.is_empty(), |d| {
                 d.child(
@@ -853,12 +889,23 @@ mod tests {
         let chip = Chip {
             label: "Output of cargo test".into(),
             text: "ok\n".into(),
+            image: false,
         };
         assert_eq!(
             compose(std::slice::from_ref(&chip), "why?\n"),
             "Output of cargo test:\n```\nok\n```\n\nwhy?"
         );
         assert_eq!(compose(&[], "  \n"), "");
+    }
+
+    #[test]
+    fn sends_pictures_as_their_paths() {
+        let picture = Chip::image(std::path::Path::new("/tmp/a b.png"), 1);
+        assert_eq!(picture.label, "Image 1");
+        assert_eq!(
+            compose(&[picture], "what is this?"),
+            "/tmp/a\\ b.png\n\nwhat is this?"
+        );
     }
 
     #[test]
@@ -870,6 +917,7 @@ mod tests {
         let chip = Chip {
             label: "Selection".into(),
             text: "x".into(),
+            image: false,
         };
         assert_eq!(queue_items(&[chip], "a\nb").len(), 1);
     }

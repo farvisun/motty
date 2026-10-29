@@ -170,6 +170,7 @@ impl Workspace {
                     Chip {
                         label: format!("From {}", editor.title()),
                         text,
+                        image: false,
                     },
                 ))
             }
