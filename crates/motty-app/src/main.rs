@@ -14,6 +14,7 @@ mod history;
 mod history_page;
 mod image_view;
 mod ipc;
+mod key_info;
 mod materials;
 mod menus;
 mod native_menu;

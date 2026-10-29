@@ -1239,6 +1239,32 @@ impl SettingsWindow {
                 current: term_current,
             },
         ));
+        // Text of your own is set in the file, and shown here.
+        let identities = ["motty", "kitty", "ghostty"];
+        let mut options: Vec<(SharedString, Option<Value>)> = vec![
+            ("Motty".into(), None),
+            ("kitty".into(), s("kitty")),
+            ("Ghostty".into(), s("ghostty")),
+        ];
+        let own = c.vt.identity.trim();
+        let current = match identities.iter().position(|i| i.eq_ignore_ascii_case(own)) {
+            Some(i) => i,
+            None => {
+                options.push((own.to_owned().into(), s(own)));
+                options.len() - 1
+            }
+        };
+        rows.push(row(
+            Shell,
+            "Shell",
+            "Terminal Identity",
+            Some("The name programs read when they ask which terminal this is"),
+            Control::Choice {
+                key: "terminal-identity",
+                options,
+                current,
+            },
+        ));
         let scrollback = c.scrollback.unwrap_or(10_000);
         let presets = [1_000usize, 5_000, 10_000, 50_000, 100_000];
         let mut options: Vec<(SharedString, Option<Value>)> = presets
@@ -2318,6 +2344,17 @@ impl SettingsWindow {
             Control::Toggle {
                 key: "ipc-allow-sensitive-sessions",
                 on: b.ipc_sensitive,
+                invert: false,
+            },
+        ));
+        rows.push(row(
+            Advanced,
+            "Keyboard",
+            "Kitty Keyboard Protocol",
+            Some("Programs that ask get unambiguous keys and key releases (Helix, fish 4)"),
+            Control::Toggle {
+                key: "kitty-keyboard",
+                on: c.vt.kitty_keyboard,
                 invert: false,
             },
         ));

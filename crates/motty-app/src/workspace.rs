@@ -387,6 +387,7 @@ fn spawn_shell(
         scrollback: config.scrollback.unwrap_or(10_000),
         cursor_style: cursor_style(config),
         preload,
+        vt: vt_options(config),
     };
     Session::spawn(session, size)
 }
@@ -527,6 +528,25 @@ fn cli_dir() -> Option<&'static std::path::Path> {
 
 /// `cursor-style` and the blink policy's starting state, as the terminal's
 /// default cursor.
+/// The `Terminal Identity & VT` keys for a session.
+pub fn vt_options(config: &Config) -> motty_term::vt::VtOptions {
+    use motty_term::vt::{ColorReport, Identity, VtOptions};
+    let vt = &config.vt;
+    VtOptions {
+        kitty_keyboard: vt.kitty_keyboard,
+        keypad_app_allowed: vt.keypad_app_allowed,
+        kam_allowed: vt.kam_allowed,
+        enquiry_response: vt.enquiry_response.clone(),
+        color_report: match vt.color_report {
+            motty_theme::ColorReport::None => ColorReport::None,
+            motty_theme::ColorReport::Bits8 => ColorReport::Bits8,
+            motty_theme::ColorReport::Bits16 => ColorReport::Bits16,
+        },
+        title_report: vt.title_report,
+        identity: Identity::parse(&vt.identity),
+    }
+}
+
 pub fn cursor_style(config: &Config) -> CursorStyle {
     let shape = match config.cursor_style {
         motty_theme::CursorStyle::Block => CursorShape::Block,
@@ -1536,6 +1556,7 @@ impl Workspace {
             cursor_style(&self.config),
         );
         let scrollback = self.config.scrollback.unwrap_or(10_000);
+        let vt = vt_options(&self.config);
         let links = crate::terminal_view::LinkOptions::from_config(&self.config);
         let autocomplete = self.config.autocomplete.clone();
         let (behavior, progress) = (self.config.behavior, self.config.progress_commands());
@@ -1545,7 +1566,7 @@ impl Workspace {
                 t.set_link_options(links.clone());
                 t.set_behavior(behavior, progress.clone());
                 t.set_autocomplete(autocomplete.clone(), cx);
-                t.apply_config(meta, blink, cursor, scrollback, cx)
+                t.apply_config(meta, blink, cursor, scrollback, vt.clone(), cx)
             });
         }
         self.sync_shell_privileges(cx);

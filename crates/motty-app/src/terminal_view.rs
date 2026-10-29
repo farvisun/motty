@@ -16,7 +16,7 @@ use motty_term::alacritty_terminal::index::{Column, Point, Side};
 use motty_term::alacritty_terminal::selection::{Selection, SelectionType};
 use motty_term::alacritty_terminal::term::{TermMode, viewport_to_point};
 use motty_term::alacritty_terminal::vte::ansi::Rgb;
-use motty_term::input::{self, KeyInput, Mods, MouseAction};
+use motty_term::input::{self, KeyKind, Mods, MouseAction};
 use motty_term::links::Matcher;
 use motty_term::search::SearchOptions;
 use motty_term::{Session, SessionEvent};
@@ -32,6 +32,7 @@ mod context_menu;
 mod copy_as;
 mod find;
 mod hints;
+mod keys;
 mod links;
 mod paste;
 mod replay;
@@ -116,6 +117,7 @@ pub struct TerminalView {
     drop_zone: Option<paste::DropZone>,
     drop_folder: bool,
     option_as_meta: bool,
+    keys_down: keys::KeysDown,
     /// Fractional lines carried between precise (trackpad) scroll events.
     scroll_remainder: f32,
     selecting: bool,
@@ -212,6 +214,7 @@ impl TerminalView {
             drop_zone: None,
             drop_folder: false,
             option_as_meta,
+            keys_down: Default::default(),
             scroll_remainder: 0.,
             selecting: false,
             marked_text: None,
@@ -382,10 +385,11 @@ impl TerminalView {
         cursor_blink: CursorBlink,
         cursor_style: motty_term::alacritty_terminal::vte::ansi::CursorStyle,
         scrollback: usize,
+        vt: motty_term::vt::VtOptions,
         cx: &mut Context<Self>,
     ) {
         self.option_as_meta = option_as_meta;
-        self.session.set_options(cursor_style, scrollback);
+        self.session.set_options(cursor_style, scrollback, vt);
         if cursor_blink != self.blink_policy {
             self.blink_policy = cursor_blink;
             self.blink = (cursor_blink != CursorBlink::AlwaysOff).then(|| BlinkState {
@@ -513,6 +517,7 @@ impl TerminalView {
             alt: m.alt,
             ctrl: m.control,
             cmd: m.platform,
+            caps_lock: false,
         }
     }
 
@@ -539,12 +544,12 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        let input = KeyInput {
-            key: &ks.key,
-            key_char: ks.key_char.as_deref(),
-            mods: Self::mods(&ks.modifiers),
+        let kind = if event.is_held {
+            KeyKind::Repeat
+        } else {
+            KeyKind::Press
         };
-        if let Some(bytes) = input::encode(&input, self.term_mode(), self.option_as_meta) {
+        if let Some(bytes) = self.encode_key(ks, kind) {
             if self.read_only {
                 window.play_system_bell();
                 cx.stop_propagation();
@@ -973,11 +978,13 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .on_modifiers_changed(cx.listener(
-                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                |this, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    this.report_modifier(event, window);
                     this.update_hovered_link(None, &event.modifiers, cx)
                 },
             ))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
             .on_action(
                 cx.listener(|this, _: &ToggleComposer, window, cx| {
                     this.toggle_composer(window, cx)
