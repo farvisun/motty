@@ -10,10 +10,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SPARKLE_VERSION: "2.10.1"
 
 jobs:
   dmg:
     runs-on: macos-15
+    outputs:
+      version: ${{ steps.cask.outputs.version }}
+      sha256: ${{ steps.cask.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,6 +27,21 @@ jobs:
       - run: scripts/package-dmg.sh
       # The in-app updater checks Motty.dmg against this (and GitHub's asset digest).
       - run: cd dist && shasum -a 256 Motty.dmg Motty-*-universal.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # Ed25519 over Motty.dmg with Sparkle's sign_update; the updater refuses an
+      # update without a valid Motty.dmg.sig.
+      - name: Sign Motty.dmg
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MOTTY_ED_PRIVATE_KEY: ${{ secrets.MOTTY_ED_PRIVATE_KEY }}
+        run: |
+          curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" | tar -xJ -C "$RUNNER_TEMP" ./bin/sign_update
+          echo "$MOTTY_ED_PRIVATE_KEY" | "$RUNNER_TEMP/bin/sign_update" --ed-key-file - -p dist/Motty.dmg > dist/Motty.dmg.sig
+          test -s dist/Motty.dmg.sig
+      - name: Values for the Homebrew cask
+        id: cask
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 dist/Motty-*-universal.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Release notes from CHANGELOG.md
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -45,8 +64,34 @@ jobs:
             dist/Motty.dmg
             dist/Motty-*-universal.dmg
             dist/SHA256SUMS.txt
+            dist/Motty.dmg.sig
       - uses: actions/upload-artifact@v4
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: Motty-dmg
           path: dist/*.dmg
+
+  cask:
+    needs: dmg
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the cask in farvisun/homebrew-tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          VERSION: ${{ needs.dmg.outputs.version }}
+          SHA256: ${{ needs.dmg.outputs.sha256 }}
+        run: |
+          mkdir -p ~/.ssh && echo "$TAP_DEPLOY_KEY" > ~/.ssh/tap && chmod 600 ~/.ssh/tap
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o StrictHostKeyChecking=accept-new"
+          git clone git@github.com:farvisun/homebrew-tap.git tap
+          mkdir -p tap/Casks
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA256/" packaging/motty.rb > tap/Casks/motty.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/motty.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "motty $VERSION"
+          git push
