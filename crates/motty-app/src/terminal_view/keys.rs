@@ -33,8 +33,14 @@ impl KeysDown {
 
 impl TerminalView {
     /// The bytes for a key, or `None` when it isn't the program's. A key
-    /// the program locked out (KAM) gives nothing to send.
-    pub(super) fn encode_key(&mut self, ks: &Keystroke, kind: KeyKind) -> Option<Vec<u8>> {
+    /// the program locked out (KAM) gives nothing to send. `pass_cmd`: the
+    /// config unbinds this ⌘ chord, so it's the program's too.
+    pub(super) fn encode_key(
+        &mut self,
+        ks: &Keystroke,
+        kind: KeyKind,
+        pass_cmd: bool,
+    ) -> Option<Vec<u8>> {
         let native = crate::key_info::current();
         let mut mods = Self::mods(&ks.modifiers);
         if let Some(n) = native {
@@ -54,17 +60,25 @@ impl TerminalView {
             base_layout: n.base_layout,
         };
         let id = native.map_or_else(|| ks.key.clone(), |n| n.code.to_string());
+        let option_as_meta = self.option_as_meta;
+        let encode = |mode| {
+            if pass_cmd && mods.cmd {
+                input::encode_cmd(&input, mode, option_as_meta)
+            } else {
+                input::encode(&input, mode, option_as_meta)
+            }
+        };
         let Some(mode) = self.session.key_mode() else {
             let mode = *self.session.term.lock().mode();
-            return input::encode(&input, mode, self.option_as_meta).map(|_| Vec::new());
+            return encode(mode).map(|_| Vec::new());
         };
         if kind == KeyKind::Release {
             if !self.keys_down.release(&id) || !mode.contains(TermMode::REPORT_EVENT_TYPES) {
                 return None;
             }
-            return input::encode(&input, mode, self.option_as_meta);
+            return encode(mode);
         }
-        let bytes = input::encode(&input, mode, self.option_as_meta)?;
+        let bytes = encode(mode)?;
         self.keys_down.press(id);
         Some(bytes)
     }
@@ -73,7 +87,7 @@ impl TerminalView {
         &mut self,
         event: &gpui::KeyUpEvent,
         window: &mut Window,
-        _: &mut gpui::Context<Self>,
+        cx: &mut gpui::Context<Self>,
     ) {
         if !self.focus_handle.is_focused(window)
             || self.hints.is_some()
@@ -82,7 +96,8 @@ impl TerminalView {
         {
             return;
         }
-        if let Some(bytes) = self.encode_key(&event.keystroke, KeyKind::Release) {
+        let pass_cmd = crate::actions::unbound(&event.keystroke, cx);
+        if let Some(bytes) = self.encode_key(&event.keystroke, KeyKind::Release, pass_cmd) {
             self.session.write(bytes);
         }
     }

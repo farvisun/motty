@@ -131,6 +131,15 @@ pub fn encode(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<
     legacy(input, mode, option_as_meta)
 }
 
+/// A ⌘ chord the config unbinds, for the program. Only the kitty keyboard
+/// protocol can say ⌘ (as Super), so other modes send nothing.
+pub fn encode_cmd(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
+    if !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) {
+        return None;
+    }
+    crate::kitty_keys::encode_super(input, mode, option_as_meta)
+}
+
 /// xterm's classic encoding.
 pub(crate) fn legacy(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
     let m = input.mods;

@@ -30,6 +30,21 @@ enum Final {
 }
 
 pub fn encode(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
+    encode_as(input, mode, option_as_meta, false)
+}
+
+/// A ⌘ chord Motty leaves to the program (the config unbinds it), with
+/// ⌘ reported as Super.
+pub fn encode_super(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<Vec<u8>> {
+    encode_as(input, mode, option_as_meta, true)
+}
+
+fn encode_as(
+    input: &KeyInput,
+    mode: TermMode,
+    option_as_meta: bool,
+    pass_super: bool,
+) -> Option<Vec<u8>> {
     let all = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
     let disambiguate = all || mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
     let events = mode.contains(TermMode::REPORT_EVENT_TYPES);
@@ -52,12 +67,12 @@ pub fn encode(input: &KeyInput, mode: TermMode, option_as_meta: bool) -> Option<
             bit(m.shift, SHIFT) | bit(m.alt, ALT) | bit(m.ctrl, CTRL) | bit(m.cmd, SUPER) | locks;
         return Some(seq(Final::U(code), None, bits, kind, None));
     }
-    // ⌘ chords are Motty's shortcuts.
-    if m.cmd {
+    // ⌘ chords are Motty's shortcuts, unless it gave this one up.
+    if m.cmd && !pass_super {
         return None;
     }
     let alt = m.alt && !input.alt_consumed(option_as_meta);
-    let bits = bit(m.shift, SHIFT) | bit(alt, ALT) | bit(m.ctrl, CTRL);
+    let bits = bit(m.shift, SHIFT) | bit(alt, ALT) | bit(m.ctrl, CTRL) | bit(m.cmd, SUPER);
     // Sent the classic way: a release has nothing to report.
     let classic = || {
         if kind == KeyKind::Release {
@@ -572,5 +587,27 @@ mod tests {
         for bits in [1, 8, 31] {
             assert_eq!(enc(&input, bits), None);
         }
+    }
+
+    #[test]
+    fn unbound_command_chords_report_super() {
+        let sup = |input: &KeyInput, bits: u8| {
+            encode_super(input, flags(bits), true).map(|b| String::from_utf8(b).unwrap())
+        };
+        let cmd_t = key("t", Mods { cmd: true, ..NONE });
+        assert_eq!(sup(&cmd_t, 1).as_deref(), Some("\x1b[116;9u"));
+        let cmd_shift_d = key(
+            "d",
+            Mods {
+                cmd: true,
+                shift: true,
+                ..NONE
+            },
+        );
+        assert_eq!(sup(&cmd_shift_d, 1).as_deref(), Some("\x1b[100;10u"));
+        let cmd_enter = key("enter", Mods { cmd: true, ..NONE });
+        assert_eq!(sup(&cmd_enter, 1).as_deref(), Some("\x1b[13;9u"));
+        // Without disambiguation there's no way to say Super.
+        assert_eq!(sup(&cmd_t, 2), None);
     }
 }

@@ -490,6 +490,19 @@ struct Bound(Option<Vec<Keybind>>);
 
 impl Global for Bound {}
 
+/// The chords the config unbinds (`keybind = cmd+t=unbind`), normalized:
+/// a ⌘ one among them goes to the program in the pane.
+#[derive(Default)]
+struct Unbound(Vec<String>);
+
+impl Global for Unbound {}
+
+/// Whether the config unbinds `ks`, leaving it to the program.
+pub fn unbound(ks: &gpui::Keystroke, cx: &App) -> bool {
+    cx.try_global::<Unbound>()
+        .is_some_and(|u| chord(&config_chord(ks)).is_ok_and(|keys| u.0.contains(&keys)))
+}
+
 /// Binds the default keys, minus the chords the config takes over, plus the
 /// config's `keybind` lines (later lines win). Returns what it couldn't read.
 pub fn bind_keys(cx: &mut App, keybinds: &[Keybind]) -> Vec<String> {
@@ -514,6 +527,12 @@ pub fn bind_keys(cx: &mut App, keybinds: &[Keybind]) -> Vec<String> {
             )),
         }
     }
+    cx.set_global(Unbound(
+        user.iter()
+            .filter(|(_, action)| action.is_none())
+            .map(|(keys, _)| keys.clone())
+            .collect(),
+    ));
     let defaults = defaults();
     let mut bindings = Vec::new();
     let mut load = |keys: &str, action: Box<dyn Action>, context: Option<&str>| {

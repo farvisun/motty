@@ -586,7 +586,8 @@ impl TerminalView {
         } else {
             KeyKind::Press
         };
-        if let Some(bytes) = self.encode_key(ks, kind) {
+        let pass_cmd = crate::actions::unbound(ks, cx);
+        if let Some(bytes) = self.encode_key(ks, kind, pass_cmd) {
             if self.read_only {
                 window.play_system_bell();
                 cx.stop_propagation();
