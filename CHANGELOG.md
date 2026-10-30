@@ -4,6 +4,22 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-30
+
+### Features
+
+- **updater:** only install updates with a valid Ed25519 signature: the release signs Motty.dmg (Motty.dmg.sig) and the app checks it against its built-in release key, besides the SHA-256 ([98ca30a](https://github.com/farvisun/motty/commit/98ca30a))
+- install with Homebrew: `brew install --cask farvisun/tap/motty`, which also links the `motty` command; each release updates the cask ([e422a36](https://github.com/farvisun/motty/commit/e422a36))
+
+### Documentation
+
+- a security policy and issue templates ([d4dc994](https://github.com/farvisun/motty/commit/d4dc994))
+
+### CI
+
+- sign Motty.dmg and update the Homebrew cask on release ([e422a36](https://github.com/farvisun/motty/commit/e422a36))
+- keep dependencies current with Dependabot ([e083f4c](https://github.com/farvisun/motty/commit/e083f4c))
+
 ## [0.3.0] - 2026-10-30
 
 ### Features
