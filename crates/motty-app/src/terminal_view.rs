@@ -855,13 +855,6 @@ impl TerminalView {
     /// the top. Going forward past the last prompt returns to live output.
     /// Needs shell integration; full-screen programs are left alone.
     fn scroll_to_prompt(&mut self, back: bool, cx: &mut Context<Self>) {
-        let prompts: Vec<u64> = self
-            .session
-            .shell()
-            .blocks
-            .iter()
-            .map(|b| b.prompt_row)
-            .collect();
         let mut term = self.session.term.lock();
         if term.mode().contains(TermMode::ALT_SCREEN) {
             return;
@@ -869,16 +862,9 @@ impl TerminalView {
         let grid = term.grid();
         let oldest = grid.lines_pushed() - grid.history_size() as u64;
         let top = grid.lines_pushed() - grid.display_offset() as u64;
-        let target = if back {
-            prompts
-                .iter()
-                .rev()
-                .find(|&&row| row < top && row >= oldest)
-        } else {
-            prompts.iter().find(|&&row| row > top)
-        };
+        let target = self.session.shell().prompt_from(top, oldest, back);
         match target {
-            Some(&row) => term.scroll_display(Scroll::Delta((top as i64 - row as i64) as i32)),
+            Some(row) => term.scroll_display(Scroll::Delta((top as i64 - row as i64) as i32)),
             None if !back => term.scroll_display(Scroll::Bottom),
             None => return,
         }

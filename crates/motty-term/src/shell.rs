@@ -256,6 +256,17 @@ impl ShellState {
                 .is_some_and(|b| b.started.is_some() && b.finished.is_none())
     }
 
+    /// The nearest prompt above (`back`) or below the stable row `top`,
+    /// skipping prompts older than `oldest` (gone from the scrollback).
+    pub fn prompt_from(&self, top: u64, oldest: u64, back: bool) -> Option<u64> {
+        let mut rows = self.blocks.iter().map(|b| b.prompt_row);
+        if back {
+            rows.rev().find(|&row| row < top && row >= oldest)
+        } else {
+            rows.find(|&row| row > top)
+        }
+    }
+
     /// The last command that ran to completion.
     pub fn last_finished(&self) -> Option<&Block> {
         self.blocks.iter().rev().find(|b| b.finished.is_some())
@@ -314,6 +325,22 @@ mod tests {
             ShellOsc::Progress(Progress::Normal(40))
         );
         assert!(sniff(b"\x1b]0;title\x07").is_empty());
+    }
+
+    #[test]
+    fn prompts_above_and_below_a_row() {
+        let mut state = ShellState::default();
+        for row in [5, 20, 40] {
+            state.apply(&ShellOsc::PromptStart, row, 0);
+        }
+        assert_eq!(state.prompt_from(30, 0, true), Some(20));
+        assert_eq!(state.prompt_from(20, 0, true), Some(5));
+        assert_eq!(state.prompt_from(5, 0, true), None);
+        // Trimmed from the scrollback.
+        assert_eq!(state.prompt_from(20, 10, true), None);
+        assert_eq!(state.prompt_from(5, 0, false), Some(20));
+        assert_eq!(state.prompt_from(30, 0, false), Some(40));
+        assert_eq!(state.prompt_from(40, 0, false), None);
     }
 
     #[test]
