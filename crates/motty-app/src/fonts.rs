@@ -72,7 +72,12 @@ pub fn load_user(cx: &mut App) {
 /// First installed family among the config's `font-family` and the theme's
 /// `font-mono` list; Menlo is always present on macOS.
 pub fn terminal_family(config: &Config, theme: &Theme, cx: &App) -> String {
-    let available = cx.text_system().all_font_names();
+    terminal_family_in(config, theme, &cx.text_system().all_font_names())
+}
+
+/// [`terminal_family`] among `available`, for callers that listed the
+/// installed families once (listing them takes CoreText tens of ms).
+pub fn terminal_family_in(config: &Config, theme: &Theme, available: &[String]) -> String {
     config
         .font_family
         .iter()

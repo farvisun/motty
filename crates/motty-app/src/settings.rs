@@ -406,6 +406,8 @@ pub struct SettingsWindow {
     query: String,
     config: Config,
     themes: Vec<(String, Mode)>,
+    /// Every installed family, listed once: CoreText is slow to list them.
+    all_fonts: Vec<String>,
     fonts: Vec<String>,
     shells: Vec<String>,
     scroll: ScrollHandle,
@@ -630,11 +632,11 @@ impl SettingsWindow {
             .map(|(n, m, _)| (n, m))
             .collect();
         themes.sort_by_key(|(n, _)| n.to_lowercase());
-        let mut fonts: Vec<String> = cx
-            .text_system()
-            .all_font_names()
-            .into_iter()
+        let all_fonts = cx.text_system().all_font_names();
+        let mut fonts: Vec<String> = all_fonts
+            .iter()
             .filter(|n| looks_monospace(n))
+            .cloned()
             .collect();
         fonts.sort_by_key(|n| n.to_lowercase());
         fonts.dedup();
@@ -651,6 +653,7 @@ impl SettingsWindow {
             query: String::new(),
             config: crate::load_config(),
             themes,
+            all_fonts,
             fonts,
             shells,
             scroll: ScrollHandle::new(),
@@ -2029,7 +2032,7 @@ impl SettingsWindow {
             None,
             names_choice(
                 "font-family",
-                format!("Theme Default ({})", default_font(c, cx)),
+                format!("Theme Default ({})", default_font(c, &self.all_fonts, cx)),
                 &self.fonts,
                 c.font_family.as_deref(),
             ),
@@ -2776,12 +2779,12 @@ fn looks_monospace(name: &str) -> bool {
     !name.starts_with('.') && HINTS.iter().any(|h| lower.contains(h))
 }
 
-fn default_font(config: &Config, cx: &App) -> String {
+fn default_font(config: &Config, available: &[String], cx: &App) -> String {
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
     let mut no_family = config.clone();
     no_family.font_family = None;
-    crate::fonts::terminal_family(&no_family, &theme, cx)
+    crate::fonts::terminal_family_in(&no_family, &theme, available)
 }
 
 fn mode_for(appearance: WindowAppearance) -> Mode {
@@ -2838,6 +2841,7 @@ struct Colors {
     card: Hsla,
     separator: Hsla,
     selected: Hsla,
+    hover: Hsla,
     field: Hsla,
     text: Hsla,
     secondary: Hsla,
@@ -2866,6 +2870,7 @@ impl Colors {
             card: c(0xfafafa, 0x262626),
             separator: ink(0.06),
             selected: c(0xe9e9e9, 0x353535),
+            hover: ink(0.035),
             field: c(0xededed, 0x303030),
             text: ink(0.88),
             secondary: ink(0.5),
@@ -2909,6 +2914,8 @@ impl Render for SettingsWindow {
             .collect();
 
         let nav = Section::ALL.into_iter().map(|section| {
+            // The selected section has the highlight instead.
+            let current = !searching && section == self.section;
             div()
                 .id(section.title())
                 .h(px(NAV_HEIGHT))
@@ -2917,6 +2924,7 @@ impl Render for SettingsWindow {
                 .flex()
                 .items_center()
                 .gap(px(10.))
+                .when(!current, |d| d.hover(|s| s.bg(c.hover)))
                 .child(
                     svg()
                         .path(section.icon())
