@@ -1,11 +1,11 @@
-//! The PTY reader thread: reads the child's output, parses it into the
-//! terminal through [`Graphemes`], writes input and replies back, and
-//! reports the child's exit. Modeled on alacritty's event loop, which only
-//! parses into a bare `Term`.
+//! The PTY thread: parses the child's output, which [`Reader`] reads on a
+//! thread of its own, into the terminal through [`Graphemes`], writes input
+//! and replies back, and reports the child's exit. Modeled on alacritty's
+//! event loop, which only parses into a bare `Term`.
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Write};
 use std::num::NonZeroUsize;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,6 +22,7 @@ use alacritty_terminal::term::TermMode;
 
 use crate::graphemes::{Cluster, Graphemes};
 use crate::graphics::{Graphics, Scanner, Sequence, Step, Work};
+use crate::pty_reader::Reader;
 use crate::repaint::Repaint;
 use crate::shell::{OscSniffer, ShellOsc, ShellState};
 use crate::{EventProxy, SessionEvent, Terminal};
@@ -30,10 +31,10 @@ use crate::{EventProxy, SessionEvent, Terminal};
 const PTY_READ_WRITE_TOKEN: usize = 0;
 const PTY_CHILD_EVENT_TOKEN: usize = 1;
 
-/// Bytes read per `read` call.
-const READ_BUFFER: usize = 0x1_0000;
-/// Parse at most this much per terminal lock, so the UI can take it.
+/// Parse about this much per terminal lock, so the UI can take it.
 const MAX_LOCKED_READ: usize = u16::MAX as usize;
+/// Output buffer kept between bursts.
+const KEEP_CAPACITY: usize = 0x4_0000;
 
 pub enum Msg {
     Input(Cow<'static, [u8]>),
@@ -58,6 +59,10 @@ impl LoopSender {
 
 pub struct PtyLoop {
     pty: tty::Pty,
+    reader: Reader,
+    /// Output taken from `reader`, parsed up to `parsed`.
+    output: Vec<u8>,
+    parsed: usize,
     poller: Arc<Poller>,
     rx: Receiver<Msg>,
     terminal: Arc<FairMutex<Terminal>>,
@@ -93,6 +98,7 @@ impl PtyLoop {
         graphics: Arc<Mutex<Graphics>>,
     ) -> std::io::Result<(Self, LoopSender)> {
         let poller = Arc::new(Poller::new()?);
+        let reader = Reader::spawn(pty.file(), poller.clone())?;
         let (tx, rx) = mpsc::channel();
         let sender = LoopSender {
             tx,
@@ -100,6 +106,9 @@ impl PtyLoop {
         };
         let this = Self {
             pty,
+            reader,
+            output: Vec::new(),
+            parsed: 0,
             poller,
             rx,
             terminal,
@@ -127,6 +136,7 @@ impl PtyLoop {
                 if let Err(e) = self.run() {
                     tracing::error!("pty loop: {e}");
                 }
+                self.reader.stop();
                 let _ = self.pty.deregister(&self.poller);
             });
         if let Err(e) = spawned {
@@ -135,8 +145,9 @@ impl PtyLoop {
     }
 
     fn run(&mut self) -> std::io::Result<()> {
-        let mut buf = vec![0u8; READ_BUFFER];
-        let mut interest = PollEvent::readable(0);
+        // Reading is the reader's; this thread waits for writes, the child
+        // and wakeups.
+        let mut interest = PollEvent::none(0);
         // SAFETY: the PTY stays registered with this poller only, and is
         // deregistered before it is dropped.
         unsafe { self.pty.register(&self.poller, interest, PollMode::Level)? };
@@ -154,9 +165,7 @@ impl PtyLoop {
                 Err(e) => return Err(e),
                 Ok(_) => {}
             }
-            let mut messages = false;
             while let Ok(msg) = self.rx.try_recv() {
-                messages = true;
                 match msg {
                     Msg::Input(bytes) => self.pending.push_back(bytes),
                     Msg::Resize(size) => {
@@ -169,17 +178,22 @@ impl PtyLoop {
                     Msg::Shutdown => return Ok(()),
                 }
             }
-            if events.is_empty() && !messages && timeout.is_some() {
+            if self.parse(false) {
+                // More is queued: come back after input and the child.
+                let _ = self.poller.notify();
+            }
+            // Output wakes this thread too, so check the clock.
+            let expired = self.parser.sync_timeout().sync_timeout();
+            if expired.is_some_and(|t| t <= Instant::now()) {
                 self.parser.stop_sync(&mut *self.terminal.lock());
                 self.proxy.send_event(Event::Wakeup);
-                continue;
             }
             for event in events.iter() {
                 match event.key {
                     PTY_CHILD_EVENT_TOKEN => {
                         if let Some(tty::ChildEvent::Exited(status)) = self.pty.next_child_event() {
                             // Show whatever the child printed last.
-                            let _ = self.read(&mut buf);
+                            self.parse(true);
                             if let Some(status) = status {
                                 self.proxy.send_event(Event::ChildExit(status));
                             }
@@ -191,9 +205,6 @@ impl PtyLoop {
                     PTY_READ_WRITE_TOKEN => {
                         if event.is_interrupt() {
                             continue;
-                        }
-                        if event.readable {
-                            self.read(&mut buf)?;
                         }
                         if event.writable {
                             self.write()?;
@@ -216,43 +227,48 @@ impl PtyLoop {
         }
     }
 
-    /// Reads and parses until the PTY would block (or a lock's worth).
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        let mut processed = 0;
+    /// Parses the output the reader has queued: about a lock's worth, or
+    /// with `all` everything up to the end of the stopped reader. Returns
+    /// whether more is waiting.
+    fn parse(&mut self, all: bool) -> bool {
+        if all {
+            self.reader.finish(&mut self.output);
+        } else if self.parsed == self.output.len() {
+            self.output.clear();
+            // An idle pane doesn't keep a burst's worth of memory.
+            if self.output.capacity() > KEEP_CAPACITY {
+                self.output = Vec::new();
+            }
+            self.parsed = 0;
+            self.reader.take(&mut self.output);
+        }
+        let output = std::mem::take(&mut self.output);
+        let start = self.parsed;
+        let end = if all {
+            output.len()
+        } else {
+            output.len().min(start + MAX_LOCKED_READ)
+        };
         let shared = self.terminal.clone();
         let mut terminal = None;
-        loop {
-            let n = match self.pty.reader().read(buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {
-                    break;
+        // Image sequences are cut out and handled where they are in the
+        // stream; everything else goes to the VT parser.
+        let mut pos = start;
+        while pos < end {
+            let (used, step) = self.scanner.next(&output[pos..end]);
+            let bytes = &output[pos..pos + used];
+            pos += used;
+            match step {
+                Step::Pass => {
+                    let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+                    self.feed(term, bytes);
                 }
-                Err(e) => return Err(e),
-            };
-            // Image sequences are cut out and handled where they are in the
-            // stream; everything else goes to the VT parser.
-            let mut pos = 0;
-            while pos < n {
-                let (used, step) = self.scanner.next(&buf[pos..n]);
-                let bytes = &buf[pos..pos + used];
-                pos += used;
-                match step {
-                    Step::Pass => {
-                        let term = terminal.get_or_insert_with(|| shared.lock_unfair());
-                        self.feed(term, bytes);
-                    }
-                    Step::PassHeld(held) => {
-                        let term = terminal.get_or_insert_with(|| shared.lock_unfair());
-                        self.feed(term, &held);
-                    }
-                    Step::Sequence(seq) => self.image(&mut terminal, &shared, seq),
-                    Step::Pending => {}
+                Step::PassHeld(held) => {
+                    let term = terminal.get_or_insert_with(|| shared.lock_unfair());
+                    self.feed(term, &held);
                 }
-            }
-            processed += n;
-            if processed >= MAX_LOCKED_READ {
-                break;
+                Step::Sequence(seq) => self.image(&mut terminal, &shared, seq),
+                Step::Pending => {}
             }
         }
         if let Some(term) = terminal.as_mut() {
@@ -263,11 +279,16 @@ impl PtyLoop {
             graphics.prune(term);
         }
         drop(terminal);
+        let processed = end - start;
+        self.output = output;
+        self.parsed = end;
         // Output held back by a synchronized update shows when it ends.
         if processed > 0 && self.parser.sync_bytes_count() < processed {
             self.proxy.send_event(Event::Wakeup);
         }
-        Ok(())
+        // Bytes queued while this batch was parsed already used up their
+        // wakeup.
+        end < self.output.len() || self.reader.pending()
     }
 
     /// Feeds plain output to the VT parser, stopping at each

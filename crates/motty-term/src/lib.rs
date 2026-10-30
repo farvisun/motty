@@ -27,6 +27,7 @@ mod kitty_keys;
 pub mod links;
 mod modify_other_keys;
 mod pty_loop;
+mod pty_reader;
 pub mod repaint;
 pub mod search;
 pub mod shell;
