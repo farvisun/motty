@@ -205,6 +205,12 @@ fn terminal_commands(target: &TerminalView, list: &mut Vec<Command>) {
         Command::new("Terminal", "Select All", SelectAll),
         Command::new("Terminal", "Scroll to Top", ScrollToTop),
         Command::new("Terminal", "Scroll to Bottom", ScrollToBottom),
+        Command::new(
+            "Terminal",
+            "Scroll to Previous Prompt",
+            ScrollToPreviousPrompt,
+        ),
+        Command::new("Terminal", "Scroll to Next Prompt", ScrollToNextPrompt),
         Command::new("Terminal", "Vi Mode", ToggleViMode)
             .checked(matches!(mode, Some(PaneMode::Vi { .. }))),
         Command::new("Terminal", "Mark Mode", MarkMode),

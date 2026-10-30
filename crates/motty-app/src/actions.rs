@@ -82,6 +82,8 @@ actions!(
         ScrollPageDown,
         ScrollLineUp,
         ScrollLineDown,
+        ScrollToPreviousPrompt,
+        ScrollToNextPrompt,
         NewWindow,
         CloseWindow,
         Minimize,
@@ -457,6 +459,8 @@ fn defaults() -> Vec<DefaultKey> {
         b("cmd-alt-down", ScrollLineDown, TERMINAL),
         b("cmd-alt-pageup", ScrollLineUp, TERMINAL),
         b("cmd-alt-pagedown", ScrollLineDown, TERMINAL),
+        b("cmd-up", ScrollToPreviousPrompt, TERMINAL),
+        b("cmd-down", ScrollToNextPrompt, TERMINAL),
     ]
 }
 

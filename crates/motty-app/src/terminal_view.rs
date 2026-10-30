@@ -851,6 +851,41 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Scrolls the prompt above (`back`) or below the top of the screen to
+    /// the top. Going forward past the last prompt returns to live output.
+    /// Needs shell integration; full-screen programs are left alone.
+    fn scroll_to_prompt(&mut self, back: bool, cx: &mut Context<Self>) {
+        let prompts: Vec<u64> = self
+            .session
+            .shell()
+            .blocks
+            .iter()
+            .map(|b| b.prompt_row)
+            .collect();
+        let mut term = self.session.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let grid = term.grid();
+        let oldest = grid.lines_pushed() - grid.history_size() as u64;
+        let top = grid.lines_pushed() - grid.display_offset() as u64;
+        let target = if back {
+            prompts
+                .iter()
+                .rev()
+                .find(|&&row| row < top && row >= oldest)
+        } else {
+            prompts.iter().find(|&&row| row > top)
+        };
+        match target {
+            Some(&row) => term.scroll_display(Scroll::Delta((top as i64 - row as i64) as i32)),
+            None if !back => term.scroll_display(Scroll::Bottom),
+            None => return,
+        }
+        drop(term);
+        cx.notify();
+    }
+
     /// Clears scrollback and screen, keeping the prompt line (like ⌘K elsewhere).
     fn clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
         let mut term = self.session.term.lock();
@@ -1053,6 +1088,12 @@ impl Render for TerminalView {
             )
             .on_action(
                 cx.listener(|this, _: &ScrollLineDown, _, cx| this.scroll(Scroll::Delta(-1), cx)),
+            )
+            .on_action(cx.listener(|this, _: &ScrollToPreviousPrompt, _, cx| {
+                this.scroll_to_prompt(true, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ScrollToNextPrompt, _, cx| this.scroll_to_prompt(false, cx)),
             )
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.zoom(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.zoom(-1., cx)))
