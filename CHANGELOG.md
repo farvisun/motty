@@ -4,6 +4,25 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
+### Features
+
+- **term:** jump between prompts with ⌘↑ and ⌘↓ ([44e988d](https://github.com/farvisun/motty/commit/44e988d))
+- **term:** kitty clipboard protocol (OSC 5522) and paste events (mode 5522): programs read and write pictures and HTML, not just text ([351307f](https://github.com/farvisun/motty/commit/351307f))
+
+### Performance
+
+- **term:** read the pty on its own thread, so programs keep writing while output is parsed ([8dc705e](https://github.com/farvisun/motty/commit/8dc705e))
+
+### Refactoring
+
+- **term:** move prompt lookup into the shell state ([087b65c](https://github.com/farvisun/motty/commit/087b65c))
+
+### Documentation
+
+- **site:** list the clipboard protocol ([f42e4da](https://github.com/farvisun/motty/commit/f42e4da))
+
 ## [0.1.1] - 2026-10-30
 
 ### Bug Fixes
@@ -203,6 +222,7 @@ First public release.
 - vendor alacritty_terminal with a pushed-lines counter ([6d68c3b](https://github.com/farvisun/motty/commit/6d68c3b))
 - **xtask:** bundle the AppleScript dictionary ([0919404](https://github.com/farvisun/motty/commit/0919404))
 
-[Unreleased]: https://github.com/farvisun/motty/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/farvisun/motty/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/farvisun/motty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/farvisun/motty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/farvisun/motty/releases/tag/v0.1.0
