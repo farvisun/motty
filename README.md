@@ -27,7 +27,8 @@
 
 ## Install
 
-Download **Motty.dmg** from the [latest release](https://github.com/farvisun/motty/releases/latest),
+With [Homebrew](https://brew.sh): `brew install --cask farvisun/tap/motty` (also links the `motty`
+command). Or download **Motty.dmg** from the [latest release](https://github.com/farvisun/motty/releases/latest),
 open it and drag Motty to Applications. It's one universal build for Apple silicon and Intel Macs
 on macOS 13 or later.
 
@@ -37,7 +38,8 @@ right-click Motty in Applications and choose **Open**, or run
 
 From 0.3.0 Motty updates itself: once a day (`check-for-updates`, Settings › General) and from
 **Motty › Check for Updates…** it looks at the latest GitHub release. **Install and Restart**
-downloads Motty.dmg, checks it against the release's SHA-256, replaces the app and reopens it.
+downloads Motty.dmg, checks its SHA-256 and its Ed25519 signature (0.3.1 and later), replaces the
+app and reopens it.
 
 ## Build and run
 

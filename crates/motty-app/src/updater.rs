@@ -1,12 +1,16 @@
 //! Updates from GitHub releases: a daily check (`check-for-updates`) and
 //! Motty › Check for Updates…. Installing downloads Motty.dmg, checks its
-//! SHA-256 against the release, swaps the app bundle in place and offers a
-//! restart; the running copy keeps working until then.
+//! SHA-256 and its Ed25519 signature (made in the release workflow with the
+//! key whose public half is [`PUBLIC_KEY`]), swaps the app bundle in place and
+//! restarts; the running copy keeps working until then.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use ed25519_dalek::{Signature, VerifyingKey};
 use gpui::{App, AsyncApp, PromptLevel, WindowHandle};
 use sha2::{Digest, Sha256};
 
@@ -15,6 +19,10 @@ use crate::workspace::Workspace;
 const LATEST: &str = "https://api.github.com/repos/farvisun/motty/releases/latest";
 const ASSET: &str = "Motty.dmg";
 const SUMS: &str = "SHA256SUMS.txt";
+const SIGNATURE: &str = "Motty.dmg.sig";
+/// Sparkle-format EdDSA key (`generate_keys --account motty`, login Keychain);
+/// the private half is the MOTTY_ED_PRIVATE_KEY secret of the release workflow.
+const PUBLIC_KEY: &str = "GNDDdFMCrQGu2suZq/EiE7BKhgbtl34DbuDejoF+22k=";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -26,6 +34,8 @@ struct Release {
     dmg: String,
     /// From the asset's digest, or SHA256SUMS.txt.
     sha256: Option<String>,
+    /// Motty.dmg.sig: the base64 Ed25519 signature of Motty.dmg.
+    signature: Option<String>,
 }
 
 /// The daily check. Only an installed bundle checks; `cargo run` doesn't.
@@ -156,6 +166,12 @@ fn replace_bundle(release: &Release, bundle: &Path) -> Result<(), String> {
                 "The download doesn't match the release's SHA-256 ({actual}).",
             ));
         }
+        let signature = curl(&[release
+            .signature
+            .as_deref()
+            .ok_or("The release has no signature for Motty.dmg, so it can't be trusted.")?])?;
+        let bytes = std::fs::read(&dmg).map_err(|e| e.to_string())?;
+        verify(&bytes, &signature, PUBLIC_KEY)?;
         let mount = tmp.join("mnt");
         run(
             "hdiutil",
@@ -282,7 +298,29 @@ fn parse_release(json: &str) -> Result<Release, String> {
             .ok_or("Motty.dmg has no download link.")?
             .to_owned(),
         sha256,
+        signature: asset(SIGNATURE)
+            .and_then(|a| a["browser_download_url"].as_str())
+            .map(str::to_owned),
     })
+}
+
+/// Checks a Sparkle-style signature: base64 Ed25519 over the whole file.
+fn verify(data: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
+    let bad = "The download's signature doesn't match Motty's release key.";
+    let key: [u8; 32] = BASE64
+        .decode(public_key)
+        .ok()
+        .and_then(|k| k.try_into().ok())
+        .ok_or("Motty's release key is malformed.")?;
+    let sig: [u8; 64] = BASE64
+        .decode(signature.trim())
+        .ok()
+        .and_then(|s| s.try_into().ok())
+        .ok_or(bad)?;
+    VerifyingKey::from_bytes(&key)
+        .map_err(|_| "Motty's release key is malformed.")?
+        .verify_strict(data, &Signature::from_bytes(&sig))
+        .map_err(|_| bad.to_owned())
 }
 
 /// The hash for `name` in `shasum -a 256` output.
@@ -446,7 +484,18 @@ mod tests {
         assert_eq!(r.version, "0.3.0");
         assert_eq!(r.dmg, "https://x/Motty.dmg");
         assert_eq!(r.sha256.as_deref(), Some("abc"));
+        assert_eq!(r.signature, None);
         assert!(parse_release(r#"{"tag_name":"v1","assets":[]}"#).is_err());
+    }
+
+    #[test]
+    fn verifies_sparkle_signatures() {
+        // `sign_update -p` over "test\n" with the release key.
+        let sig = "+qb9KPxu2CQtLN1ASnnfdWi/BHPKtjyy5YKep+ZNdGoQ4f7zcuNtBN11mvs8rmNjmx9WkXaAKpE7db0cCJshCw==";
+        assert!(verify(b"test\n", sig, PUBLIC_KEY).is_ok());
+        assert!(verify(b"tampered\n", sig, PUBLIC_KEY).is_err());
+        assert!(verify(b"test\n", "not base64", PUBLIC_KEY).is_err());
+        assert!(verify(b"test\n", sig, "AAAA").is_err());
     }
 
     #[test]
