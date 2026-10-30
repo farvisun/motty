@@ -8,6 +8,7 @@ use gpui::{
     AnyElement, App, ClipboardEntry, ClipboardItem, Context, DragMoveEvent, ExternalPaths, Hsla,
     Image, PromptLevel, Window, div, prelude::*, px,
 };
+use motty_term::alacritty_terminal::grid::Scroll;
 use motty_term::alacritty_terminal::term::TermMode;
 
 use super::{TerminalView, shell_escape};
@@ -107,6 +108,9 @@ impl TerminalView {
     /// ⌘V: files as their paths, a picture as the path of a saved copy,
     /// text after the paste-protection check.
     pub(super) fn paste_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.term_mode().contains(TermMode::PASTE_EVENTS) && self.allow_clipboard {
+            return self.paste_event(window);
+        }
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -119,6 +123,22 @@ impl TerminalView {
             Some(_) => window.play_system_bell(),
             None => {}
         }
+    }
+
+    /// A paste the program takes as a paste event (mode 5522): it learns
+    /// the clipboard's types and gets a one-time password to read the one
+    /// it wants without being asked about.
+    fn paste_event(&mut self, window: &mut Window) {
+        if self.read_only || self.vi.is_some() {
+            window.play_system_bell();
+            return;
+        }
+        let secret = crate::pasteboard::one_time_password();
+        let types = crate::pasteboard::mime_types();
+        self.session
+            .write(motty_term::clipboard::paste_event(&types, &secret).into_bytes());
+        self.paste_password = Some(secret);
+        self.session.term.lock().scroll_display(Scroll::Bottom);
     }
 
     /// Pastes `text`, first asking when it could run something before

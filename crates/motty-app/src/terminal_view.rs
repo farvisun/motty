@@ -64,6 +64,9 @@ pub enum TerminalEvent {
     /// OSC 52 paste, subject to `clipboard-read`: reply with
     /// [`TerminalView::answer_clipboard`].
     ClipboardRead(std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>),
+    /// OSC 5522 read or write, subject to `clipboard-read` and
+    /// `clipboard-write`.
+    Clipboard(motty_term::clipboard::Request),
 }
 
 /// A new pane id; unique for the life of the app.
@@ -97,6 +100,12 @@ pub struct TerminalView {
     /// tab (Notifications & Privileges).
     pub allow_title: bool,
     pub allow_mouse: bool,
+    /// Clipboard — Shell Controlled: programs may use the clipboard.
+    pub allow_clipboard: bool,
+    /// Passwords the user trusted with the clipboard (OSC 5522) for this
+    /// session, and the one-time one the last paste event handed out.
+    clipboard_passwords: std::collections::HashSet<String>,
+    paste_password: Option<String>,
     /// The program in the foreground while a command runs (not the shell).
     pub foreground: Option<String>,
     /// Its command line, for `tab-rule` `command` and `${command}`.
@@ -211,6 +220,9 @@ impl TerminalView {
             process: None,
             allow_title: true,
             allow_mouse: true,
+            allow_clipboard: true,
+            clipboard_passwords: Default::default(),
+            paste_password: None,
             foreground: None,
             command: None,
             branch: None,
@@ -481,6 +493,7 @@ impl TerminalView {
             SessionEvent::Bell => cx.emit(TerminalEvent::Bell),
             SessionEvent::ClipboardStore(text) => cx.emit(TerminalEvent::ClipboardWrite(text)),
             SessionEvent::ClipboardLoad(format) => cx.emit(TerminalEvent::ClipboardRead(format)),
+            SessionEvent::Clipboard(request) => cx.emit(TerminalEvent::Clipboard(request)),
             SessionEvent::ColorRequest(index, format) => {
                 let c = self
                     .style
@@ -635,6 +648,31 @@ impl TerminalView {
     /// one gets no answer, as in xterm).
     pub fn answer_clipboard(&self, format: &(dyn Fn(&str) -> String + Send + Sync), text: &str) {
         self.session.write(format(text).into_bytes());
+    }
+
+    /// Whether `password` is the last paste event's, which is good once.
+    pub fn take_paste_password(
+        &mut self,
+        password: Option<&motty_term::clipboard::Password>,
+    ) -> bool {
+        let matches = password.is_some_and(|p| self.paste_password.as_ref() == Some(&p.secret));
+        if matches {
+            self.paste_password = None;
+        }
+        matches
+    }
+
+    /// Whether the user trusted `password` with the clipboard.
+    pub fn trusts_clipboard_password(
+        &self,
+        password: Option<&motty_term::clipboard::Password>,
+    ) -> bool {
+        password.is_some_and(|p| self.clipboard_passwords.contains(&p.secret))
+    }
+
+    /// Trusts `secret` with the clipboard until the pane closes.
+    pub fn trust_clipboard_password(&mut self, secret: String) {
+        self.clipboard_passwords.insert(secret);
     }
 
     fn report_mouse(

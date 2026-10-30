@@ -2513,7 +2513,7 @@ impl SettingsWindow {
             (
                 "Clipboard",
                 "Clipboard \u{2014} Shell Controlled",
-                "Programs may use the clipboard at all (OSC 52)",
+                "Programs may use the clipboard at all (OSC 52 and 5522)",
                 "privilege-clipboard-shell",
                 c.badges.clipboard_shell,
             ),

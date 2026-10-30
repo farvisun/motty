@@ -122,9 +122,9 @@ pub struct Config {
     pub recipe_replay_file: Option<Replay>,
     /// `notification-foreground`: banners while Motty is in front.
     pub notification_foreground: NotificationForeground,
-    /// `clipboard-read`: a program reading the clipboard (OSC 52).
+    /// `clipboard-read`: a program reading the clipboard (OSC 52, OSC 5522).
     pub clipboard_read: Access,
-    /// `clipboard-write`: a program setting the clipboard (OSC 52).
+    /// `clipboard-write`: a program setting the clipboard (OSC 52, OSC 5522).
     pub clipboard_write: Access,
     /// The `editor-*` keys: how file panes show text.
     pub editor: EditorPrefs,
@@ -247,7 +247,7 @@ pub struct Badges {
     pub sound_shell: bool,
     /// `privilege-title-shell`: programs may set the title (OSC 0 / 2).
     pub title_shell: bool,
-    /// `privilege-clipboard-shell`: OSC 52 at all (see `clipboard-read` /
+    /// `privilege-clipboard-shell`: OSC 52 and 5522 at all (see `clipboard-read` /
     /// `clipboard-write`).
     pub clipboard_shell: bool,
     /// `privilege-mouse-shell`: programs may turn on mouse reporting.

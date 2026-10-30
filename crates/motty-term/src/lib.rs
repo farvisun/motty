@@ -18,6 +18,7 @@ use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
+pub mod clipboard;
 mod graphemes;
 pub mod graphics;
 /// Pointer shapes programs ask for with OSC 22.
@@ -74,6 +75,9 @@ pub enum SessionEvent {
     ShellChanged,
     /// The shell is at a fresh prompt, ready for input.
     PromptReady,
+    /// A program used the kitty clipboard protocol (OSC 5522); answer with
+    /// `Session::write` and the request's reply.
+    Clipboard(clipboard::Request),
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -94,6 +98,7 @@ impl std::fmt::Debug for SessionEvent {
             Self::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
             Self::ShellChanged => f.write_str("ShellChanged"),
             Self::PromptReady => f.write_str("PromptReady"),
+            Self::Clipboard(_) => f.write_str("Clipboard"),
         }
     }
 }

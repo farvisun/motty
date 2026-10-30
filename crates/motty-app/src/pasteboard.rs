@@ -36,6 +36,110 @@ pub fn read_rich() -> Option<Rich> {
     None
 }
 
+/// MIME types and the pasteboard types macOS keeps them as. A type not
+/// listed is kept under its MIME name.
+const MIME_TYPES: &[(&str, &str)] = &[
+    ("text/plain", "public.utf8-plain-text"),
+    ("text/html", "public.html"),
+    ("text/rtf", "public.rtf"),
+    ("application/rtf", "public.rtf"),
+    ("image/png", "public.png"),
+    ("image/tiff", "public.tiff"),
+    ("image/jpeg", "public.jpeg"),
+    ("image/gif", "com.compuserve.gif"),
+    ("image/svg+xml", "public.svg-image"),
+    ("application/pdf", "com.adobe.pdf"),
+];
+
+/// The pasteboard type for `mime`, parameters (`;charset=utf-8`) aside.
+fn pasteboard_type(mime: &str) -> String {
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
+    MIME_TYPES
+        .iter()
+        .find(|(m, _)| *m == base)
+        .map_or(base, |(_, t)| (*t).to_owned())
+}
+
+/// The MIME type a pasteboard type stands for, if it has one.
+fn mime_type(pasteboard: &str) -> Option<String> {
+    match MIME_TYPES.iter().find(|(_, t)| *t == pasteboard) {
+        Some((m, _)) => Some((*m).to_owned()),
+        None => pasteboard.contains('/').then(|| pasteboard.to_owned()),
+    }
+}
+
+/// The clipboard's contents as MIME types, for programs that read it by
+/// type (OSC 5522). A picture is offered as PNG even when only TIFF is
+/// there.
+pub fn mime_types() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let types = mac::types();
+        let mut out: Vec<String> = Vec::new();
+        for mime in types.iter().filter_map(|t| mime_type(t)) {
+            if !out.contains(&mime) {
+                out.push(mime);
+            }
+        }
+        if out.iter().any(|m| m == "image/tiff") && !out.iter().any(|m| m == "image/png") {
+            out.push("image/png".into());
+        }
+        out
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+/// The clipboard's data of type `mime`.
+pub fn read_mime(mime: &str) -> Option<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    return mac::read(&pasteboard_type(mime));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = mime;
+        None
+    }
+}
+
+/// Replaces the clipboard with `items`, each under its MIME type; `false`
+/// when the clipboard took none of them.
+pub fn write_mimes(items: &[(String, Vec<u8>)]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let items: Vec<(String, &[u8])> = items
+            .iter()
+            .map(|(mime, data)| (pasteboard_type(mime), data.as_slice()))
+            .collect();
+        mac::write(&items)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = items;
+        false
+    }
+}
+
+/// A random password for a paste event, used once.
+pub fn one_time_password() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .is_err()
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        bytes = (now.as_nanos() ^ u128::from(std::process::id())).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// RTF as HTML, converted by AppKit, as `read_rich` does.
 #[cfg(all(test, target_os = "macos"))]
 pub fn rtf_to_html(rtf: &[u8]) -> Option<String> {
@@ -52,9 +156,48 @@ mod mac {
         NSHTMLTextDocumentType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeHTML,
         NSPasteboardTypePNG, NSPasteboardTypeRTF, NSPasteboardTypeString, NSPasteboardTypeTIFF,
     };
-    use objc2_foundation::{NSAttributedString, NSData, NSDictionary, NSRange};
+    use objc2_foundation::{NSAttributedString, NSData, NSDictionary, NSRange, NSString};
 
     use super::Rich;
+
+    /// The pasteboard types on the clipboard.
+    pub fn types() -> Vec<String> {
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            board
+                .types()
+                .map(|types| types.iter().map(|t| t.to_string()).collect())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The clipboard's data of pasteboard type `kind`; PNG converted from
+    /// TIFF when that's all there is.
+    pub fn read(kind: &str) -> Option<Vec<u8>> {
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the type constant is AppKit's static NSString.
+            if kind == unsafe { NSPasteboardTypePNG }.to_string() {
+                return image(&board);
+            }
+            let data = board.dataForType(&NSString::from_str(kind))?;
+            Some(data.to_vec())
+        })
+    }
+
+    /// Replaces the clipboard with `items` (pasteboard type, data).
+    pub fn write(items: &[(String, &[u8])]) -> bool {
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            let mut any = false;
+            for (kind, data) in items {
+                any |= board
+                    .setData_forType(Some(&NSData::with_bytes(data)), &NSString::from_str(kind));
+            }
+            any
+        })
+    }
 
     pub fn read_rich() -> Option<Rich> {
         objc2::rc::autoreleasepool(|_| {
@@ -138,6 +281,27 @@ mod mac {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn mime_names_map_to_pasteboard_types() {
+            assert_eq!(
+                crate::pasteboard::pasteboard_type("text/plain;charset=utf-8"),
+                "public.utf8-plain-text"
+            );
+            assert_eq!(
+                crate::pasteboard::pasteboard_type("IMAGE/PNG"),
+                "public.png"
+            );
+            assert_eq!(
+                crate::pasteboard::pasteboard_type("application/x-motty"),
+                "application/x-motty"
+            );
+            assert_eq!(
+                crate::pasteboard::mime_type("public.html").as_deref(),
+                Some("text/html")
+            );
+            assert_eq!(crate::pasteboard::mime_type("com.apple.flat-rtfd"), None);
+        }
 
         /// One transparent pixel.
         const PIXEL: [u8; 70] = [

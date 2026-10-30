@@ -20,6 +20,7 @@ use polling::{Event as PollEvent, Events, PollMode, Poller};
 
 use alacritty_terminal::term::TermMode;
 
+use crate::clipboard::{Outcome, Writes};
 use crate::graphemes::{Cluster, Graphemes};
 use crate::graphics::{Graphics, Scanner, Sequence, Step, Work};
 use crate::pty_reader::Reader;
@@ -74,6 +75,8 @@ pub struct PtyLoop {
     /// Runs beside `parser` to catch the shell-integration OSCs it drops.
     osc_parser: alacritty_terminal::vte::Parser,
     sniffer: OscSniffer,
+    /// OSC 5522 writes on their way in.
+    clipboard: Writes,
     repaint: Repaint,
     shell: Arc<std::sync::Mutex<ShellState>>,
     /// Cuts image sequences out of the output for `graphics`.
@@ -118,6 +121,7 @@ impl PtyLoop {
             pointer: None,
             osc_parser: alacritty_terminal::vte::Parser::new(),
             sniffer: OscSniffer::default(),
+            clipboard: Writes::default(),
             repaint,
             shell,
             scanner: Scanner::default(),
@@ -317,6 +321,15 @@ impl PtyLoop {
             }
             if let Some(osc) = self.sniffer.take() {
                 record_osc(osc, term, &self.shell, &self.proxy);
+            }
+            if let Some(packet) = self.sniffer.take_clipboard() {
+                match self.clipboard.handle(packet) {
+                    Outcome::Request(request) => self
+                        .proxy
+                        .send_session_event(SessionEvent::Clipboard(request)),
+                    Outcome::Reply(reply) => self.proxy.send_event(Event::PtyWrite(reply)),
+                    Outcome::Nothing => {}
+                }
             }
             for query in self.sniffer.take_queries() {
                 let vt = self.proxy.vt();

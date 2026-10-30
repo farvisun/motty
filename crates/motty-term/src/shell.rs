@@ -4,6 +4,7 @@
 //! - OSC 133 A/B/C/D: prompt start, input start, output start and command
 //!   end (with its exit status), recorded as command [`Block`]s.
 //! - OSC 9 / OSC 777 `notify`: desktop notifications; OSC 9;4 progress.
+//! - OSC 5522: the kitty clipboard protocol, for [`crate::clipboard`].
 //!
 //! A raw `vte` parser runs beside the VT parser over the same bytes and
 //! stops at each of these, so a mark lands where the cursor is at that point
@@ -45,12 +46,17 @@ pub enum Progress {
 #[derive(Default)]
 pub struct OscSniffer {
     pending: Option<ShellOsc>,
+    clipboard: Option<crate::clipboard::Packet>,
     queries: Vec<crate::vt::Query>,
 }
 
 impl OscSniffer {
     pub fn take(&mut self) -> Option<ShellOsc> {
         self.pending.take()
+    }
+
+    pub fn take_clipboard(&mut self) -> Option<crate::clipboard::Packet> {
+        self.clipboard.take()
     }
 
     pub fn take_queries(&mut self) -> Vec<crate::vt::Query> {
@@ -60,7 +66,11 @@ impl OscSniffer {
 
 impl Perform for OscSniffer {
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        self.pending = parse_osc(params);
+        if params.first() == Some(&b"5522".as_slice()) {
+            self.clipboard = Some(crate::clipboard::Packet::parse(&params[1..]));
+        } else {
+            self.pending = parse_osc(params);
+        }
     }
 
     fn csi_dispatch(
@@ -81,7 +91,7 @@ impl Perform for OscSniffer {
     }
 
     fn terminated(&self) -> bool {
-        self.pending.is_some() || !self.queries.is_empty()
+        self.pending.is_some() || self.clipboard.is_some() || !self.queries.is_empty()
     }
 }
 

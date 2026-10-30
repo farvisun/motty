@@ -162,10 +162,13 @@ impl Workspace {
             let Some(panes) = tab.panes() else { continue };
             for view in panes.terminals() {
                 let v = view.read(cx);
-                if (v.allow_title, v.allow_mouse) != (title, b.mouse_shell) {
+                if (v.allow_title, v.allow_mouse, v.allow_clipboard)
+                    != (title, b.mouse_shell, b.clipboard_shell)
+                {
                     view.update(cx, |v, cx| {
                         v.allow_title = title;
                         v.allow_mouse = b.mouse_shell;
+                        v.allow_clipboard = b.clipboard_shell;
                         if !programs {
                             v.title = None;
                         }
@@ -314,6 +317,95 @@ impl Workspace {
         }
     }
 
+    /// The kitty clipboard protocol (OSC 5522): reads and writes of any
+    /// type, under `clipboard-read` and `clipboard-write` as OSC 52 is.
+    /// Listing the types needs no permission and a password the user
+    /// trusted for the session skips the question. A paste event's password
+    /// is the user's own paste, so it's let in even when reads are denied.
+    pub(super) fn kitty_clipboard(
+        &mut self,
+        view: &Entity<TerminalView>,
+        request: motty_term::clipboard::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use motty_term::clipboard::Request;
+        use motty_theme::Access;
+        let (access, reading) = match &request {
+            Request::Read { .. } => (self.config.clipboard_read, true),
+            Request::Write { .. } => (self.config.clipboard_write, false),
+        };
+        if !self.badges_for(view).clipboard_shell {
+            return answer_kitty_clipboard(view, &request, false, cx);
+        }
+        if reading && view.update(cx, |v, _| v.take_paste_password(request.password())) {
+            return answer_kitty_clipboard(view, &request, true, cx);
+        }
+        if access == Access::Deny {
+            return answer_kitty_clipboard(view, &request, false, cx);
+        }
+        let trusted =
+            request.is_listing() || view.read(cx).trusts_clipboard_password(request.password());
+        if access == Access::Allow || trusted {
+            return answer_kitty_clipboard(view, &request, true, cx);
+        }
+        let program = clipboard_asker(view, cx);
+        let (question, detail) = match &request {
+            Request::Read { types, .. } => (
+                format!("Allow {program} to read the clipboard?"),
+                format!("It asked for {}.", types.join(", ")),
+            ),
+            Request::Write { items, .. } => {
+                let size: usize = items.iter().map(|(_, data)| data.len()).sum();
+                let types: Vec<&str> = items.iter().map(|(m, _)| m.as_str()).collect();
+                (
+                    format!("Allow {program} to copy to the clipboard?"),
+                    format!("{} ({})", types.join(", "), byte_size(size)),
+                )
+            }
+        };
+        let always = request
+            .password()
+            .map(|p| format!("Always Allow \u{201c}{}\u{201d}", p.name));
+        // Return presses the first button and Space the last one that isn't
+        // Cancel. Reads put Deny first so a stray Return hands nothing over;
+        // writes ask as OSC 52's do. Always Allow sits between, out of reach
+        // of either key.
+        let (first, last) = if reading {
+            ("Deny", "Allow")
+        } else {
+            ("Allow", "Deny")
+        };
+        let buttons: Vec<&str> = match &always {
+            Some(always) => vec![first, always, last],
+            None => vec![first, last],
+        };
+        let allow = if reading { buttons.len() - 1 } else { 0 };
+        let trust = always.is_some().then_some(1);
+        let level = if reading {
+            gpui::PromptLevel::Warning
+        } else {
+            gpui::PromptLevel::Info
+        };
+        let answer = window.prompt(level, &question, Some(&detail), &buttons, cx);
+        let view = view.clone();
+        cx.spawn(async move |_, cx| {
+            let choice = answer.await.ok();
+            cx.update(|cx| {
+                if choice.is_some()
+                    && choice == trust
+                    && let Some(password) = request.password()
+                {
+                    let secret = password.secret.clone();
+                    view.update(cx, |v, _| v.trust_clipboard_password(secret));
+                }
+                let allowed = choice == Some(allow) || (choice.is_some() && choice == trust);
+                answer_kitty_clipboard(&view, &request, allowed, cx);
+            });
+        })
+        .detach();
+    }
+
     /// Looking at a tab clears the marks of what happened while away; a
     /// spinner or a hand stays while it's true.
     pub(super) fn clear_seen(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -388,6 +480,49 @@ impl Workspace {
                     .any(|p| p.pid == pid)
             })
             .cloned()
+    }
+}
+
+/// Does what an OSC 5522 request asked, or refuses it, and answers.
+fn answer_kitty_clipboard(
+    view: &Entity<TerminalView>,
+    request: &motty_term::clipboard::Request,
+    allowed: bool,
+    cx: &gpui::App,
+) {
+    use motty_term::clipboard::Request;
+    let reply = match request {
+        Request::Read { reply, .. } | Request::Write { reply, .. } if !allowed => {
+            reply.denied(request)
+        }
+        Request::Read { reply, .. } if request.is_listing() => {
+            reply.list(&crate::pasteboard::mime_types())
+        }
+        Request::Read { types, reply, .. } => {
+            let items: Vec<(String, Vec<u8>)> = types
+                .iter()
+                .filter_map(|mime| Some((mime.clone(), crate::pasteboard::read_mime(mime)?)))
+                .collect();
+            reply.read(&items)
+        }
+        Request::Write { items, reply, .. } => {
+            if crate::pasteboard::write_mimes(items) {
+                reply.written()
+            } else {
+                reply.failed_write()
+            }
+        }
+    };
+    view.read(cx).session().write(reply.into_bytes());
+}
+
+/// `bytes` for people: `512 bytes`, `12 KB`, `3.4 MB`.
+fn byte_size(bytes: usize) -> String {
+    const KB: usize = 1024;
+    match bytes {
+        b if b < KB => format!("{b} bytes"),
+        b if b < KB * KB => format!("{} KB", b.div_ceil(KB)),
+        b => format!("{:.1} MB", b as f64 / (KB * KB) as f64),
     }
 }
 

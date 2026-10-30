@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use motty_term::alacritty_terminal::grid::Dimensions;
 use motty_term::alacritty_terminal::index::{Column, Line, Point};
-use motty_term::{GridSize, Session, SessionConfig};
+use motty_term::alacritty_terminal::term::TermMode;
+use motty_term::clipboard::Request;
+use motty_term::{GridSize, Session, SessionConfig, SessionEvent};
 
 fn run(cmd: &str) -> Session {
     let config = SessionConfig {
@@ -198,4 +200,57 @@ fn images_from_the_pty_are_placed_at_the_cursor() {
         .collect();
     // The sixel moved the cursor below itself, where "ef" went.
     assert_eq!(at, vec![(0, 2), (0, 5)]);
+}
+
+#[test]
+fn paste_events_mode_is_set_and_reported() {
+    let want = "E[?5522;1$yE[?5522;2$y";
+    let s = run(&format!(
+        "stty raw -echo; printf '\\033[?5522h\\033[?5522$p\\033[?5522l\\033[?5522$p'; \
+         r=$(dd bs=1 count={} 2>/dev/null | tr '\\033' E); stty sane; \
+         printf '%s' \"$r\"; printf '\\033[?5522h'; sleep 3",
+        want.len()
+    ));
+    assert_eq!(wait_for(&s, 0, want), want);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !s.term.lock().mode().contains(TermMode::PASTE_EVENTS) {
+        assert!(Instant::now() < deadline, "mode 5522 never set");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn clipboard_reads_reach_the_app() {
+    let config = SessionConfig {
+        command: Some((
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                // `text/plain image/png`, base64.
+                "printf '\\033]5522;type=read:id=w1;dGV4dC9wbGFpbiBpbWFnZS9wbmc=\\033\\\\'; sleep 2"
+                    .into(),
+            ],
+        )),
+        ..Default::default()
+    };
+    let size = GridSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 8.,
+        cell_height: 16.,
+    };
+    let (_session, events) = Session::spawn(config, size).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "no clipboard request");
+        match events.try_recv() {
+            Ok(SessionEvent::Clipboard(Request::Read { types, reply, .. })) => {
+                assert_eq!(types, ["text/plain", "image/png"]);
+                assert!(reply.read(&[]).contains(":id=w1"));
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
 }

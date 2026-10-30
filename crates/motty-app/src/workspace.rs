@@ -1006,6 +1006,9 @@ impl Workspace {
                 TerminalEvent::ClipboardRead(format) => {
                     this.clipboard_read(terminal, format.clone(), window, cx)
                 }
+                TerminalEvent::Clipboard(request) => {
+                    this.kitty_clipboard(terminal, request.clone(), window, cx)
+                }
             },
         );
         self.pane_subscriptions

@@ -84,6 +84,9 @@ bitflags! {
         /// XTMODKEYS modifyOtherKeys level 2 (`CSI > 4 ; 2 m`).
         const MODIFY_OTHER_KEYS_2     = 1 << 25;
         const MODIFY_OTHER_KEYS       = Self::MODIFY_OTHER_KEYS_1.bits() | Self::MODIFY_OTHER_KEYS_2.bits();
+        /// Mode 5522: a paste sends the clipboard's types (OSC 5522)
+        /// instead of its text.
+        const PASTE_EVENTS            = 1 << 26;
         /// ECMA-48 BDSM (mode 8) set: the program lays out bidirectional
         /// text itself, so the renderer must not reorder lines.
         const BIDI_EXPLICIT           = 1 << 28;
@@ -737,11 +740,13 @@ impl<T> Term<T> {
     }
 
     /// Back to classic key encodings: no kitty keyboard flags on either
-    /// screen, modifyOtherKeys off.
+    /// screen, modifyOtherKeys off, and pastes as text.
     pub fn reset_key_encodings(&mut self) {
         self.keyboard_mode_stack.clear();
         self.inactive_keyboard_mode_stack.clear();
-        self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::MODIFY_OTHER_KEYS);
+        self.mode.remove(
+            TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::MODIFY_OTHER_KEYS | TermMode::PASTE_EVENTS,
+        );
     }
 
     /// Swap primary and alternate screen buffer.
@@ -1993,6 +1998,10 @@ impl<T: EventListener> Handler for Term<T> {
     fn set_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(5522) => {
+                self.mode.insert(TermMode::PASTE_EVENTS);
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2056,6 +2065,10 @@ impl<T: EventListener> Handler for Term<T> {
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(5522) => {
+                self.mode.remove(TermMode::PASTE_EVENTS);
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_private_mode");
                 return;
@@ -2143,6 +2156,7 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
+            PrivateMode::Unknown(5522) => self.mode.contains(TermMode::PASTE_EVENTS).into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 

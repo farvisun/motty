@@ -337,8 +337,8 @@ pub const KEYS: &[KeySpec] = &[
     key("link-cmd-shift-click", Kind::Enum { values: &["reveal-finder", "open-system-default"], also: &[], bools: false }, "reveal-finder", "Controls › Links", "What ⌘⇧-click on a path does (URLs are copied)."),
     key("open-with-app", Kind::Str, "", "", "An app for Open In menus, \"Name|bundle.id\". One line each.").list(List::Repeated),
     // Clipboard & selection
-    key("clipboard-read", ACCESS, "ask", "Advanced › Clipboard", "Programs reading the clipboard (OSC 52)."),
-    key("clipboard-write", ACCESS, "allow", "Advanced › Clipboard", "Programs setting the clipboard (OSC 52)."),
+    key("clipboard-read", ACCESS, "ask", "Advanced › Clipboard", "Programs reading the clipboard (OSC 52 and 5522). Listing what it holds is always allowed."),
+    key("clipboard-write", ACCESS, "allow", "Advanced › Clipboard", "Programs setting the clipboard (OSC 52 and 5522)."),
     bool("clipboard-trim-trailing-spaces", "false", "Controls › Clipboard", "Copied lines lose their trailing spaces."),
     bool("copy-on-select", "false", "Controls › Clipboard", "Every selection goes straight to the clipboard."),
     bool("clipboard-paste-protection", "true", "Controls › Clipboard", "Ask before a risky paste (several lines, sudo, control characters)."),
@@ -391,7 +391,7 @@ pub const KEYS: &[KeySpec] = &[
     bool("privilege-resume-agent-session", "true", "Agents › Agent Behavior", "A recovered pane resumes the agent session it had."),
     bool("privilege-mouse-shell", "true", "Advanced › Mouse", "Programs may turn on mouse reporting."),
     bool("privilege-title-shell", "true", "Advanced › Title", "Programs may set the title (OSC 0 / 2)."),
-    bool("privilege-clipboard-shell", "true", "Advanced › Clipboard", "Programs may use the clipboard at all (OSC 52)."),
+    bool("privilege-clipboard-shell", "true", "Advanced › Clipboard", "Programs may use the clipboard at all (OSC 52 and 5522)."),
     // IPC security
     bool("ipc-allow-send-keys", "false", "Advanced › IPC", "motty send and agents may type into panes."),
     bool("ipc-allow-sensitive-sessions", "false", "Advanced › IPC", "…even into SSH sessions and password prompts."),
