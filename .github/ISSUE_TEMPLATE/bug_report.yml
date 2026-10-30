@@ -1,0 +1,23 @@
+name: Bug report
+description: Something in Motty is wrong or missing
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Motty version (Motty › About Motty), macOS version, Mac model, shell
+      placeholder: "0.3.1, macOS 15.4, MacBook Pro M3, zsh"
+  - type: textarea
+    id: config
+    attributes:
+      label: Related settings
+      description: The lines of ~/.config/motty/config.toml that matter, if any. Leave out paths or hosts you don't want to share.
+      render: toml

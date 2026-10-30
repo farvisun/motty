@@ -1,0 +1,16 @@
+name: Feature request
+description: Something Motty should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What you'd like
+      description: What you're trying to do, and how Motty could help.
+    validations:
+      required: true
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: How you do it today
+      description: A workaround, or another app that does it well.
