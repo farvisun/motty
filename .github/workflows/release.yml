@@ -65,7 +65,7 @@ jobs:
             dist/Motty-*-universal.dmg
             dist/SHA256SUMS.txt
             dist/Motty.dmg.sig
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: Motty-dmg
