@@ -449,7 +449,14 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     Ok(hasher
         .finalize()
         .iter()

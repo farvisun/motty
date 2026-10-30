@@ -33,9 +33,9 @@ ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 # Verifies the signature on downloaded updates.
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 base64 = "0.22"
 # Pure-Rust regex engine; the grammars come from two-face (bat's set, a
 # superset of syntect's defaults), so syntect's own dump isn't linked.
