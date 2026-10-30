@@ -8,10 +8,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, BoxShadow, Context, Entity, EntityId, FocusHandle,
-    Focusable, FontWeight, Hsla, MouseButton, SharedString, Subscription, Task, Transformation,
-    Window, WindowAppearance, WindowBackgroundAppearance, div, percentage, point, prelude::*, px,
-    svg,
+    Animation, AnimationExt, AnyElement, App, BoxShadow, Context, DispatchPhase, Entity, EntityId,
+    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseExitEvent, MouseMoveEvent,
+    SharedString, Subscription, Task, Transformation, Window, WindowAppearance,
+    WindowBackgroundAppearance, canvas, div, percentage, point, prelude::*, px, svg,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -1672,6 +1672,39 @@ impl Workspace {
             }),
         };
         Some(tab.root.render(&style))
+    }
+
+    /// Keeps `pointer_inside` up to date from every move over the window.
+    /// Hover can't tell: the sidebar's and the details panel's resize edges
+    /// occlude, which unhovers the root under them too.
+    fn pointer_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity().downgrade();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let set = move |inside: bool, cx: &mut App| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.pointer_inside != inside {
+                            this.pointer_inside = inside;
+                            cx.notify();
+                        }
+                    });
+                };
+                let on_move = set.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        on_move(bounds.contains(&event.position), cx);
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        set(false, cx);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
     }
 
     fn drag_divider(
@@ -3504,12 +3537,7 @@ impl Render for Workspace {
             .relative()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if this.pointer_inside != *hovered {
-                    this.pointer_inside = *hovered;
-                    cx.notify();
-                }
-            }))
+            .child(self.pointer_tracker(cx))
             .on_action(cx.listener(|this, _: &ToggleTabsPanel, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_file_editor))
