@@ -21,6 +21,8 @@ jobs:
           targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - run: scripts/package-dmg.sh
+      # The in-app updater checks Motty.dmg against this (and GitHub's asset digest).
+      - run: cd dist && shasum -a 256 Motty.dmg Motty-*-universal.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Release notes from CHANGELOG.md
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -42,6 +44,7 @@ jobs:
           files: |
             dist/Motty.dmg
             dist/Motty-*-universal.dmg
+            dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
