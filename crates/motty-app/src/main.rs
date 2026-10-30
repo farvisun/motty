@@ -36,6 +36,7 @@ mod tab_icons;
 mod terminal_view;
 mod titlebar;
 mod tooltip;
+mod updater;
 mod url_scheme;
 mod web_pane;
 // Some of the web view's API isn't used yet.
@@ -106,6 +107,7 @@ fn main() {
         });
         cx.on_action(|_: &actions::OpenSettings, cx| settings::open(None, cx));
         cx.on_action(|_: &actions::About, _| menus::show_about());
+        cx.on_action(|_: &actions::CheckForUpdates, cx| updater::check_now(cx));
         cx.on_action(|a: &actions::CopyText, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(a.text.clone()))
         });
@@ -138,6 +140,7 @@ fn main() {
             tracing::warn!("{w}");
         }
         menus::set(cx);
+        updater::start(cx);
         let restored = recovery::to_restore(config.restore_session);
         let windows = restored.map(|s| s.windows).unwrap_or_default();
         let mut opened = false;

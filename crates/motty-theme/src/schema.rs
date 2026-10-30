@@ -361,6 +361,7 @@ pub const KEYS: &[KeySpec] = &[
     key("on-launch", Kind::Enum { values: &["restore_session", "new_window"], also: &[], bools: false }, "restore_session", "General › General", "Reopen the last session, or start with a new window (a crash still restores)."),
     bool("session-restore-banner", "true", "General › General", "\"Closed at\" / \"Restored at\" lines under a restored pane's scrollback."),
     bool("quit-after-last-window-closed", "false", "General › General", "Quit rather than stay in the Dock."),
+    bool("check-for-updates", "true", "General › General", "Look for a new release on GitHub once a day."),
     key("confirm-close-pane", CONFIRM, "process", "General › Close Confirmation", "When closing a split asks first."),
     key("confirm-close-tab", CONFIRM, "process", "General › Close Confirmation", "When closing a tab asks first."),
     key("confirm-close-window", Kind::Enum { values: &["process", "always", "multiple_tabs", "never"], also: &[], bools: true }, "process", "General › Close Confirmation", "When closing a window asks first."),

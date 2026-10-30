@@ -1083,6 +1083,17 @@ impl SettingsWindow {
             },
         ));
         rows.push(row(
+            General,
+            "General",
+            "Check for Updates Daily",
+            Some("Looks for a new release on GitHub and asks before installing it"),
+            Control::Toggle {
+                key: "check-for-updates",
+                on: c.check_for_updates,
+                invert: false,
+            },
+        ));
+        rows.push(row(
             View,
             "Tabs Panel",
             "Show Tabs Panel",

@@ -272,6 +272,7 @@ fn build(s: &Snapshot, live: &Live, cx: &mut App) {
     cx.set_menus([
         Menu::new("Motty").items([
             MenuItem::action("About Motty", About),
+            MenuItem::action("Check for Updates...", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings...", OpenSettings),
             MenuItem::action("Welcome Guide", ShowWelcome),

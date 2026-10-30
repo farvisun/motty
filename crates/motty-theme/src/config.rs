@@ -96,6 +96,8 @@ pub struct Config {
     pub progress_bar_commands: Option<Vec<String>>,
     /// `quit-after-last-window-closed`: quit rather than stay in the Dock.
     pub quit_after_last_window: bool,
+    /// `check-for-updates`: look for a new release on GitHub once a day.
+    pub check_for_updates: bool,
     /// `working-directory`, and `window-`, `tab-` and `split-working-directory`
     /// for each kind of new terminal.
     pub working_directory: Option<WorkingDir>,
@@ -986,6 +988,7 @@ impl Config {
             link_detection: true,
             restore_session: true,
             restore_banner: true,
+            check_for_updates: true,
             editor: EditorPrefs::default(),
             clipboard_write: Access::Allow,
             ..Default::default()
@@ -1299,6 +1302,7 @@ impl Config {
                 "quit-after-last-window-closed" => {
                     out.quit_after_last_window = value.as_bool().unwrap_or(false)
                 }
+                "check-for-updates" => out.check_for_updates = value.as_bool().unwrap_or(true),
                 "working-directory" => {
                     out.working_directory = value.as_str().map(WorkingDir::parse)
                 }

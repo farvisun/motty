@@ -158,6 +158,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("Settings", "Open Config File", OpenConfigFile),
         Command::new("Settings", "Reload Config", ReloadConfig),
         Command::new("Motty", "Welcome Guide", ShowWelcome),
+        Command::new("Motty", "Check for Updates…", CheckForUpdates),
         Command::new("Motty", "Quit Motty", Quit),
     ]);
     merge_groups(list)

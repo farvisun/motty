@@ -35,6 +35,10 @@ The build is signed ad hoc but not notarized yet, so the first launch needs a co
 right-click Motty in Applications and choose **Open**, or run
 `xattr -dr com.apple.quarantine /Applications/Motty.app`.
 
+From 0.3.0 Motty updates itself: once a day (`check-for-updates`, Settings › General) and from
+**Motty › Check for Updates…** it looks at the latest GitHub release. **Install and Restart**
+downloads Motty.dmg, checks it against the release's SHA-256, replaces the app and reopens it.
+
 ## Build and run
 
 ```sh

@@ -123,6 +123,7 @@ actions!(
         ShowWelcome,
         OpenSettings,
         About,
+        CheckForUpdates,
         HideApp,
         HideOthers,
         ShowAll,
