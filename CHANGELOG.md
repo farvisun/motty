@@ -4,6 +4,16 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
+### Features
+
+- **app:** check for updates once a day and from Motty › Check for Updates…; Install and Restart downloads the new Motty.dmg, checks its SHA-256, replaces the app and reopens it. Turn the daily check off with `check-for-updates` (Settings › General) ([4235b4a](https://github.com/farvisun/motty/commit/4235b4a))
+
+### CI
+
+- publish SHA256SUMS.txt with each release ([c35ad26](https://github.com/farvisun/motty/commit/c35ad26))
+
 ## [0.2.0] - 2026-10-30
 
 ### Features
