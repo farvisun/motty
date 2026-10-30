@@ -4,6 +4,14 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-30
+
+### Bug Fixes
+
+- **term:** forward ⌘ chords the config unbinds to the program, as Super in the kitty keyboard protocol ([fa2e4ea](https://github.com/farvisun/motty/commit/fa2e4ea))
+- **app:** keep titlebar buttons while hovering a resize edge ([3344d2f](https://github.com/farvisun/motty/commit/3344d2f))
+- **settings:** stop listing installed fonts every frame; hover on sidebar items ([4e36a2f](https://github.com/farvisun/motty/commit/4e36a2f))
+
 ## [0.1.0] - 2026-10-29
 
 First public release.
@@ -195,5 +203,6 @@ First public release.
 - vendor alacritty_terminal with a pushed-lines counter ([6d68c3b](https://github.com/farvisun/motty/commit/6d68c3b))
 - **xtask:** bundle the AppleScript dictionary ([0919404](https://github.com/farvisun/motty/commit/0919404))
 
-[Unreleased]: https://github.com/farvisun/motty/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/farvisun/motty/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/farvisun/motty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/farvisun/motty/releases/tag/v0.1.0
