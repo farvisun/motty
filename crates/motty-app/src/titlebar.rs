@@ -1,7 +1,8 @@
-//! The titlebar buttons Otty shows while the pointer is over the window: a
-//! new-tab split button (with a menu chevron), notifications and the tabs
-//! panel toggle next to the traffic lights or at the sidebar's edge, the
-//! title's "more" ellipsis, and the details panel toggle on the right.
+//! The titlebar buttons: a new-tab split button (with a menu chevron),
+//! notifications and the tabs panel toggle at the sidebar's edge (shown
+//! while the pointer is over the sidebar) or next to the traffic lights,
+//! and the title's "more" ellipsis and the details panel toggle on the
+//! right (shown while it is over the titlebar).
 //!
 //! Geometry is measured from Otty at 2x. Icons are drawn as vector shapes in
 //! the style of the system's symbols; none of Otty's assets are used.

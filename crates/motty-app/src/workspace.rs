@@ -10,8 +10,9 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, Context, DispatchPhase, Entity, EntityId,
     FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, SharedString, Subscription, Task, Transformation, Window, WindowAppearance,
-    WindowBackgroundAppearance, canvas, div, percentage, point, prelude::*, px, svg,
+    MouseMoveEvent, Pixels, Point, SharedString, Subscription, Task, Transformation, Window,
+    WindowAppearance, WindowBackgroundAppearance, canvas, div, percentage, point, prelude::*, px,
+    svg,
 };
 use motty_render::{TerminalStyle, hsla};
 use motty_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -296,8 +297,9 @@ pub struct Workspace {
     sidebar_visible: bool,
     /// The details panel (⌘⇧R) and what it shows.
     details: details::Details,
-    /// The pointer is over the window: Otty shows its titlebar buttons then.
-    pointer_inside: bool,
+    /// Where the pointer is over the window: the titlebar buttons show while
+    /// it is over the part they belong to.
+    pointer: Option<Point<Pixels>>,
     /// The new-tab menu is open; its button stays pressed.
     new_menu_open: bool,
     /// The bell turned the sidebar into Inbox.
@@ -686,7 +688,7 @@ impl Workspace {
             backdrops: Backdrops::default(),
             native_state: None,
             sidebar_visible,
-            pointer_inside: false,
+            pointer: None,
             new_menu_open: false,
             inbox: false,
             grouping: Default::default(),
@@ -1677,18 +1679,19 @@ impl Workspace {
         Some(tab.root.render(&style))
     }
 
-    /// Keeps `pointer_inside` up to date from every move over the window.
-    /// Hover can't tell: the sidebar's and the details panel's resize edges
+    /// Keeps `pointer` up to date from every move over the window. Hover
+    /// can't tell: the sidebar's and the details panel's resize edges
     /// occlude, which unhovers the root under them too.
     fn pointer_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
-                let set = move |inside: bool, cx: &mut App| {
+                let set = move |at: Option<Point<Pixels>>, cx: &mut App| {
                     let _ = this.update(cx, |this, cx| {
-                        if this.pointer_inside != inside {
-                            this.pointer_inside = inside;
+                        let before = this.pointer_at();
+                        this.pointer = at.filter(|at| bounds.contains(at));
+                        if this.pointer_at() != before {
                             cx.notify();
                         }
                     });
@@ -1696,18 +1699,27 @@ impl Workspace {
                 let on_move = set.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        on_move(bounds.contains(&event.position), cx);
+                        on_move(Some(event.position), cx);
                     }
                 });
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        set(false, cx);
+                        set(None, cx);
                     }
                 });
             },
         )
         .absolute()
         .size_full()
+    }
+
+    /// The parts of the window the pointer is over.
+    fn pointer_at(&self) -> PointerAt {
+        self.pointer
+            .map_or_else(PointerAt::default, |at| PointerAt {
+                sidebar: self.sidebar_shown() && at.x < px(self.sidebar_width()),
+                titlebar: at.y < px(TITLE_BAND),
+            })
     }
 
     fn drag_divider(
@@ -2875,10 +2887,11 @@ impl Workspace {
         }
     }
 
-    /// Otty's titlebar buttons, shown while the pointer is over the window:
-    /// new tab, notifications and the tabs panel toggle (at the sidebar's
-    /// edge, or after the traffic lights when it is hidden), and the details
-    /// panel toggle at the right.
+    /// Otty's titlebar buttons: new tab, notifications and the tabs panel
+    /// toggle at the sidebar's edge, shown while the pointer is over the
+    /// sidebar (or after the traffic lights when it is hidden, shown while it
+    /// is over the titlebar), and the details panel toggle at the right,
+    /// shown while it is over the titlebar.
     fn render_titlebar_buttons(
         &self,
         cx: &mut Context<Self>,
@@ -2941,7 +2954,8 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             );
         // With the details panel open, its toggle stays at the strip's end.
-        let details = (self.pointer_inside || self.details.visible).then(|| {
+        let pointer = self.pointer_at();
+        let details = (pointer.titlebar || self.details.visible).then(|| {
             div()
                 .absolute()
                 .top(px(titlebar::TOP))
@@ -2962,7 +2976,12 @@ impl Workspace {
                 .into_any_element()
         });
         // A tab bar has its own new tab and notifications buttons.
-        let group = !self.config.window_layout.horizontal() && self.pointer_inside;
+        let hovered = if self.sidebar_shown() {
+            pointer.sidebar
+        } else {
+            pointer.titlebar
+        };
+        let group = !self.config.window_layout.horizontal() && (hovered || self.new_menu_open);
         (group.then(|| group_el.into_any_element()), details)
     }
 
@@ -3432,7 +3451,7 @@ impl Render for Workspace {
                     .h(px(titlebar::BUTTON))
                     .flex()
                     .items_center()
-                    .when(self.pointer_inside || self.title_menu_open, |d| {
+                    .when(self.pointer_at().titlebar || self.title_menu_open, |d| {
                         // The title and its "more" ellipsis are one button;
                         // its highlight and the ellipsis hang around the
                         // title without moving it.
@@ -3813,6 +3832,13 @@ impl Render for Workspace {
             .children(overlays)
             .child(tear_off)
     }
+}
+
+/// Which parts of the window the pointer is over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PointerAt {
+    sidebar: bool,
+    titlebar: bool,
 }
 
 /// A press on the titlebar, which the window leaves to us: a double-click
