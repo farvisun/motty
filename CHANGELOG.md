@@ -4,6 +4,28 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-04
+
+### Bug Fixes
+
+- **app:** the details panel toggle works on every click: a quick second click on a titlebar button no longer zooms the window and gets lost, as Motty now handles the titlebar itself (drag to move, double-click the empty titlebar to zoom) ([58d85f4](https://github.com/farvisun/motty/commit/58d85f4))
+
+### Features
+
+- **app:** titlebar buttons show only where they belong: new tab, notifications and the tabs panel toggle while the pointer is over the sidebar (or over the titlebar when the sidebar is hidden), the details toggle and the title's menu while it is over the titlebar ([0105ced](https://github.com/farvisun/motty/commit/0105ced))
+
+### Documentation
+
+- **site:** a calmer, cleaner landing page, with Homebrew install instructions ([35da848](https://github.com/farvisun/motty/commit/35da848))
+
+### Build
+
+- bump toml, dirs, sha2, ed25519-dalek and fontdb ([2c691e0](https://github.com/farvisun/motty/commit/2c691e0))
+
+### CI
+
+- bump GitHub Actions to their Node 24 majors ([da97132](https://github.com/farvisun/motty/commit/da97132))
+
 ## [0.3.1] - 2026-10-30
 
 ### Features
@@ -248,7 +270,10 @@ First public release.
 - vendor alacritty_terminal with a pushed-lines counter ([6d68c3b](https://github.com/farvisun/motty/commit/6d68c3b))
 - **xtask:** bundle the AppleScript dictionary ([0919404](https://github.com/farvisun/motty/commit/0919404))
 
-[Unreleased]: https://github.com/farvisun/motty/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/farvisun/motty/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/farvisun/motty/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/farvisun/motty/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/farvisun/motty/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/farvisun/motty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/farvisun/motty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/farvisun/motty/releases/tag/v0.1.0

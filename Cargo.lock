@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "motty-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "motty-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "motty-ipc"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -3293,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "motty-render"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64",
  "gpui-pre",
@@ -3306,7 +3306,7 @@ dependencies = [
 
 [[package]]
 name = "motty-term"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "motty-theme"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -6895,7 +6895,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "image",
