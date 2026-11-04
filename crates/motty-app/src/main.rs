@@ -436,6 +436,10 @@ fn open_window_inner(
         window_background: workspace::background_appearance(&theme),
         app_id: Some("dev.motty.Motty".into()),
         window_min_size: Some(size(px(360.), px(200.))),
+        // The titlebar strip moves and zooms the window itself. Left to
+        // AppKit, a double-click on a titlebar button zoomed the window
+        // under it and the click never landed.
+        app_owns_titlebar_drag: true,
         ..Default::default()
     };
     // `window-working-directory`: a folder, or home; launched from a

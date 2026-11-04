@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, Context, DispatchPhase, Entity, EntityId,
-    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseExitEvent, MouseMoveEvent,
-    SharedString, Subscription, Task, Transformation, Window, WindowAppearance,
+    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseExitEvent,
+    MouseMoveEvent, SharedString, Subscription, Task, Transformation, Window, WindowAppearance,
     WindowBackgroundAppearance, canvas, div, percentage, point, prelude::*, px, svg,
 };
 use motty_render::{TerminalStyle, hsla};
@@ -1849,7 +1849,13 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .bg(hsla(side.background))
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.position.y < px(TITLEBAR_RESERVE) {
+                        titlebar_press(event, window);
+                    } else {
+                        window.start_window_move();
+                    }
+                })
                 // A pane dropped in the list's empty space becomes a tab.
                 .on_drop(cx.listener(|this, drag: &pane_drag::PaneDrag, window, cx| {
                     this.drop_as_tab(drag.item.clone(), window, cx)
@@ -2941,7 +2947,7 @@ impl Workspace {
                 .top(px(titlebar::TOP))
                 .right(px(titlebar::DETAILS_RIGHT))
                 .child(
-                    button("details-panel", titlebar::BUTTON)
+                    button("details-toggle", titlebar::BUTTON)
                         .child(titlebar::panel(
                             icon,
                             if self.details.visible {
@@ -3520,11 +3526,7 @@ impl Render for Workspace {
                     .h(px(TITLEBAR_RESERVE))
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
+                        titlebar_press(event, window)
                     }),
             )
             .when(
@@ -3810,6 +3812,16 @@ impl Render for Workspace {
             .children(self.render_pills(window, cx))
             .children(overlays)
             .child(tear_off)
+    }
+}
+
+/// A press on the titlebar, which the window leaves to us: a double-click
+/// zooms (or whatever the system setting says), anything else moves it.
+fn titlebar_press(event: &MouseDownEvent, window: &mut Window) {
+    if event.click_count == 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
     }
 }
 

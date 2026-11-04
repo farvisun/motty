@@ -499,7 +499,9 @@ impl Workspace {
             .items_start()
             .gap(px(TAB_GAP))
             .font_family(self.ui_font.clone())
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                super::titlebar_press(event, window)
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
