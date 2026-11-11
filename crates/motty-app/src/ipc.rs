@@ -351,6 +351,14 @@ pub fn focus_window(handle: WindowHandle<Workspace>, cx: &mut App) -> anyhow::Re
     Ok(Value::Null)
 }
 
+/// Goes to the pane with this id, if it's still open (a clicked
+/// notification's pane may have closed since).
+pub fn reveal_pane_by_id(id: u64, cx: &mut App) {
+    if let Some((handle, view)) = find_pane(id, cx) {
+        let _ = focus_pane(handle, &view, None, cx);
+    }
+}
+
 fn find_pane(id: u64, cx: &App) -> Option<Pane> {
     workspaces(cx).into_iter().find_map(|handle| {
         let view = handle.read(cx).ok()?.find_pane(id, cx)?;

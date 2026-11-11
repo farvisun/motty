@@ -87,6 +87,7 @@ fn main() {
         fonts::load(cx);
         ipc::start(cx);
         dock_click::install(cx);
+        notifications::install(cx);
         applescript::install(cx);
         cx.spawn(async move |cx| {
             while let Ok(urls) = opened.recv().await {

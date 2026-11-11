@@ -73,7 +73,8 @@ impl Workspace {
             && !looking
         {
             let body = format!("{} — {title}", message.as_deref().unwrap_or(stock));
-            crate::notifications::notify(&label, &body);
+            let pane = view.read(cx).id;
+            crate::notifications::notify(&label, &body, Some(pane));
         }
         let session = p
             .session_id
@@ -229,7 +230,7 @@ impl Workspace {
                 NotificationForeground::TabUnfocused => !self.looking_at(view, window),
             };
         if show {
-            crate::notifications::notify(title, body);
+            crate::notifications::notify(title, body, Some(view.read(cx).id));
             if !in_front {
                 crate::notifications::bounce_dock();
             }
