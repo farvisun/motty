@@ -3,6 +3,7 @@
 
 pub mod hooks;
 pub mod quota;
+pub mod screen;
 pub mod sessions;
 pub mod usage;
 
@@ -149,6 +150,58 @@ impl Badge {
     }
 }
 
+/// Where a pane's agent state came from. A source is ignored while a
+/// better one speaks for the pane: hooks know the most, a status report
+/// (OSC 7501) is the program's own word, and the screen is a guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Source {
+    Screen,
+    Report,
+    Hook,
+}
+
+/// An OSC 7501 report as an agent state report. `None` for one that
+/// changes nothing: `idle` between turns.
+pub fn from_report(
+    report: &motty_term::shell::ProgramStatus,
+    foreground: Option<&str>,
+    in_turn: bool,
+) -> Option<motty_ipc::AgentStateParams> {
+    use motty_ipc::AgentState;
+    use motty_term::shell::ProgramState;
+    let state = match report.state {
+        ProgramState::Working => AgentState::Processing,
+        ProgramState::Blocked => AgentState::Awaiting,
+        ProgramState::Done => AgentState::Idle,
+        // Idle after a finished turn would clear its badge.
+        ProgramState::Idle if !in_turn => return None,
+        ProgramState::Idle => AgentState::Idle,
+        ProgramState::Error => AgentState::Error,
+        ProgramState::Clear => AgentState::Ended,
+    };
+    let agent = match report.app.as_str() {
+        "" => foreground
+            .and_then(by_command)
+            .map_or("program", |a| a.id)
+            .to_owned(),
+        "claude-code" => "claude".to_owned(),
+        app => by_id(app)
+            .or_else(|| by_command(app))
+            .map_or(app, |a| a.id)
+            .to_owned(),
+    };
+    Some(motty_ipc::AgentStateParams {
+        pane: Default::default(),
+        agent,
+        state,
+        agent_pid: None,
+        session_id: None,
+        transcript: None,
+        label: None,
+        message: report.message.clone(),
+    })
+}
+
 /// What a pane is up to, for its tab's badge and its line in Inbox.
 #[derive(Clone, Debug)]
 pub struct Status {
@@ -167,6 +220,32 @@ pub struct Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_become_agent_states() {
+        use motty_ipc::AgentState;
+        use motty_term::shell::{ProgramState, ProgramStatus};
+        let report = |state, app: &str| ProgramStatus {
+            state,
+            app: app.into(),
+            message: Some("Reading".into()),
+            kind: None,
+            progress: None,
+        };
+        let p = from_report(&report(ProgramState::Working, "claude-code"), None, false).unwrap();
+        assert_eq!(
+            (p.agent.as_str(), p.state),
+            ("claude", AgentState::Processing)
+        );
+        assert_eq!(p.message.as_deref(), Some("Reading"));
+        let p = from_report(&report(ProgramState::Blocked, ""), Some("codex"), true).unwrap();
+        assert_eq!((p.agent.as_str(), p.state), ("codex", AgentState::Awaiting));
+        let p = from_report(&report(ProgramState::Done, "deploy"), None, true).unwrap();
+        assert_eq!((p.agent.as_str(), p.state), ("deploy", AgentState::Idle));
+        assert!(from_report(&report(ProgramState::Idle, "x"), None, false).is_none());
+        let p = from_report(&report(ProgramState::Clear, "x"), None, false).unwrap();
+        assert_eq!(p.state, AgentState::Ended);
+    }
 
     #[test]
     fn labels() {

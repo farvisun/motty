@@ -434,6 +434,11 @@ fn record_osc(
             Some(SessionEvent::ShellChanged)
         }
         ShellOsc::InputStart => Some(SessionEvent::PromptReady),
+        ShellOsc::Status(status) => {
+            // Not a mark in the scrollback: tell the UI and stop.
+            proxy.send_session_event(SessionEvent::ProgramStatus(status.clone()));
+            return;
+        }
         _ => None,
     };
     // Full-screen programs own the alternate screen; marks there would

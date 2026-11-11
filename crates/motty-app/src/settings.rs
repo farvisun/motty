@@ -1932,6 +1932,19 @@ impl SettingsWindow {
                 .dimmed(!any),
             );
         }
+        rows.push(row(
+            Agents,
+            "Agent Behavior",
+            "Detect Agents Without Hooks",
+            Some(
+                "Read an agent's state from its screen when no hook or status report speaks for it",
+            ),
+            Control::Toggle {
+                key: "agent-screen-detection",
+                on: c.agent_screen_detection,
+                invert: false,
+            },
+        ));
         for (ix, (agent, info)) in agents::CATALOG.iter().zip(&self.agents).enumerate() {
             let found = info.path.as_deref().map(tilde);
             rows.push(Row {

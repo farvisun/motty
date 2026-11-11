@@ -389,6 +389,7 @@ pub const KEYS: &[KeySpec] = &[
     bool("privilege-notify-agent-task-complete", "true", "Agents › Agent Behavior", "A banner when an agent finishes a task."),
     bool("privilege-notify-agent-awaiting-input", "true", "Agents › Agent Behavior", "A banner when an agent waits for you."),
     bool("privilege-caffeinate-agent-processing", "false", "Agents › Agent Behavior", "Keep the Mac awake while an agent works."),
+    bool("agent-screen-detection", "true", "Agents › Agent Behavior", "Without a hook, read an agent's state from its screen."),
     bool("privilege-resume-agent-session", "true", "Agents › Agent Behavior", "A recovered pane resumes the agent session it had."),
     bool("privilege-mouse-shell", "true", "Advanced › Mouse", "Programs may turn on mouse reporting."),
     bool("privilege-title-shell", "true", "Advanced › Title", "Programs may set the title (OSC 0 / 2)."),

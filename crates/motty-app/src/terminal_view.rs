@@ -57,6 +57,8 @@ pub enum TerminalEvent {
         title: Option<String>,
         body: String,
     },
+    /// A program said what it's doing (OSC 7501).
+    ProgramStatus(motty_term::shell::ProgramStatus),
     /// BEL: whether it rings is Sound — Shell Controlled.
     Bell,
     /// OSC 52 copy, subject to `clipboard-write`.
@@ -116,6 +118,10 @@ pub struct TerminalView {
     pub system: motty_term::SystemState,
     /// The agent's state, or how the last command went, for the tab.
     pub status: Option<crate::agents::Status>,
+    /// Where `status` came from, while an agent is reported.
+    pub agent_source: Option<crate::agents::Source>,
+    /// The agent state its screen shows, without a hook or a report.
+    pub screen: crate::agents::screen::Tracker,
     /// OSC 9;4 progress, or a spinner for a slow command.
     pub progress: Option<motty_term::shell::Progress>,
     /// Selection, clipboard and Secure Keyboard Entry switches.
@@ -230,6 +236,8 @@ impl TerminalView {
             cwd: None,
             busy: false,
             status: None,
+            agent_source: None,
+            screen: Default::default(),
             progress: None,
             behavior: Default::default(),
             progress_commands: Vec::new(),
@@ -353,6 +361,25 @@ impl TerminalView {
             blink.visible = true;
             blink.epoch += 1;
         }
+    }
+
+    /// The agent state the screen shows, when it changed: for a pane
+    /// running a known agent that no hook or status report speaks for.
+    pub fn read_screen_agent(&mut self) -> Option<(&'static str, motty_ipc::AgentState)> {
+        if self
+            .agent_source
+            .is_some_and(|s| s > crate::agents::Source::Screen)
+        {
+            self.screen.reset();
+            return None;
+        }
+        let agent = self
+            .foreground
+            .as_deref()
+            .and_then(crate::agents::by_command)
+            .map(|a| a.id);
+        let session = &self.session;
+        self.screen.read(agent, || session.screen_text())
     }
 
     /// Re-reads the foreground process; returns whether anything changed.
@@ -530,6 +557,7 @@ impl TerminalView {
             SessionEvent::Notification { title, body } => {
                 cx.emit(TerminalEvent::Notification { title, body })
             }
+            SessionEvent::ProgramStatus(status) => cx.emit(TerminalEvent::ProgramStatus(status)),
             SessionEvent::ShellChanged => {
                 if self.refresh_process() {
                     cx.emit(TerminalEvent::TitleChanged);

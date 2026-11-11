@@ -64,6 +64,9 @@ pub struct Config {
     /// `confirm-close-ignore-idle-agents`: an agent waiting at its prompt
     /// doesn't count as running when closing.
     pub close_ignores_idle_agents: bool,
+    /// `agent-screen-detection`: without a hook or a status report, an
+    /// agent's state is read from its screen.
+    pub agent_screen_detection: bool,
     /// `on-launch = restore_session` (default) reopens the last session;
     /// `new_window` starts fresh (a crash still restores).
     pub restore_session: bool,
@@ -988,6 +991,7 @@ impl Config {
             link_detection: true,
             restore_session: true,
             restore_banner: true,
+            agent_screen_detection: true,
             check_for_updates: true,
             editor: EditorPrefs::default(),
             clipboard_write: Access::Allow,
@@ -1282,6 +1286,9 @@ impl Config {
                 "session-restore-banner" => out.restore_banner = value.as_bool().unwrap_or(true),
                 "confirm-close-ignore-idle-agents" => {
                     out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
+                }
+                "agent-screen-detection" => {
+                    out.agent_screen_detection = value.as_bool().unwrap_or(true)
                 }
                 "editor-show-line-numbers" => {
                     out.editor.line_numbers = value.as_bool().unwrap_or(true)

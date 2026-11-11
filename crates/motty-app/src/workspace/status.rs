@@ -16,18 +16,28 @@ impl Workspace {
         window.is_window_active() && self.is_pane_shown(view)
     }
 
-    /// An agent's hook reported in.
+    /// An agent reported in: by its hook, a status report (OSC 7501) or
+    /// its screen. A report is dropped while a better source speaks for the
+    /// pane (see [`crate::agents::Source`]).
     pub fn agent_state(
         &mut self,
         view: &Entity<TerminalView>,
         p: AgentStateParams,
+        source: crate::agents::Source,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if view.read(cx).agent_source.is_some_and(|s| s > source) {
+            return;
+        }
         if p.state == AgentState::Ended {
-            view.update(cx, |v, _| v.status = None);
+            view.update(cx, |v, _| {
+                v.status = None;
+                v.agent_source = None;
+            });
             return self.touched(view, cx);
         }
+        view.update(cx, |v, _| v.agent_source = Some(source));
         let b = self.badges_for(view);
         let looking = self.looking_at(view, window);
         let (prev, process, title) = {

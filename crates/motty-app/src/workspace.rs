@@ -611,16 +611,35 @@ impl Workspace {
             this.update(cx, |this, cx| this.should_close(window, cx))
                 .unwrap_or(true)
         });
-        let process_poll = cx.spawn(async move |this, cx| {
+        let process_poll = cx.spawn_in(window, async move |this, cx| {
             let mut tick = 0u32;
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let alive = this.update(cx, |this, cx| {
+                let alive = this.update_in(cx, |this, window, cx| {
                     let mut changed = false;
+                    let mut screens = Vec::new();
                     for tab in this.tabs.iter().filter_map(Tab::panes) {
                         for view in tab.terminals() {
                             changed |= view.update(cx, |t, _| t.refresh_process());
+                            if this.config.agent_screen_detection
+                                && let Some(seen) = view.update(cx, |t, _| t.read_screen_agent())
+                            {
+                                screens.push((view.clone(), seen));
+                            }
                         }
+                    }
+                    for (view, (agent, state)) in screens {
+                        let p = motty_ipc::AgentStateParams {
+                            pane: Default::default(),
+                            agent: agent.to_owned(),
+                            state,
+                            agent_pid: None,
+                            session_id: None,
+                            transcript: None,
+                            label: None,
+                            message: None,
+                        };
+                        this.agent_state(&view, p, crate::agents::Source::Screen, window, cx);
                     }
                     if changed {
                         cx.notify();
@@ -995,6 +1014,19 @@ impl Workspace {
                             .clone()
                             .unwrap_or_else(|| terminal.read(cx).display_title());
                         this.banner(terminal, &title, body, window, cx);
+                    }
+                }
+                TerminalEvent::ProgramStatus(report) => {
+                    let (foreground, in_turn) = {
+                        let v = terminal.read(cx);
+                        let in_turn = v.status.as_ref().is_some_and(|s| s.in_turn);
+                        (v.foreground.clone(), in_turn)
+                    };
+                    if let Some(p) =
+                        crate::agents::from_report(report, foreground.as_deref(), in_turn)
+                    {
+                        let source = crate::agents::Source::Report;
+                        this.agent_state(terminal, p, source, window, cx);
                     }
                 }
                 TerminalEvent::Bell => {

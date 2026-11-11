@@ -73,6 +73,8 @@ pub enum SessionEvent {
     },
     /// The shell reported a new cwd or progress; see [`Session::shell`].
     ShellChanged,
+    /// A program reported its status (OSC 7501).
+    ProgramStatus(shell::ProgramStatus),
     /// The shell is at a fresh prompt, ready for input.
     PromptReady,
     /// A program used the kitty clipboard protocol (OSC 5522); answer with
@@ -97,6 +99,7 @@ impl std::fmt::Debug for SessionEvent {
             }
             Self::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
             Self::ShellChanged => f.write_str("ShellChanged"),
+            Self::ProgramStatus(s) => write!(f, "ProgramStatus({s:?})"),
             Self::PromptReady => f.write_str("PromptReady"),
             Self::Clipboard(_) => f.write_str("Clipboard"),
         }

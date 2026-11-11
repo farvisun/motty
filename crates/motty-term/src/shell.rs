@@ -5,6 +5,8 @@
 //!   end (with its exit status), recorded as command [`Block`]s.
 //! - OSC 9 / OSC 777 `notify`: desktop notifications; OSC 9;4 progress.
 //! - OSC 5522: the kitty clipboard protocol, for [`crate::clipboard`].
+//! - OSC 7501: the program status protocol, in which a program (a coding
+//!   agent, a script) says what it's doing; see [`ProgramStatus`].
 //!
 //! A raw `vte` parser runs beside the VT parser over the same bytes and
 //! stops at each of these, so a mark lands where the cursor is at that point
@@ -28,6 +30,83 @@ pub enum ShellOsc {
     CommandEnd(Option<i32>),
     Notify { title: Option<String>, body: String },
     Progress(Progress),
+    Status(ProgramStatus),
+}
+
+/// An OSC 7501 report about the program as a whole:
+/// `ESC ] 7501 ; state=working:app=claude-code:msg=<base64> ST`. Reports
+/// about parts of the work (`id=…`) are dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgramStatus {
+    pub state: ProgramState,
+    /// The program's name (`claude-code`, `cargo`); empty when not given.
+    pub app: String,
+    /// What it's doing or needs, in a few words.
+    pub message: Option<String>,
+    /// For `blocked`: `permission`, `question` or `auth`.
+    pub kind: Option<String>,
+    /// From 0 through 100, when the program says.
+    pub progress: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgramState {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+    Error,
+    /// Forget the last report.
+    Clear,
+}
+
+impl ProgramStatus {
+    /// Reads the body after `7501;`: `key=value` pairs joined by `:`, with
+    /// `title` and `msg` in base64.
+    pub fn parse(body: &str) -> Option<Self> {
+        use base64::Engine as _;
+        let mut state = None;
+        let mut status = Self {
+            state: ProgramState::Clear,
+            app: String::new(),
+            message: None,
+            kind: None,
+            progress: None,
+        };
+        for pair in body.split(':') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+            match key {
+                "state" => {
+                    state = Some(match value {
+                        "idle" => ProgramState::Idle,
+                        "working" => ProgramState::Working,
+                        "done" => ProgramState::Done,
+                        "blocked" => ProgramState::Blocked,
+                        "error" => ProgramState::Error,
+                        "clear" => ProgramState::Clear,
+                        _ => return None,
+                    })
+                }
+                "id" if !value.is_empty() => return None,
+                "app" => status.app = value.chars().take(32).collect(),
+                "msg" => {
+                    status.message = base64::engine::general_purpose::STANDARD
+                        .decode(value)
+                        .ok()
+                        .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
+                        .filter(|m| !m.is_empty())
+                        .map(|m| m.chars().take(2048).collect())
+                }
+                "kind" => status.kind = Some(value.to_owned()).filter(|k| !k.is_empty()),
+                "progress" => status.progress = value.parse::<u8>().ok().map(|p| p.min(100)),
+                _ => {}
+            }
+        }
+        status.state = state?;
+        Some(status)
+    }
 }
 
 /// OSC 9;4 progress, as ConEmu defined it.
@@ -126,6 +205,13 @@ fn parse_osc(params: &[&[u8]]) -> Option<ShellOsc> {
                 _ => Progress::Clear,
             }))
         }
+        b"7501" => ProgramStatus::parse(
+            &(1..params.len())
+                .filter_map(text)
+                .collect::<Vec<_>>()
+                .join(";"),
+        )
+        .map(ShellOsc::Status),
         // The message may itself contain `;`.
         b"9" => Some(ShellOsc::Notify {
             title: None,
@@ -250,7 +336,7 @@ impl ShellState {
                 return Some(b.clone());
             }
             ShellOsc::Progress(p) => self.progress = (*p != Progress::Clear).then_some(*p),
-            ShellOsc::Notify { .. } => {}
+            ShellOsc::Notify { .. } | ShellOsc::Status(_) => {}
         }
         None
     }
@@ -308,6 +394,32 @@ mod tests {
         assert_eq!(found[0], (9, ShellOsc::PromptStart));
         assert_eq!(found[1].1, ShellOsc::InputStart);
         assert_eq!(found[2], (input.len(), ShellOsc::CommandEnd(Some(2))));
+    }
+
+    #[test]
+    fn parses_program_status() {
+        // As `muxy status blocked --msg Apply? --kind permission --app terraform`.
+        let found = sniff(
+            b"\x1b]7501;state=blocked:app=terraform:progress=40:kind=permission:msg=QXBwbHk/\x1b\\",
+        );
+        assert_eq!(
+            found[0].1,
+            ShellOsc::Status(ProgramStatus {
+                state: ProgramState::Blocked,
+                app: "terraform".into(),
+                message: Some("Apply?".into()),
+                kind: Some("permission".into()),
+                progress: Some(40),
+            })
+        );
+        let ShellOsc::Status(idle) = &sniff(b"\x1b]7501;state=idle\x07")[0].1 else {
+            panic!("not a status");
+        };
+        assert_eq!((idle.state, idle.app.as_str()), (ProgramState::Idle, ""));
+        // Parts of the work, unknown states and reports without a state.
+        assert!(sniff(b"\x1b]7501;state=working:id=a\x07").is_empty());
+        assert!(sniff(b"\x1b]7501;state=sleeping\x07").is_empty());
+        assert!(sniff(b"\x1b]7501;app=x\x07").is_empty());
     }
 
     #[test]

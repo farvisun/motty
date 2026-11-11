@@ -1130,7 +1130,7 @@ fn agent_state(p: motty_ipc::AgentStateParams, cx: &mut App) -> anyhow::Result<V
             continue;
         };
         handle.update(cx, |workspace, window, cx| {
-            workspace.agent_state(&view, p, window, cx)
+            workspace.agent_state(&view, p, crate::agents::Source::Hook, window, cx)
         })?;
         let working = workspaces(cx)
             .iter()
