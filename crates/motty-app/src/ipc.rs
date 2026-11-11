@@ -231,7 +231,7 @@ fn parse<T: motty_ipc::DeserializeOwned>(params: Value) -> anyhow::Result<T> {
 }
 
 /// Motty's windows, frontmost first.
-fn workspaces(cx: &App) -> Vec<WindowHandle<Workspace>> {
+pub(crate) fn workspaces(cx: &App) -> Vec<WindowHandle<Workspace>> {
     let windows = cx.window_stack().unwrap_or_else(|| cx.windows());
     windows
         .into_iter()

@@ -1,5 +1,5 @@
 //! `details-view`: the details panel's tabs, in order, as in Otty. A line
-//! names a built-in tab (`info`, `outline`, `git`, `files`) or a view of
+//! names a built-in tab (`info`, `outline`, `git`, `files`, `agents`) or a view of
 //! your own: a program in an embedded terminal, or a web page.
 //!
 //! ```toml
@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 /// The built-in tabs' ids, in their default order.
-pub const BUILTIN_VIEWS: [&str; 4] = ["info", "outline", "git", "files"];
+pub const BUILTIN_VIEWS: [&str; 5] = ["info", "outline", "git", "files", "agents"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewKind {
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(line_of(&out, "top"), Some(2));
         let tabs = resolve(&[DetailsView::builtin("git"), v.clone()]);
         let ids: Vec<&str> = tabs.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["git", "top", "info", "outline", "files"]);
+        assert_eq!(ids, ["git", "top", "info", "outline", "files", "agents"]);
         let src = "a = 1\ndetails-view = 'id=\"x\" url=\"http://x\"'\nb = 2\ndetails-view = 'id=\"git\"'\n";
         let out = replace_lines(src, &[v]);
         assert_eq!(out.matches("details-view").count(), 1);

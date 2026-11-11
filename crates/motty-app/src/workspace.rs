@@ -2860,6 +2860,9 @@ fn system_badges(system: &motty_term::SystemState, color: Hsla) -> Vec<AnyElemen
     .collect()
 }
 
+/// The folder `motty worktree` makes worktrees in.
+pub(crate) const WORKTREES: &str = ".worktrees";
+
 fn badge_icon(badge: Badge, ix: usize, t: &Theme) -> AnyElement {
     let icon = |path: &'static str, color: Hsla| {
         svg().path(path).flex_none().size(px(12.)).text_color(color)
@@ -3753,6 +3756,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &DetailsFiles, _, cx| {
                 this.show_details_tab(details::DetailsTab::Files, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DetailsAgents, _, cx| {
+                this.show_details_tab(details::DetailsTab::Agents, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenQuickly, window, cx| {
                 this.show_open_quickly(open_quickly::Filter::All, window, cx)

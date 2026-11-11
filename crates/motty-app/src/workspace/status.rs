@@ -104,6 +104,10 @@ impl Workspace {
         {
             agents::sessions::remember_claude_root(std::path::Path::new(path));
         }
+        let since = prev
+            .as_ref()
+            .filter(|s| s.badge == badge)
+            .map_or_else(std::time::SystemTime::now, |s| s.since);
         view.update(cx, |v, cx| {
             v.status = Some(Status {
                 agent: Some(label),
@@ -112,6 +116,7 @@ impl Workspace {
                 message,
                 session,
                 in_turn: still_in_turn,
+                since,
             });
             // The queue's next prompt goes when a turn ends.
             if matches!(p.state, AgentState::Idle | AgentState::Error) {
@@ -156,6 +161,7 @@ impl Workspace {
                 message,
                 session: None,
                 in_turn: false,
+                since: std::time::SystemTime::now(),
             })
         });
         self.touched(view, cx);

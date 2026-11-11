@@ -10,6 +10,7 @@
 //! Geometry is measured from Otty's screenshots at 2x; the icons are drawn
 //! here in the style of the system's symbols.
 
+mod agents;
 mod files;
 mod git;
 mod outline;
@@ -69,10 +70,17 @@ pub(super) enum DetailsTab {
     Outline,
     Git,
     Files,
+    Agents,
 }
 
 impl DetailsTab {
-    const ALL: [Self; 4] = [Self::Info, Self::Outline, Self::Git, Self::Files];
+    const ALL: [Self; 5] = [
+        Self::Info,
+        Self::Outline,
+        Self::Git,
+        Self::Files,
+        Self::Agents,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -80,6 +88,7 @@ impl DetailsTab {
             Self::Outline => "Outline",
             Self::Git => "Git",
             Self::Files => "Files",
+            Self::Agents => "Agents",
         }
     }
 
@@ -90,6 +99,7 @@ impl DetailsTab {
             Self::Outline => "outline",
             Self::Git => "git",
             Self::Files => "files",
+            Self::Agents => "agents",
         }
     }
 
@@ -255,6 +265,11 @@ impl Workspace {
         if !self.details.visible {
             return;
         }
+        // Agents in other windows change without telling this one, and
+        // the times count up.
+        if self.details.view.is_none() && self.details.tab == DetailsTab::Agents {
+            cx.notify();
+        }
         let Some(item) = self.active_panes().map(|p| p.focused.clone()) else {
             return;
         };
@@ -414,6 +429,7 @@ impl Workspace {
                 DetailsTab::Outline => self.render_outline(view.as_ref(), &c, cx),
                 DetailsTab::Git => self.render_git(window, &c, cx),
                 DetailsTab::Files => self.render_files(window, &c, cx),
+                DetailsTab::Agents => self.render_agents(window, &c, cx),
             };
             div()
                 .flex_1()
@@ -1777,7 +1793,7 @@ impl Icon {
 }
 
 /// The strip's icons: info, outline (a bulleted list), git (two arrows
-/// in a loop) and files (a folder).
+/// in a loop), files (a folder) and agents (two heads).
 fn tab_icon(tab: DetailsTab, color: Hsla) -> AnyElement {
     const W: f32 = 1.1;
     icon(15., 14., move |o, window| match tab {
@@ -1825,6 +1841,19 @@ fn tab_icon(tab: DetailsTab, color: Hsla) -> AnyElement {
             });
         }
         DetailsTab::Files => stroke(o, color, window, W, |p, at| folder_shape(p, at)),
+        // Two heads: agents at work.
+        DetailsTab::Agents => {
+            stroke(o, color, window, W, |p, at| circle(p, at, 5., 4.5, 2.3));
+            stroke(o, color, window, W, |p, at| {
+                p.move_to(at(1., 12.5));
+                p.cubic_bezier_to(at(9., 12.5), at(1., 9.), at(9., 9.));
+            });
+            stroke(o, color, window, W, |p, at| circle(p, at, 11., 5.5, 1.9));
+            stroke(o, color, window, W, |p, at| {
+                p.move_to(at(10.5, 9.2));
+                p.cubic_bezier_to(at(14., 12.5), at(13., 9.), at(14., 10.5));
+            });
+        }
     })
     .into_any_element()
 }

@@ -35,6 +35,7 @@ actions!(
         DetailsOutline,
         DetailsGit,
         DetailsFiles,
+        DetailsAgents,
         SplitRight,
         SplitLeft,
         SplitDown,

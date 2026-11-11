@@ -215,6 +215,9 @@ pub struct Status {
     pub session: Option<String>,
     /// A turn started and hasn't been reported finished.
     pub in_turn: bool,
+    /// When the badge last changed: how long it has been working, waiting
+    /// or idle.
+    pub since: std::time::SystemTime,
 }
 
 #[cfg(test)]

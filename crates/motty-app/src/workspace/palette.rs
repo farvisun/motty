@@ -78,6 +78,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("View", "Details: Outline", DetailsOutline),
         Command::new("View", "Details: Git", DetailsGit),
         Command::new("View", "Details: Files", DetailsFiles),
+        Command::new("View", "Details: Agents", DetailsAgents),
         Command::new("View", "Toggle Full Screen", ToggleFullScreen),
         Command::new("View", "Increase Font Size", IncreaseFontSize),
         Command::new("View", "Decrease Font Size", DecreaseFontSize),

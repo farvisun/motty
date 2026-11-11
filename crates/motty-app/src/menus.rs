@@ -547,6 +547,7 @@ fn view_menu(s: &Snapshot, live: &Live) -> Menu {
         MenuItem::action("Outline", DetailsOutline),
         MenuItem::action("Git", DetailsGit),
         MenuItem::action("Files", DetailsFiles),
+        MenuItem::action("Agents", DetailsAgents),
         MenuItem::separator(),
         MenuItem::submenu(Menu::new("Switch to View").items([
             MenuItem::action("Terminal", SwitchToTerminal),
