@@ -22,6 +22,7 @@ mod output;
 mod themes;
 mod tree;
 mod watch;
+mod worktree;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -116,6 +117,12 @@ enum Command {
     Watch {
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// Git worktrees in the repository's `.worktrees/`: list, new, remove,
+    /// trust (its setup and teardown scripts).
+    Worktree {
+        #[command(subcommand)]
+        cmd: worktree::WorktreeCmd,
     },
     /// Go to the best-ranked folder matching the query (no query: home and
     /// back).
@@ -267,6 +274,7 @@ fn run(ctx: &Ctx, command: Command) -> anyhow::Result<ExitCode> {
         Command::View(v) => open::view(ctx, v, false),
         Command::Edit(v) => open::view(ctx, v, true),
         Command::Watch { command } => watch::watch(ctx, &command),
+        Command::Worktree { cmd } => worktree::run(ctx, cmd),
         Command::Jump {
             query,
             no_cd,

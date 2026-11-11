@@ -7,6 +7,7 @@ pub mod store;
 pub mod tab_rule;
 pub mod text;
 pub mod theme;
+pub mod trust;
 
 pub use config::{
     AcceptKey, Access, AutoHide, Autocomplete, Badges, Behavior, ColorReport, Config, ConfirmClose,

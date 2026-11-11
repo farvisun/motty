@@ -3337,6 +3337,7 @@ dependencies = [
  "anyhow",
  "dirs 7.0.0",
  "serde",
+ "sha2 0.10.9",
  "toml 1.1.8+spec-1.1.0",
 ]
 

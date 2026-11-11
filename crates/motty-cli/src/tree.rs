@@ -615,7 +615,7 @@ pub fn tab(ctx: &Ctx, cmd: TabCmd) -> anyhow::Result<ExitCode> {
 }
 
 /// The window id of the pane this runs in, if it's in Motty.
-fn own_window(client: &mut motty_ipc::Client) -> anyhow::Result<Option<String>> {
+pub(crate) fn own_window(client: &mut motty_ipc::Client) -> anyhow::Result<Option<String>> {
     let Some(pane) = own_pane() else {
         return Ok(None);
     };

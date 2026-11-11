@@ -83,6 +83,9 @@ struct Git {
     branches: Vec<String>,
     /// The repository's other worktrees.
     worktrees: Vec<std::path::PathBuf>,
+    /// The main checkout (git lists it first), and this checkout's top.
+    main: Option<std::path::PathBuf>,
+    top: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -252,19 +255,26 @@ fn git_info(dir: &std::path::Path) -> Option<Git> {
         .map(str::to_owned)
         .collect();
     let top = git(&["rev-parse", "--show-toplevel"]).map(std::path::PathBuf::from);
-    let worktrees = git(&["worktree", "list", "--porcelain"])
+    let all: Vec<std::path::PathBuf> = git(&["worktree", "list", "--porcelain"])
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
         .map(std::path::PathBuf::from)
+        .collect();
+    let main = all.first().cloned();
+    let worktrees = all
+        .into_iter()
         .filter(|w| Some(w) != top.as_ref())
         .collect();
+    let top_dir = top.clone();
     Some(Git {
         branch,
         worktree: git_dir != common,
         web,
         branches,
         worktrees,
+        main,
+        top: top_dir,
     })
 }
 
@@ -768,6 +778,30 @@ fn git_menu(live: &Live) -> Menu {
                 }),
             )));
         }
+    }
+    // `motty worktree` makes them in `.worktrees/`, with the repository's
+    // approved setup and teardown scripts.
+    let cli = crate::workspace::cli_command();
+    items.push(MenuItem::separator());
+    items.push(MenuItem::action(
+        "New Worktree…",
+        TypeCommand::new(&format!("{cli} worktree new "), false),
+    ));
+    if git.worktree
+        && let (Some(main), Some(top)) = (&git.main, &git.top)
+    {
+        // From the main checkout: the shell's folder is about to go.
+        let quote =
+            |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "'\\''"));
+        let line = format!(
+            "cd -- {} && {cli} worktree remove {}",
+            quote(main),
+            quote(top)
+        );
+        items.push(MenuItem::action(
+            "Remove This Worktree…",
+            TypeCommand::new(&line, false),
+        ));
     }
     if !git.worktrees.is_empty() {
         items.push(MenuItem::submenu(Menu::new("Switch to Worktree").items(
