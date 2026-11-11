@@ -113,6 +113,24 @@ pub fn set_content_height(window: &Window, height: f32, cx: &gpui::App) {
     let _ = (window, height, cx);
 }
 
+/// Takes the window off screen without closing it (the Quick Terminal
+/// hiding).
+pub fn hide(window: &Window) {
+    #[cfg(target_os = "macos")]
+    mac::hide(window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// The Quick Terminal: it comes to whichever Space is showing, over
+/// full-screen apps too.
+pub fn quick_terminal(window: &Window) {
+    #[cfg(target_os = "macos")]
+    mac::quick_terminal(window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 /// View › Pin Window: keeps the window above other apps' windows.
 pub fn set_pinned(window: &Window, pinned: bool) {
     #[cfg(target_os = "macos")]
@@ -148,6 +166,19 @@ mod mac {
         // SAFETY: GPUI's AppKit handle points at its live NSView, which
         // outlives this borrow of the window, and we are on the main thread.
         Some(unsafe { handle.ns_view.cast::<NSView>().as_ref() })
+    }
+
+    pub fn hide(window: &gpui::Window) {
+        if let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) {
+            ns_window.orderOut(None);
+        }
+    }
+
+    pub fn quick_terminal(window: &gpui::Window) {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        if let Some(ns_window) = gpui_view(window).and_then(|v| v.window()) {
+            ns_window.setCollectionBehavior(B::MoveToActiveSpace | B::FullScreenAuxiliary);
+        }
     }
 
     pub fn set_pinned(window: &gpui::Window, pinned: bool) {

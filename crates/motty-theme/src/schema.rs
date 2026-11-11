@@ -389,6 +389,7 @@ pub const KEYS: &[KeySpec] = &[
     bool("privilege-notify-agent-task-complete", "true", "Agents › Agent Behavior", "A banner when an agent finishes a task."),
     bool("privilege-notify-agent-awaiting-input", "true", "Agents › Agent Behavior", "A banner when an agent waits for you."),
     bool("privilege-caffeinate-agent-processing", "false", "Agents › Agent Behavior", "Keep the Mac awake while an agent works."),
+    key("quick-terminal-key", Kind::Str, "ctrl+`", "General › Quick Terminal", "The shortcut, from any app, that drops the Quick Terminal down from the top of the screen (e.g. ctrl+`, cmd+shift+space, f12). Empty turns it off."),
     key("git-ai-command", Kind::Str, "", "Agents › Coding Agents", "What writes commit messages and pull request text (e.g. claude -p); the prompt is its last argument. Empty: the first installed of Claude Code, Codex and OpenCode."),
     bool("agent-screen-detection", "true", "Agents › Agent Behavior", "Without a hook, read an agent's state from its screen."),
     bool("privilege-resume-agent-session", "true", "Agents › Agent Behavior", "A recovered pane resumes the agent session it had."),

@@ -141,6 +141,7 @@ fn commands(ws: &Workspace, target: Option<&TerminalView>) -> Vec<Command> {
         Command::new("Window", "Memory Report", MemoryReport),
         Command::new("Window", "Zoom", ZoomWindow),
         Command::new("Window", "Pin Window", PinWindow).checked(ws.pinned),
+        Command::new("Window", "Quick Terminal", ToggleQuickTerminal),
         Command::new("Window", "Merge All Windows", MergeAllWindows),
     ]);
     if let Some(target) = target {

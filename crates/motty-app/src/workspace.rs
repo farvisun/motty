@@ -315,6 +315,9 @@ pub struct Workspace {
     renaming: Option<tabs::Rename>,
     /// View › Pin Window: above other apps' windows.
     pinned: bool,
+    /// The Quick Terminal (see `quick_terminal`): hides when it loses
+    /// focus unless pinned, and isn't saved with the session.
+    pub quick: bool,
     _subscriptions: Vec<Subscription>,
     /// Each terminal's event subscription, dropped with its pane.
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -598,7 +601,10 @@ impl Workspace {
                 }
             }),
             // The menus describe the frontmost window.
-            cx.observe_window_activation(window, |_, window, cx| {
+            cx.observe_window_activation(window, |this, window, cx| {
+                if this.quick && !this.pinned && !window.is_window_active() {
+                    crate::materials::hide(window);
+                }
                 crate::secure_input::set_active(window.is_window_active(), cx);
                 if window.is_window_active() {
                     cx.defer(crate::menus::refresh);
@@ -716,6 +722,7 @@ impl Workspace {
             order: Default::default(),
             renaming: None,
             pinned: false,
+            quick: false,
             _subscriptions: subscriptions,
             pane_subscriptions: HashMap::new(),
             switched: HashMap::new(),
@@ -1581,6 +1588,9 @@ impl Workspace {
         // Menu items show the shortcuts as bound when the menus are set.
         if config.keybinds != self.config.keybinds {
             crate::menus::set(cx);
+        }
+        if config.quick_terminal_key != self.config.quick_terminal_key {
+            crate::quick_terminal::register(&config.quick_terminal_key);
         }
         // The toggle wins until the key itself changes.
         if config.sidebar_visible != self.config.sidebar_visible {
@@ -3645,6 +3655,8 @@ impl Render for Workspace {
                     this.show_next_unread(window, cx)
                 }),
             )
+            // Not from inside this window's update: it may be the one.
+            .on_action(|_: &ToggleQuickTerminal, _, cx| cx.defer(crate::quick_terminal::toggle))
             .on_action(cx.listener(|this, _: &PinWindow, window, cx| {
                 this.pinned = !this.pinned;
                 crate::materials::set_pinned(window, this.pinned);

@@ -23,6 +23,7 @@ mod panes;
 mod pasteboard;
 mod pip;
 mod preview;
+mod quick_terminal;
 // Opening another file in place (`open`) isn't used yet.
 #[allow(dead_code)]
 mod quick_look;
@@ -88,6 +89,8 @@ fn main() {
         ipc::start(cx);
         dock_click::install(cx);
         notifications::install(cx);
+        quick_terminal::install(cx);
+        quick_terminal::register(&load_config().quick_terminal_key);
         applescript::install(cx);
         cx.spawn(async move |cx| {
             while let Ok(urls) = opened.recv().await {
@@ -393,6 +396,15 @@ pub(crate) fn open_window_for_recipe(
     open_window_inner(config, None, None, None, cwd, cx)
 }
 
+/// A window at `bounds` (the Quick Terminal's).
+pub(crate) fn open_window_at(
+    config: Config,
+    bounds: Bounds<gpui::Pixels>,
+    cx: &mut App,
+) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
+    open_window_with_bounds(config, None, None, None, None, Some(bounds), cx)
+}
+
 /// A window for a tab moved out of another one (Move Tab to New Window).
 pub(crate) fn open_window_with_tab(
     config: Config,
@@ -411,10 +423,23 @@ fn open_window_inner(
     cwd: Option<std::path::PathBuf>,
     cx: &mut App,
 ) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
+    open_window_with_bounds(config, command, restore, moved, cwd, None, cx)
+}
+
+fn open_window_with_bounds(
+    config: Config,
+    command: Option<(String, Vec<String>)>,
+    restore: Option<&recovery::WindowState>,
+    moved: Option<workspace::MovedTab>,
+    cwd: Option<std::path::PathBuf>,
+    at: Option<Bounds<gpui::Pixels>>,
+    cx: &mut App,
+) -> anyhow::Result<gpui::WindowHandle<Workspace>> {
     let moving = moved.is_some();
     let mode = mode_for(cx.window_appearance());
     let theme = config.resolve_theme(mode).theme;
     let bounds = match restore {
+        _ if at.is_some() => at.unwrap_or_default(),
         Some(state) => {
             let [x, y, w, h] = state.bounds;
             let saved = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));

@@ -142,6 +142,7 @@ actions!(
         PasteBracketed,
         InsertFilePath,
         PinWindow,
+        ToggleQuickTerminal,
         OpenFile,
         ToggleSecureKeyboardEntry,
         ToggleComposer,

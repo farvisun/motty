@@ -578,6 +578,7 @@ fn view_menu(s: &Snapshot, live: &Live) -> Menu {
         MenuItem::action("Reset Font Size", ResetFontSize),
         MenuItem::separator(),
         MenuItem::action("Pin Window", PinWindow).checked(s.pinned),
+        MenuItem::action("Quick Terminal", ToggleQuickTerminal),
     ])
 }
 

@@ -64,6 +64,9 @@ pub struct Config {
     /// `confirm-close-ignore-idle-agents`: an agent waiting at its prompt
     /// doesn't count as running when closing.
     pub close_ignores_idle_agents: bool,
+    /// `quick-terminal-key`: the system-wide shortcut that drops the Quick
+    /// Terminal down (`ctrl+\``); empty turns it off.
+    pub quick_terminal_key: String,
     /// `git-ai-command`: what writes commit messages and pull request text
     /// (`claude -p`); the prompt is its last argument. Empty: the first of
     /// Claude Code, Codex and OpenCode that's installed.
@@ -996,6 +999,7 @@ impl Config {
             restore_session: true,
             restore_banner: true,
             agent_screen_detection: true,
+            quick_terminal_key: "ctrl+`".into(),
             check_for_updates: true,
             editor: EditorPrefs::default(),
             clipboard_write: Access::Allow,
@@ -1291,6 +1295,7 @@ impl Config {
                 "confirm-close-ignore-idle-agents" => {
                     out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
                 }
+                "quick-terminal-key" => out.quick_terminal_key = str_of(value).unwrap_or_default(),
                 "git-ai-command" => {
                     out.git_ai_command = str_of(value).filter(|c| !c.trim().is_empty())
                 }

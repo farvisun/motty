@@ -197,9 +197,13 @@ fn capture(cx: &mut App, scrollback: bool) -> SessionState {
         .filter_map(|handle| {
             handle
                 .update(cx, |workspace, window, cx| {
-                    workspace.snapshot(window, scrollback_dir.as_deref(), &mut files, cx)
+                    // The Quick Terminal opens fresh on its shortcut.
+                    (!workspace.quick).then(|| {
+                        workspace.snapshot(window, scrollback_dir.as_deref(), &mut files, cx)
+                    })
                 })
                 .ok()
+                .flatten()
         })
         .filter(|w| !w.tabs.is_empty())
         .collect();
