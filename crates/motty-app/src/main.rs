@@ -10,6 +10,7 @@ mod file_toolbar;
 mod folder_view;
 mod folders;
 mod fonts;
+mod forge;
 mod history;
 mod history_page;
 mod image_view;

@@ -270,6 +270,9 @@ impl Workspace {
         if self.details.view.is_none() && self.details.tab == DetailsTab::Agents {
             cx.notify();
         }
+        if self.details.view.is_none() && self.details.tab == DetailsTab::Git {
+            self.refresh_pr(now, cx);
+        }
         let Some(item) = self.active_panes().map(|p| p.focused.clone()) else {
             return;
         };

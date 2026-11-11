@@ -1,6 +1,7 @@
 //! The Git tab: the repository's branch and changes, a toolbar (Stage
-//! All, Commit…), hover actions per file, an inline diff and the
-//! submodules. Git runs in the background.
+//! All, Commit…), the branch's pull request (see `crate::forge`), hover
+//! actions per file, an inline diff and the submodules. Git runs in the
+//! background.
 
 use std::path::{Path, PathBuf};
 
@@ -72,7 +73,20 @@ pub(in crate::workspace) struct GitUi {
     busy: bool,
     /// An agent is writing the commit message.
     writing: bool,
+    /// The branch's request, once asked (`Some(None)`: it has none), for
+    /// the folder and branch it was asked for.
+    pr: Option<Option<crate::forge::Pr>>,
+    pr_for: Option<(PathBuf, String)>,
+    pr_at: Option<std::time::Instant>,
+    pr_fetching: bool,
+    /// The branch requests go into (the remote's default).
+    pr_base: Option<String>,
+    /// What's happening to the request: writing, creating, merging.
+    pr_busy: Option<&'static str>,
 }
+
+/// The forge is asked about the branch's request this often.
+const PR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 struct OpenDiff {
     section: Section,
@@ -145,6 +159,9 @@ impl Workspace {
             );
         }
         col = col.child(self.render_git_toolbar(&git, window, c, cx));
+        if let Some(pr) = self.render_pr(&git, c, cx) {
+            col = col.child(pr);
+        }
         if let Some(error) = &self.details.git_ui.error {
             col = col.child(
                 div()
@@ -543,6 +560,298 @@ impl Workspace {
                 cx.notify();
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// The forge for this repository's remote, when its CLI is installed.
+    fn forge(&self) -> Option<crate::forge::Forge> {
+        crate::forge::forge_for(self.details.git.as_ref()?.remote.as_deref()?)
+    }
+
+    /// Asks the forge about the branch's request: when the branch changed,
+    /// every `PR_INTERVAL`, or `now`.
+    pub(super) fn refresh_pr(&mut self, now: bool, cx: &mut Context<Self>) {
+        let (Some(dir), Some(git)) = (self.details.cwd.clone(), self.details.git.as_ref()) else {
+            return;
+        };
+        let key = (dir.clone(), git.branch.clone());
+        let ui = &self.details.git_ui;
+        let moved = ui.pr_for.as_ref() != Some(&key);
+        let due = now || moved || ui.pr_at.is_none_or(|t| t.elapsed() >= PR_INTERVAL);
+        if ui.pr_fetching || !due {
+            return;
+        }
+        let Some(forge) = self.forge() else {
+            return;
+        };
+        let ui = &mut self.details.git_ui;
+        if moved {
+            ui.pr = None;
+        }
+        ui.pr_for = Some(key.clone());
+        ui.pr_fetching = true;
+        let work = cx.background_spawn(async move {
+            (
+                crate::forge::status(forge, &dir),
+                crate::forge::base_branch(&dir),
+            )
+        });
+        cx.spawn(async move |this, cx| {
+            let (result, base) = work.await;
+            this.update(cx, |this, cx| {
+                let ui = &mut this.details.git_ui;
+                ui.pr_fetching = false;
+                ui.pr_base = Some(base);
+                ui.pr_at = Some(std::time::Instant::now());
+                // Unless the pane moved to another branch meanwhile.
+                if ui.pr_for.as_ref() == Some(&key) {
+                    match result {
+                        Ok(pr) => ui.pr = Some(pr),
+                        Err(e) => tracing::debug!("pull request status: {e}"),
+                    }
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The branch's request: its state and checks, Open and Merge…; or
+    /// Create Pull Request when it has none.
+    fn render_pr(
+        &mut self,
+        git: &GitSummary,
+        c: &PanelColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let forge = self.forge()?;
+        let ui = &self.details.git_ui;
+        let busy = ui.pr_busy;
+        let row = div()
+            .px(px(INSET))
+            .pb(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .text_size(px(12.));
+        let link = |id: &'static str, label: String, color| {
+            div()
+                .id(id)
+                .flex_none()
+                .px(px(6.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .rounded(px(5.))
+                .text_color(color)
+                .cursor_pointer()
+                .hover(|s| s.bg(c.hover))
+                .child(label)
+        };
+        if let Some(label) = busy {
+            return Some(row.text_color(c.tertiary).child(label).into_any_element());
+        }
+        match ui.pr.clone() {
+            // Not asked yet.
+            None => None,
+            Some(Some(pr)) => {
+                let checks = pr.checks;
+                let mut tally = Vec::new();
+                if checks.failed > 0 {
+                    tally.push((format!("✗ {}", checks.failed), c.danger));
+                }
+                if checks.pending > 0 {
+                    tally.push((format!("● {}", checks.pending), c.warning));
+                }
+                if checks.passed > 0 {
+                    tally.push((format!("✓ {}", checks.passed), c.success));
+                }
+                let state_color = match pr.state.as_str() {
+                    "merged" => c.accent,
+                    "closed" => c.tertiary,
+                    _ => c.success,
+                };
+                let url = pr.url.clone();
+                let open = pr.is_open();
+                Some(
+                    row.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_color(c.secondary)
+                                    .child(format!("#{}", pr.number)),
+                            )
+                            .child(div().text_color(state_color).child(pr.state.clone()))
+                            .children(
+                                tally
+                                    .into_iter()
+                                    .map(|(t, color)| div().text_color(color).child(t)),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                link("details-git-pr-open", "Open".into(), c.accent)
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            )
+                            .when(open, |d| {
+                                d.child(
+                                    link("details-git-pr-merge", "Merge…".into(), c.accent)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.confirm_merge(forge, window, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_color(c.text)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(pr.title),
+                    )
+                    .into_any_element(),
+                )
+            }
+            Some(None) => {
+                // Nothing to request from the default branch itself.
+                if git.branch == "HEAD" || ui.pr_base.as_deref() == Some(git.branch.as_str()) {
+                    return None;
+                }
+                let writer = crate::agents::ai::writer(self.config.git_ai_command.as_deref())?;
+                let label = format!("Create {}…", forge.noun());
+                Some(
+                    row.child(
+                        link("details-git-pr-create", label, c.accent)
+                            .ml(px(-6.))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.create_pr(forge, writer.clone(), window, cx)
+                            })),
+                    )
+                    .into_any_element(),
+                )
+            }
+        }
+    }
+
+    /// Create Pull Request…: the agent writes its title and body, they're
+    /// shown to be confirmed, then the branch is pushed and the request
+    /// made.
+    fn create_pr(
+        &mut self,
+        forge: crate::forge::Forge,
+        writer: crate::agents::ai::Writer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dir) = self.details.cwd.clone() else {
+            return;
+        };
+        self.details.git_ui.pr_busy = Some("Writing the title and description…");
+        self.details.git_ui.error = None;
+        cx.notify();
+        let write_dir = dir.clone();
+        let work =
+            cx.background_spawn(async move { crate::forge::write(&writer, forge, &write_dir) });
+        cx.spawn_in(window, async move |this, cx| {
+            let written = work.await;
+            let Ok((title, body)) = written else {
+                let _ = this.update(cx, |this, cx| {
+                    this.details.git_ui.pr_busy = None;
+                    this.details.git_ui.error = written.err();
+                    cx.notify();
+                });
+                return;
+            };
+            let answer = this.update_in(cx, |this, window, cx| {
+                this.details.git_ui.pr_busy = None;
+                cx.notify();
+                let detail = if body.chars().count() > 1200 {
+                    format!("{}…", body.chars().take(1200).collect::<String>())
+                } else {
+                    body.clone()
+                };
+                window.prompt(
+                    PromptLevel::Info,
+                    &format!("Create the {}: “{title}”?", forge.noun().to_lowercase()),
+                    Some(&format!(
+                        "The branch is pushed to origin first.\n\n{detail}"
+                    )),
+                    &["Create", "Cancel"],
+                    cx,
+                )
+            });
+            let Ok(answer) = answer else {
+                return;
+            };
+            if answer.await.ok() != Some(0) {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.details.git_ui.pr_busy = Some("Pushing and creating…");
+                cx.notify();
+            });
+            let made = cx
+                .background_spawn(async move { crate::forge::create(forge, &dir, &title, &body) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let ui = &mut this.details.git_ui;
+                ui.pr_busy = None;
+                if let Err(e) = made {
+                    ui.error = Some(e);
+                }
+                this.details.git_at = None;
+                this.refresh_pr(true, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Merge…, once confirmed.
+    fn confirm_merge(
+        &mut self,
+        forge: crate::forge::Forge,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dir) = self.details.cwd.clone() else {
+            return;
+        };
+        let Some(Some(pr)) = self.details.git_ui.pr.clone() else {
+            return;
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Merge #{} “{}”?", pr.number, pr.title),
+            Some("It merges on the forge, the way the repository allows."),
+            &["Merge", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await.ok() != Some(0) {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.details.git_ui.pr_busy = Some("Merging…");
+                cx.notify();
+            });
+            let merged = cx
+                .background_spawn(async move { crate::forge::merge(forge, &dir) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let ui = &mut this.details.git_ui;
+                ui.pr_busy = None;
+                if let Err(e) = merged {
+                    ui.error = Some(e);
+                }
+                this.refresh_pr(true, cx);
+                cx.notify();
+            });
         })
         .detach();
     }
