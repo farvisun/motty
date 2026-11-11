@@ -347,6 +347,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_recipe_at(path, None, window, cx)
+    }
+
+    /// A layout from a project's `.motty/layouts/`, as a recipe file from
+    /// elsewhere: relative paths in it are the project's.
+    pub(crate) fn open_project_layout(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = recipes::layout_project(path);
+        self.open_recipe_at(path, project, window, cx)
+    }
+
+    fn open_recipe_at(
+        &mut self,
+        path: &Path,
+        project: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let parsed = std::fs::read(path)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
@@ -366,7 +388,8 @@ impl Workspace {
                 return;
             }
         };
-        let bases = Bases::new(self.active_folder(cx), Some(path));
+        let mut bases = Bases::new(self.active_folder(cx), Some(path));
+        bases.project = project;
         let replay = self.config.replay_file();
         let commands = recipe.all_commands();
         if commands.is_empty() || replay == Replay::Skip || recipes::is_trusted(&hash) {

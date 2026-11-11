@@ -1,7 +1,9 @@
 //! Recipes: a tab or window's layout (and optionally the commands run in
 //! each pane), a list of commands, or a text snippet, saved to
 //! `~/.config/motty/recipes/` or exported as a `.ottyrecipe`-style TOML
-//! file.
+//! file. A project can keep its own in `.motty/layouts/*.toml`
+//! ([`project_layouts`]); they open like a recipe file from elsewhere, so
+//! their commands run only once approved.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -174,6 +176,9 @@ pub struct Bases {
     pub home: Option<PathBuf>,
     /// The folder holding the recipe file.
     pub recipe: Option<PathBuf>,
+    /// A project layout's project: `{{project_folder}}`, and what relative
+    /// paths are relative to.
+    pub project: Option<PathBuf>,
 }
 
 impl Bases {
@@ -182,6 +187,7 @@ impl Bases {
             current,
             home: dirs::home_dir(),
             recipe: recipe_file.and_then(Path::parent).map(Path::to_path_buf),
+            project: None,
         }
     }
 
@@ -190,6 +196,7 @@ impl Bases {
             ("{{current_folder}}", &self.current),
             ("{{home}}", &self.home),
             ("{{recipe_folder}}", &self.recipe),
+            ("{{project_folder}}", &self.project),
         ] {
             if let Some(rest) = path.strip_prefix(var)
                 && let Some(base) = base
@@ -197,9 +204,10 @@ impl Bases {
                 return base.join(rest.trim_start_matches('/'));
             }
         }
-        match path.strip_prefix("~/") {
-            Some(rest) => self.home.clone().unwrap_or_default().join(rest),
-            None => PathBuf::from(path),
+        match (path.strip_prefix("~/"), &self.project) {
+            (Some(rest), _) => self.home.clone().unwrap_or_default().join(rest),
+            (None, Some(project)) if Path::new(path).is_relative() => project.join(path),
+            (None, _) => PathBuf::from(path),
         }
     }
 }
@@ -525,6 +533,53 @@ pub fn date_time() -> (String, String) {
     )
 }
 
+// Project layouts
+
+/// Where a project keeps its layouts.
+pub const LAYOUTS_DIR: &str = ".motty/layouts";
+
+/// A layout a project keeps in [`LAYOUTS_DIR`].
+#[derive(Clone, Debug)]
+pub struct ProjectLayout {
+    pub path: PathBuf,
+    pub recipe: Recipe,
+}
+
+/// The project a folder is in: the nearest folder above it (or itself)
+/// with [`LAYOUTS_DIR`].
+pub fn project_root(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|p| p.join(LAYOUTS_DIR).is_dir())
+        .map(Path::to_path_buf)
+}
+
+/// The project a layout file belongs to: three folders up.
+pub fn layout_project(path: &Path) -> Option<PathBuf> {
+    Some(path.parent()?.parent()?.parent()?.to_path_buf())
+}
+
+/// The layouts of the project `cwd` is in, by name. Files that don't read
+/// as recipes are left out.
+pub fn project_layouts(cwd: &Path) -> Vec<ProjectLayout> {
+    let Some(root) = project_root(cwd) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(root.join(LAYOUTS_DIR)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ProjectLayout> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .filter_map(|path| {
+            let recipe = Recipe::parse(&std::fs::read_to_string(&path).ok()?).ok()?;
+            Some(ProjectLayout { path, recipe })
+        })
+        .collect();
+    out.sort_by(|a, b| a.recipe.recipe.name.cmp(&b.recipe.recipe.name));
+    out
+}
+
 // Trusted recipe files
 
 fn trust_path() -> PathBuf {
@@ -620,11 +675,43 @@ cwd = "{{current_folder}}/web"
 commands = ["npm run preview"]
 "#;
 
+    #[test]
+    fn project_layouts_are_found_from_inside() {
+        let dir = std::env::temp_dir().join(format!("motty-layouts-{}", std::process::id()));
+        let layouts = dir.join(LAYOUTS_DIR);
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::create_dir_all(&layouts).unwrap();
+        std::fs::write(
+            layouts.join("dev.toml"),
+            "[recipe]\nname = \"Dev\"\nscope = \"tab\"\n\n[[window.tabs]]\n\
+             [[window.tabs.panes]]\ncwd = \"web\"\ncommands = [\"pnpm dev\"]\n",
+        )
+        .unwrap();
+        std::fs::write(layouts.join("broken.toml"), "nope").unwrap();
+        let found = project_layouts(&dir.join("src/deep"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].recipe.recipe.name, "Dev");
+        assert_eq!(
+            layout_project(&found[0].path).as_deref(),
+            Some(dir.as_path())
+        );
+        // Relative paths are the project's.
+        let bases = Bases {
+            project: Some(dir.clone()),
+            ..Bases::default()
+        };
+        assert_eq!(bases.expand("web"), dir.join("web"));
+        assert_eq!(bases.expand("{{project_folder}}/api"), dir.join("api"));
+        assert!(project_layouts(&std::env::temp_dir()).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     fn bases() -> Bases {
         Bases {
             current: Some("/work".into()),
             home: Some("/Users/me".into()),
             recipe: None,
+            project: None,
         }
     }
 

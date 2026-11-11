@@ -251,6 +251,14 @@ pub struct ApplyRecipe {
     pub id: String,
 }
 
+/// Opens a layout from a project's `.motty/layouts/` (its commands run
+/// once approved).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = motty, no_json)]
+pub struct ApplyProjectLayout {
+    pub path: std::path::PathBuf,
+}
+
 /// Types a command at the focused pane's prompt; with `run`, asks first
 /// and then runs it.
 #[derive(Clone, Debug, Default, PartialEq, gpui::Action)]

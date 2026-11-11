@@ -3682,6 +3682,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, a: &ApplyRecipe, window, cx| {
                 this.apply_saved_recipe(&a.id, window, cx)
             }))
+            .on_action(cx.listener(|this, a: &ApplyProjectLayout, window, cx| {
+                this.open_project_layout(&a.path, window, cx)
+            }))
             .on_action(cx.listener(|this, a: &TypeCommand, window, cx| {
                 this.type_command(a.clone(), window, cx)
             }))

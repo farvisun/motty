@@ -182,6 +182,8 @@ enum Target {
     SearchFiles(PathBuf, String),
     /// A saved recipe's id.
     Recipe(String),
+    /// A project layout's file.
+    Layout(PathBuf),
 }
 
 struct Item {
@@ -775,6 +777,21 @@ impl Workspace {
         }
 
         if wants(Filter::Recipes) {
+            let cwd = oq.target.as_ref().and_then(|v| v.read(cx).cwd.clone());
+            groups.push(
+                cwd.as_deref()
+                    .map(crate::recipes::project_layouts)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|layout| Item {
+                        group: "Project Layouts",
+                        kind: Kind::Recipe,
+                        title: layout.recipe.recipe.name.clone(),
+                        detail: layout.recipe.summary(),
+                        target: Target::Layout(layout.path),
+                    })
+                    .collect(),
+            );
             groups.push(
                 crate::recipes::list()
                     .into_iter()
@@ -1011,6 +1028,7 @@ impl Workspace {
             // Handled before the panel closes.
             Target::SearchAgents(_) => {}
             Target::Recipe(id) => self.apply_saved_recipe(&id, window, cx),
+            Target::Layout(path) => self.open_project_layout(&path, window, cx),
             Target::SearchFiles(dir, query) => self.open_search_tab(
                 super::search_view::Scope::Files,
                 Some(dir),
@@ -1051,7 +1069,7 @@ impl Workspace {
         let actions: Vec<(&'static str, Act)> = match item.target {
             Target::Session(session) => return self.session_actions(*session, window, cx),
             Target::SearchAgents(_) | Target::SearchFiles(..) => vec![("Search", Act::Run)],
-            Target::Recipe(_) => vec![("Open Recipe", Act::Run)],
+            Target::Recipe(_) | Target::Layout(_) => vec![("Open Recipe", Act::Run)],
             Target::Editor(_, editor) => {
                 let mut v = vec![("Switch to Tab", Act::Run)];
                 if let Some(path) = editor.read(cx).path().map(Path::to_path_buf) {

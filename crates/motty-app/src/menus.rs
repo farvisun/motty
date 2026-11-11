@@ -70,6 +70,8 @@ struct Live {
     files: Vec<PathBuf>,
     /// Saved recipes: (id, name).
     recipes: Vec<(String, String)>,
+    /// The focused folder's project layouts: (file, name).
+    layouts: Vec<(PathBuf, String)>,
     /// Every theme: (name, dark).
     themes: Vec<(String, bool)>,
 }
@@ -199,6 +201,14 @@ fn look_up(s: &Snapshot) -> Live {
         folders: crate::folders::ranked().into_iter().take(RECENT).collect(),
         files: crate::folders::recent_files(),
         recipes: saved_recipes(),
+        layouts: s
+            .cwd
+            .as_deref()
+            .map(crate::recipes::project_layouts)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| (l.path, l.recipe.recipe.name))
+            .collect(),
         themes: theme_names(),
     }
 }
@@ -369,6 +379,13 @@ fn file_menu(live: &Live) -> Menu {
         MenuItem::separator(),
         MenuItem::action("Open Recipe File...", OpenRecipeFile),
     ];
+    if !live.layouts.is_empty() {
+        recipe.push(MenuItem::separator());
+        recipe.push(MenuItem::action("Project Layouts", CopyText::default()).disabled(true));
+        recipe.extend(live.layouts.iter().map(|(path, name)| {
+            MenuItem::action(name.clone(), ApplyProjectLayout { path: path.clone() })
+        }));
+    }
     if !live.recipes.is_empty() {
         recipe.push(MenuItem::separator());
         recipe.extend(
