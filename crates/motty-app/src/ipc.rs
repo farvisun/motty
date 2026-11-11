@@ -622,11 +622,18 @@ fn send_text(p: SendTextParams, cx: &mut App) -> anyhow::Result<Value> {
         );
     }
     let text = p.text;
+    if p.submit == Some(Submit::Tab) {
+        let sent = handle.update(cx, |workspace, window, cx| {
+            workspace.broadcast(&view, &text, window, cx)
+        })?;
+        return Ok(json!({ "sent": sent }));
+    }
     handle.update(cx, |_, window, cx| {
         view.update(cx, |v, cx| match p.submit {
             None => v.write_input(&text, cx),
             Some(Submit::Now) => v.send_tracked(&text, window, cx),
             Some(Submit::Queue) => v.enqueue(vec![text], window, cx),
+            Some(Submit::Tab) => unreachable!(),
         })
     })?;
     Ok(Value::Null)

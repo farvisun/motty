@@ -1,6 +1,7 @@
 //! The Composer (⇧⌘E) and the Prompt Queue (⇧⌘M), at the bottom of the
 //! pane. The Composer is a roomy editor for a long prompt or command:
-//! ⌘↩ sends it, ⌥⌘↩ queues it, ⎋ closes it and keeps the draft. The queue
+//! ⌘↩ sends it, ⇧⌘↩ sends it to every pane in the tab, ⌥⌘↩ queues it,
+//! ⎋ closes it and keeps the draft (a restored session keeps it too). The queue
 //! sends one prompt at a time: an agent's when its turn ends, a shell's
 //! when it's back at an empty prompt. The Composer pops out into a floating
 //! panel (`composer_panel`) and docks back when it sends or closes.
@@ -184,6 +185,29 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// The Composer's text, when there is any, for the saved session.
+    pub fn composer_draft(&self, cx: &gpui::App) -> Option<String> {
+        let text = self.composer.as_ref()?.editor.read(cx).text();
+        (!text.trim().is_empty()).then_some(text)
+    }
+
+    /// Puts a saved draft back in a closed Composer.
+    pub fn restore_draft(&mut self, draft: &str, cx: &mut Context<Self>) {
+        if self.composer.is_none() {
+            let editor = self.text_field("Write a prompt or a command…", cx);
+            editor.update(cx, |e, _| e.set_height(2, px(MAX_HEIGHT)));
+            self.composer = Some(Composer {
+                editor,
+                open: false,
+                chips: Vec::new(),
+                float: None,
+            });
+        }
+        if let Some(c) = &self.composer {
+            c.editor.update(cx, |e, cx| e.set_text(draft, cx));
+        }
+    }
+
     /// ⎋: closes it; the draft stays for next time. A floating Composer
     /// docks back into the pane instead.
     fn close_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -318,6 +342,22 @@ impl TerminalView {
     /// ⌘↩ sends the draft; ⌥⌘↩ (`queue`) puts it on the queue. A floating
     /// Composer docks first.
     fn send_composer(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_composer_to(queue, false, window, cx)
+    }
+
+    /// ⇧⌘↩: the draft goes to every pane in this pane's tab (the
+    /// workspace sends it; see `TerminalEvent::Broadcast`).
+    fn broadcast_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_composer_to(false, true, window, cx)
+    }
+
+    fn send_composer_to(
+        &mut self,
+        queue: bool,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(c) = &mut self.composer else {
             return;
         };
@@ -337,7 +377,7 @@ impl TerminalView {
         }
         if c.float.is_some() {
             return self.dock_composer(window, cx, move |this, window, cx| {
-                this.send_composer(queue, window, cx)
+                this.send_composer_to(queue, all, window, cx)
             });
         }
         c.chips.clear();
@@ -346,6 +386,8 @@ impl TerminalView {
         window.focus(&self.focus_handle, cx);
         if queue {
             self.enqueue(items, window, cx);
+        } else if all {
+            cx.emit(super::TerminalEvent::Broadcast(items[0].clone()));
         } else {
             self.submit(&items[0], window, cx);
         }
@@ -361,6 +403,9 @@ impl TerminalView {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
         match ks.key.as_str() {
+            "enter" if m.platform && m.shift && !m.alt && !m.control => {
+                self.broadcast_composer(window, cx)
+            }
             "enter" if m.platform && !m.shift && !m.control => {
                 self.send_composer(m.alt, window, cx)
             }
@@ -853,26 +898,51 @@ impl TerminalView {
             .text_size(px(11.))
             .text_color(c.secondary)
             .child(if floating {
-                "⌘↩ Send   ⌥⌘↩ Queue   Esc Dock"
+                "⌘↩ Send   ⇧⌘↩ All Panes   ⌥⌘↩ Queue   Esc Dock"
             } else {
-                "⌘↩ Send   ⌥⌘↩ Queue   Esc Close"
+                "⌘↩ Send   ⇧⌘↩ All Panes   ⌥⌘↩ Queue   Esc Close"
             })
             .child(
                 div()
-                    .id("composer-send")
-                    .h(px(22.))
-                    .px(px(10.))
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
-                    .bg(accent)
-                    .text_color(gpui::white())
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .hover(|d| d.opacity(0.9))
-                    .child("Send")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.send_composer(false, window, cx)),
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .id("composer-send-all")
+                            .h(px(22.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .text_size(px(12.))
+                            .text_color(c.secondary)
+                            .hover(|d| d.bg(c.toggle_border))
+                            .child("All Panes")
+                            .tooltip(|_, cx| {
+                                crate::tooltip::text("Send to every pane in this tab", cx)
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.broadcast_composer(window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("composer-send")
+                            .h(px(22.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(accent)
+                            .text_color(gpui::white())
+                            .text_size(px(12.))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .hover(|d| d.opacity(0.9))
+                            .child("Send")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.send_composer(false, window, cx)
+                            })),
                     ),
             );
         card(c)

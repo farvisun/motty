@@ -230,6 +230,8 @@ impl Mode {
 pub enum SubmitWhen {
     Queue,
     Now,
+    /// Now, into every pane of the pane's tab.
+    Tab,
 }
 
 impl SubmitWhen {
@@ -237,6 +239,7 @@ impl SubmitWhen {
         match self {
             SubmitWhen::Queue => Submit::Queue,
             SubmitWhen::Now => Submit::Now,
+            SubmitWhen::Tab => Submit::Tab,
         }
     }
 }
@@ -333,7 +336,8 @@ pub enum PaneCmd {
         /// Send standard input as it is.
         #[arg(long, conflicts_with = "text")]
         stdin: bool,
-        /// Press Return too: when it's the pane's turn, or `=now`.
+        /// Press Return too: when it's the pane's turn, `=now`, or `=tab`
+        /// (now, in every pane of the tab).
         #[arg(long, value_enum, num_args = 0..=1, require_equals = true, default_missing_value = "queue")]
         submit: Option<SubmitWhen>,
     },

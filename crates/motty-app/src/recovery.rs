@@ -82,6 +82,9 @@ pub enum PaneState {
         /// Prompts still queued.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         queue: Vec<String>,
+        /// What was being written in the Composer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<String>,
     },
     /// A file pane (its unsaved edits are kept apart, see `editor`).
     File { path: PathBuf },
@@ -244,4 +247,30 @@ pub fn scrollback_saved_at(name: &str) -> Option<std::time::SystemTime> {
 /// How many lines of scrollback a pane saves.
 pub fn scrollback_lines() -> usize {
     SCROLLBACK_LINES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_leaf_keeps_its_draft() {
+        // Sessions saved before drafts were kept still load.
+        let old: PaneState = serde_json::from_str(r#"{"type":"leaf","cwd":"/tmp"}"#).unwrap();
+        let PaneState::Leaf { draft, .. } = &old else {
+            panic!("not a leaf");
+        };
+        assert_eq!(draft, &None);
+        let leaf = PaneState::Leaf {
+            cwd: None,
+            scrollback: None,
+            agent: None,
+            queue: Vec::new(),
+            draft: Some("fix the login bug".into()),
+        };
+        let text = serde_json::to_string(&leaf).unwrap();
+        assert_eq!(serde_json::from_str::<PaneState>(&text).unwrap(), leaf);
+        // An empty one isn't written.
+        assert!(!serde_json::to_string(&old).unwrap().contains("draft"));
+    }
 }

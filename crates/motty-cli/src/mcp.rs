@@ -117,7 +117,7 @@ fn tools() -> Value {
             "inputSchema": {"type": "object", "required": ["pane", "text"], "properties": {
                 "pane": pane,
                 "text": {"type": "string"},
-                "submit": {"type": "string", "enum": ["queue", "now"], "description": "Press Return too: `queue` waits until the agent finishes its turn or the shell is back at an empty prompt; `now` sends at once"}
+                "submit": {"type": "string", "enum": ["queue", "now", "tab"], "description": "Press Return too: `queue` waits until the agent finishes its turn or the shell is back at an empty prompt; `now` sends at once; `tab` sends at once to every pane of the pane's tab"}
             }}
         },
         {
@@ -266,6 +266,7 @@ fn tool(name: &str, args: &Value) -> anyhow::Result<String> {
             let submit = match args["submit"].as_str() {
                 Some("queue") => Some(Submit::Queue),
                 Some("now") => Some(Submit::Now),
+                Some("tab") => Some(Submit::Tab),
                 _ => None,
             };
             let _: Value =

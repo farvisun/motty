@@ -57,6 +57,8 @@ pub enum TerminalEvent {
         title: Option<String>,
         body: String,
     },
+    /// The Composer's text, for every pane in this pane's tab (⇧⌘↩).
+    Broadcast(String),
     /// A program said what it's doing (OSC 7501).
     ProgramStatus(motty_term::shell::ProgramStatus),
     /// BEL: whether it rings is Sound — Shell Controlled.

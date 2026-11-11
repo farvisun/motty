@@ -69,6 +69,34 @@ impl Workspace {
         self.tabs.get(ix)?.panes()?.terminal().cloned()
     }
 
+    /// Types `text` and Return into every pane of `view`'s tab (the
+    /// Composer's ⇧⌘↩, `motty pane send-text --submit tab`). Panes in Read
+    /// Only mode or at a password prompt are left out; returns how many
+    /// got it.
+    pub fn broadcast(
+        &mut self,
+        view: &Entity<TerminalView>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let Some(ix) = self.tab_of(view) else {
+            return 0;
+        };
+        let mut sent = 0;
+        for target in self.tab_panes(ix) {
+            let skip = {
+                let v = target.read(cx);
+                v.is_read_only() || v.session().reading_secret()
+            };
+            if !skip {
+                target.update(cx, |v, cx| v.submit(text, window, cx));
+                sent += 1;
+            }
+        }
+        sent
+    }
+
     /// The index of the tab holding `view`.
     pub fn tab_of_pane(&self, view: &Entity<TerminalView>) -> Option<usize> {
         self.tab_of(view)

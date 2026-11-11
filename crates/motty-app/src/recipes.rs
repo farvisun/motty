@@ -290,12 +290,14 @@ pub fn tab_state(layout: &TabLayout, bases: &Bases) -> (TabState, Vec<Vec<String
         scrollback: None,
         agent: None,
         queue: Vec::new(),
+        draft: None,
     };
     let first = layout.panes.first().map(leaf).unwrap_or(PaneState::Leaf {
         cwd: None,
         scrollback: None,
         agent: None,
         queue: Vec::new(),
+        draft: None,
     });
     let mut root = first;
     for (made, pane) in (1..).zip(layout.panes.iter().skip(1)) {
@@ -348,6 +350,7 @@ fn split_last(node: &mut PaneState, total: usize, of: usize, dir: &str, size: f3
             scrollback: None,
             agent: None,
             queue: Vec::new(),
+            draft: None,
         },
     );
     let vertical = matches!(dir, "down" | "up");
@@ -656,6 +659,7 @@ commands = ["npm run preview"]
             scrollback: None,
             agent: None,
             queue: Vec::new(),
+            draft: None,
         };
         // (A | B) over C, then C split right into C | D.
         let root = PaneState::Split {

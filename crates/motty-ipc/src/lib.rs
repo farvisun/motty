@@ -557,6 +557,9 @@ pub enum Submit {
     /// or the shell is back at an empty prompt.
     Queue,
     Now,
+    /// Now, into every pane of the pane's tab (but those in Read Only mode
+    /// or at a password prompt).
+    Tab,
 }
 
 /// Where `open` puts what it opens.

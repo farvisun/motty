@@ -859,6 +859,7 @@ impl Workspace {
                 scrollback: saved,
                 agent,
                 queue,
+                draft,
             } => {
                 let cwd = cwd.clone().filter(|d| d.is_dir());
                 let mut preload = saved.as_deref().and_then(scrollback);
@@ -884,6 +885,9 @@ impl Workspace {
                 if !queue.is_empty() {
                     let queue = queue.clone();
                     view.update(cx, |v, cx| v.enqueue(queue, window, cx));
+                }
+                if let Some(draft) = draft.clone() {
+                    view.update(cx, |v, cx| v.restore_draft(&draft, cx));
                 }
                 Pane::Leaf(view.into())
             }
@@ -1015,6 +1019,9 @@ impl Workspace {
                             .unwrap_or_else(|| terminal.read(cx).display_title());
                         this.banner(terminal, &title, body, window, cx);
                     }
+                }
+                TerminalEvent::Broadcast(text) => {
+                    this.broadcast(terminal, text, window, cx);
                 }
                 TerminalEvent::ProgramStatus(report) => {
                     let (foreground, in_turn) = {
@@ -3935,6 +3942,7 @@ fn tab_state(
                     scrollback: None,
                     agent: None,
                     queue: Vec::new(),
+                    draft: None,
                 },
             },
             Pane::Leaf(PaneItem::Terminal(view)) => {
@@ -3960,6 +3968,7 @@ fn tab_state(
                     scrollback,
                     agent,
                     queue: view.queued().to_vec(),
+                    draft: view.composer_draft(cx),
                 }
             }
             Pane::Split(split) => PaneState::Split {
