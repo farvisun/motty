@@ -150,7 +150,19 @@ motty view --right build.log; motty edit src/main.rs
 motty watch -- cargo build                # spinner on the tab, then a badge and a notification
 motty jump api                            # cd to the best-ranked folder matching "api"
 motty pane action split_right             # run any action, as its key would (motty pane action --list)
+motty pane wait --pane 3 --text 'ready on \d+' --regex   # block until new output matches (exit 9 on timeout)
+motty pane send-text --pane 3 --submit=tab "git pull"   # type and press Return in every pane of its tab
+motty agents                              # coding agents in every pane, waiting ones first (alias: activity)
+motty worktree new feat/login             # worktree in .worktrees/feat-login, opened in a new tab
+motty worktree remove feat/login          # after its teardown script; refused with uncommitted changes
 ```
+
+`motty worktree` keeps worktrees in the repository's `.worktrees/` folder (left out of git with
+`info/exclude`). A `.motty/worktree.toml` in the main checkout can name a `setup` script, run in
+each new worktree, and a `teardown` script, run before one is removed; they get
+`$MOTTY_WORKTREE_ROOT`, `$MOTTY_WORKTREE` and `$MOTTY_WORKTREE_BRANCH`, and run only once you
+approve the file as it is (`motty worktree trust`, or the prompt). Git › New Worktree… types the
+command for you.
 
 Panes, tabs and windows are picked with `--pane`, `--tab` and `--window`: an id (`12`, `t_3`,
 `w_1`), `index:<n>` for a pane, a 1-based index for a tab or window, `current`, and for
@@ -246,10 +258,18 @@ exist (exit 127) and ones typed after a space aren't remembered. History is kept
   it off per agent under Settings › Agents (`agent-quota-off = claude`) or with Show Plan Quota.
 - **Outline**: the pane's commands, newest last; click one to scroll to it.
 - **Git**: branch, lines added and removed, the remote, and staged, unstaged and untracked files.
+  In the commit field, Write with… has your coding agent write the message for what's staged
+  (`claude -p`, `codex exec` or `opencode run`, whichever is installed; `git-ai-command` picks
+  another). With `gh` (GitHub) or `glab` (GitLab) logged in, the branch's pull request shows with
+  its state and checks, Open and Merge…; without one, Create Pull Request… has the agent write
+  the title and description after the repository's template, shows them, then pushes and
+  creates it.
 - **Files**: a tree of the working directory (↑ goes up a folder; the eye shows dotfiles).
+- **Agents**: every coding agent in every window, grouped by project, those waiting for you
+  first, with how long each has been working, waiting or idle. Click one to go to its pane.
 
-The `details_info`, `details_outline`, `details_git` and `details_files` actions open a tab
-directly. The panel's width is `details-panel-width`, and whether it's open is kept with the
+The `details_info`, `details_outline`, `details_git`, `details_files` and `details_agents` actions
+open a tab directly. The panel's width is `details-panel-width`, and whether it's open is kept with the
 session.
 
 ## Find
@@ -295,8 +315,30 @@ started with `-e`, `--bounds` or another socket leave the saved session alone.
 ## Notifications
 
 OSC 9 and OSC 777 notifications show as macOS notifications when their pane isn't the one in
-front. macOS asks for permission the first time; allow banners for Motty in System Settings ›
-Notifications.
+front; clicking one goes to its pane. macOS asks for permission the first time; allow banners
+for Motty in System Settings › Notifications.
+
+Coding agents report their state through Motty's hooks. Without one, a program can say what it's
+doing with the program status protocol (OSC 7501, `ESC ] 7501 ; state=working:app=claude-code
+ST`), and a known agent's state is read from its screen (`agent-screen-detection`, on by
+default). Hooks win over status reports, which win over the screen.
+
+## Quick Terminal
+
+A system-wide shortcut, ctrl+` unless `quick-terminal-key` says otherwise (empty turns it off),
+drops a Motty window down from the top of the screen over any app; the same shortcut hides it, and
+so does switching away, unless it's pinned (View › Pin Window). Window › Quick Terminal opens it
+too. It isn't saved with the session.
+
+## Composer and project layouts
+
+The Composer (⇧⌘E) sends with ⌘↩, and to every pane of the tab with ⇧⌘↩ (or All Panes),
+skipping panes in Read Only mode or at a password prompt. Its draft is kept with the session.
+
+A project can keep layouts in `.motty/layouts/*.toml` (recipe files, as File › Recipe ›
+Export… writes them). They show under File › Recipe and in Open Quickly for panes in that
+project; their commands run only once you approve the file as it is, and relative pane folders
+(or `{{project_folder}}`) are the project's.
 
 ## Splits
 
