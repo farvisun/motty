@@ -4,6 +4,26 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
+### Features
+
+- **app:** clicking a notification goes to the pane it came from ([5a97d93](https://github.com/farvisun/motty/commit/5a97d93))
+- **agents:** agents are followed without hooks: programs can report their state with the program status protocol (OSC 7501), and a known agent's state is read from its screen (`agent-screen-detection`); hooks win over reports, which win over the screen ([fc3f78b](https://github.com/farvisun/motty/commit/fc3f78b))
+- **cli:** `motty worktree new|remove|list|trust`: worktrees in the repository's `.worktrees/`, opened in a new tab, with `.motty/worktree.toml` setup and teardown scripts that run only once approved; Git › New Worktree… and Remove This Worktree… ([8d5256d](https://github.com/farvisun/motty/commit/8d5256d))
+- **app:** an Agents tab in the details panel lists every agent in every window, grouped by project, waiting ones first, with how long each has been in its state; click one to go to its pane ([555634b](https://github.com/farvisun/motty/commit/555634b))
+- **cli:** `motty agents` (alias `activity`) lists agent panes, and `motty pane wait --text` (with `--regex`) blocks until new output matches ([7647915](https://github.com/farvisun/motty/commit/7647915))
+- **composer:** ⇧⌘↩ (or All Panes) sends to every pane of the tab, as `motty pane send-text --submit=tab` does, skipping read-only panes and password prompts; the draft is kept with the session ([e75b275](https://github.com/farvisun/motty/commit/e75b275))
+- **recipes:** projects can keep layouts in `.motty/layouts/*.toml`, listed under File › Recipe and in Open Quickly, whose commands run once the file is approved ([360eb48](https://github.com/farvisun/motty/commit/360eb48))
+- **git:** the commit field's Write with… has your coding agent write the message for what's staged (`claude -p`, `codex exec` or `opencode run`; `git-ai-command` picks another) ([f88169e](https://github.com/farvisun/motty/commit/f88169e))
+- **app:** a Quick Terminal drops down from the top of the screen on a system-wide shortcut (`quick-terminal-key`, ctrl+` by default) and hides when you switch away, unless pinned ([baf12f2](https://github.com/farvisun/motty/commit/baf12f2))
+- **git:** the Git tab shows the branch's pull request with its state and checks, merges it, and creates one with an agent-written title and description after the repository's template, through `gh` or `glab` ([c66449d](https://github.com/farvisun/motty/commit/c66449d))
+
+### Documentation
+
+- a comparison with muxy, and the features taken from it ([ff71fe1](https://github.com/farvisun/motty/commit/ff71fe1))
+- **readme:** worktrees, agents, the Quick Terminal, project layouts and pull requests ([5618959](https://github.com/farvisun/motty/commit/5618959))
+
 ## [0.3.3] - 2026-11-11
 
 ### Build
@@ -277,7 +297,8 @@ First public release.
 - vendor alacritty_terminal with a pushed-lines counter ([6d68c3b](https://github.com/farvisun/motty/commit/6d68c3b))
 - **xtask:** bundle the AppleScript dictionary ([0919404](https://github.com/farvisun/motty/commit/0919404))
 
-[Unreleased]: https://github.com/farvisun/motty/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/farvisun/motty/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/farvisun/motty/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/farvisun/motty/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/farvisun/motty/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/farvisun/motty/compare/v0.3.0...v0.3.1
