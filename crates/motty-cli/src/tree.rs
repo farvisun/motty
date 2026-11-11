@@ -367,6 +367,13 @@ pub enum PaneCmd {
         /// The pane running this agent session.
         #[arg(long, conflicts_with_all = ["pane", "tab", "window"])]
         session: Option<String>,
+        /// Instead, wait until this text shows up in the pane's output
+        /// (text already there doesn't count). Exits 9 on timeout.
+        #[arg(long, value_name = "TEXT", conflicts_with_all = ["tab", "window", "session"])]
+        text: Option<String>,
+        /// --text is a regular expression (Rust syntax).
+        #[arg(long, requires = "text")]
+        regex: bool,
         #[arg(long)]
         timeout_secs: Option<f64>,
     },
@@ -808,9 +815,21 @@ pub fn pane(ctx: &Ctx, cmd: PaneCmd) -> anyhow::Result<ExitCode> {
             tab,
             window,
             session,
+            text,
+            regex,
             timeout_secs,
         } => {
             let deadline = timeout_secs.map(|s| Instant::now() + Duration::from_secs_f64(s));
+            if let Some(text) = text {
+                let params = FindParams {
+                    pane: target(pane.as_deref(), None, None),
+                    query: text,
+                    case_sensitive: true,
+                    regex,
+                    ..Default::default()
+                };
+                return wait_text(ctx, &mut ctx.connect_patient()?, &params, deadline);
+            }
             let what = match (session, tab, window) {
                 (Some(session), ..) => Waited::Session(session),
                 (None, Some(tab), window) => {
@@ -1151,9 +1170,85 @@ pub fn wait(
     }
 }
 
+/// Most pressing first, as the Agents panel orders them.
+fn agent_rank(badge: Option<&str>) -> u8 {
+    match badge {
+        Some("awaiting") => 0,
+        Some("error") => 1,
+        Some("running") => 2,
+        Some("done") => 3,
+        _ => 4,
+    }
+}
+
+/// `motty agents`: the panes an agent reported in, waiting ones first.
+pub fn agents(ctx: &Ctx) -> anyhow::Result<ExitCode> {
+    let mut client = ctx.connect()?;
+    let all: Vec<PaneInfo> = client.call(method::LIST_PANES, &Value::Null)?;
+    let mut agents: Vec<PaneInfo> = all.into_iter().filter(|p| p.agent.is_some()).collect();
+    agents.sort_by_key(|p| (agent_rank(p.badge.as_deref()), p.id));
+    ctx.print(&agents, || {
+        let rows: Vec<Vec<String>> = agents
+            .iter()
+            .map(|p| {
+                vec![
+                    p.id.to_string(),
+                    p.agent.clone().unwrap_or_default(),
+                    p.badge.clone().unwrap_or_else(|| "idle".into()),
+                    p.status.clone().unwrap_or_default(),
+                    p.cwd.clone().unwrap_or_default(),
+                ]
+            })
+            .collect();
+        ctx.table(&["PANE", "AGENT", "STATE", "MESSAGE", "CWD"], &rows);
+    });
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `pane wait --text`: until the pane has more matches than when it
+/// started; prints the newest. 9 on timeout.
+fn wait_text(
+    ctx: &Ctx,
+    client: &mut motty_ipc::Client,
+    params: &FindParams,
+    deadline: Option<Instant>,
+) -> anyhow::Result<ExitCode> {
+    let start: FindResult = client.call(method::FIND, params)?;
+    loop {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            eprintln!("motty: timed out waiting for {:?}", params.query);
+            return Ok(ExitCode::from(9));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        let now: FindResult = match client.call(method::FIND, params) {
+            Ok(found) => found,
+            Err(e) => return Err(e.context("the pane closed")),
+        };
+        if new_match(start.total, now.total) {
+            if let Some(m) = now.matches.last() {
+                ctx.print(m, || ctx.note(m.line_text.trim_end()));
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+}
+
+/// Whether a match showed up since: more than at the start. (Lines
+/// leaving the scrollback can only lower the count.)
+fn new_match(start: usize, now: usize) -> bool {
+    now > start
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waits_for_new_text_only() {
+        assert!(!new_match(2, 2));
+        assert!(!new_match(2, 1));
+        assert!(new_match(0, 1));
+    }
 
     #[test]
     fn exec_lines_follow_the_shell() {

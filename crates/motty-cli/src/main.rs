@@ -118,6 +118,10 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Coding agents in every pane: their state (waiting first), what they
+    /// said last, and where they run.
+    #[command(visible_alias = "activity")]
+    Agents,
     /// Git worktrees in the repository's `.worktrees/`: list, new, remove,
     /// trust (its setup and teardown scripts).
     Worktree {
@@ -275,6 +279,7 @@ fn run(ctx: &Ctx, command: Command) -> anyhow::Result<ExitCode> {
         Command::Edit(v) => open::view(ctx, v, true),
         Command::Watch { command } => watch::watch(ctx, &command),
         Command::Worktree { cmd } => worktree::run(ctx, cmd),
+        Command::Agents => tree::agents(ctx),
         Command::Jump {
             query,
             no_cd,
