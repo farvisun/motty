@@ -13,7 +13,7 @@ unicode-bidi = "0.3.18"
 image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 
 # CoreText itself, to check right-to-left shaping without a window.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

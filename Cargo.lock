@@ -90,7 +90,7 @@ dependencies = [
 name = "alacritty_terminal"
 version = "0.26.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bitflags 2.13.2",
  "home",
  "libc",
@@ -486,6 +486,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bincode"
@@ -3227,7 +3233,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-channel",
- "base64",
+ "base64 0.23.1",
  "block2 0.6.2",
  "dirs 7.0.0",
  "ed25519-dalek",
@@ -3295,7 +3301,7 @@ dependencies = [
 name = "motty-render"
 version = "0.3.2"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "gpui-pre",
  "gpui-pre-apple",
  "image",
@@ -3311,7 +3317,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-channel",
- "base64",
+ "base64 0.23.1",
  "flate2",
  "image",
  "libc",
@@ -5892,7 +5898,7 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e419dff010bb12512b0ae9e3d2f318dfbdf0167fde7eb05465134d4e8756076f"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "data-url",
  "flate2",
  "fontdb 0.23.0",
