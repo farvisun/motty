@@ -4,6 +4,13 @@ All notable changes to Motty are listed here. The format follows [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-11
+
+### Build
+
+- bump base64 to 0.23 ([6fbb0b2](https://github.com/farvisun/motty/commit/6fbb0b2))
+- bump pulldown-cmark to 0.13.6 ([812cc8e](https://github.com/farvisun/motty/commit/812cc8e))
+
 ## [0.3.2] - 2026-11-04
 
 ### Bug Fixes
@@ -270,7 +277,8 @@ First public release.
 - vendor alacritty_terminal with a pushed-lines counter ([6d68c3b](https://github.com/farvisun/motty/commit/6d68c3b))
 - **xtask:** bundle the AppleScript dictionary ([0919404](https://github.com/farvisun/motty/commit/0919404))
 
-[Unreleased]: https://github.com/farvisun/motty/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/farvisun/motty/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/farvisun/motty/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/farvisun/motty/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/farvisun/motty/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/farvisun/motty/compare/v0.2.0...v0.3.0
