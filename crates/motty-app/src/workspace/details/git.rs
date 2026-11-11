@@ -70,6 +70,8 @@ pub(in crate::workspace) struct GitUi {
     /// What the last git command said when it failed.
     error: Option<String>,
     busy: bool,
+    /// An agent is writing the commit message.
+    writing: bool,
 }
 
 struct OpenDiff {
@@ -258,7 +260,36 @@ impl Workspace {
         let staged = !git.staged.is_empty();
         let rule = div().mx(px(INSET)).h(px(1.)).bg(c.hover);
         if ui.committing {
+            let writing = ui.writing;
+            let writer = crate::agents::ai::writer(self.config.git_ai_command.as_deref());
             let field = self.render_field(FieldId::Commit, "Commit message", window, c, cx);
+            let generate = writer.map(|w| {
+                let label = if writing {
+                    format!("{} is writing…", w.name())
+                } else {
+                    format!("Write with {}", w.name())
+                };
+                let color = if writing { c.tertiary } else { c.accent };
+                div()
+                    .id("details-git-write")
+                    .flex_none()
+                    .h(px(22.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .rounded(px(6.))
+                    .text_size(px(12.))
+                    .text_color(color)
+                    .child(lucide("sparkles", 12., color))
+                    .child(label)
+                    .when(!writing, |d| {
+                        d.hover(|s| s.bg(c.hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.write_commit_message(w.clone(), cx)
+                            }))
+                    })
+            });
             return div()
                 .flex()
                 .flex_col()
@@ -269,9 +300,18 @@ impl Workspace {
                 .child(
                     div()
                         .px(px(INSET))
-                        .text_size(px(11.5))
-                        .text_color(c.tertiary)
-                        .child("Return commits the staged changes, Esc cancels"),
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_size(px(11.5))
+                                .text_color(c.tertiary)
+                                .child("Return commits the staged changes, Esc cancels"),
+                        )
+                        .children(generate),
                 )
                 .child(rule)
                 .into_any_element();
@@ -500,6 +540,33 @@ impl Workspace {
                 }
                 this.details.git_at = None;
                 this.refresh_details(true, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Has the coding agent write a message for what's staged, into the
+    /// commit field (for a look before Return commits it).
+    fn write_commit_message(&mut self, writer: crate::agents::ai::Writer, cx: &mut Context<Self>) {
+        let Some(dir) = self.details.cwd.clone() else {
+            return;
+        };
+        let ui = &mut self.details.git_ui;
+        ui.writing = true;
+        ui.error = None;
+        cx.notify();
+        let work =
+            cx.background_spawn(async move { crate::agents::ai::commit_message(&writer, &dir) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                this.details.git_ui.writing = false;
+                match result {
+                    Ok(message) => this.details.field(FieldId::Commit).text = message,
+                    Err(e) => this.details.git_ui.error = Some(e),
+                }
                 cx.notify();
             })
             .ok();

@@ -83,6 +83,7 @@ impl AssetSource for Assets {
             "panels-top-left",
             "blocks",
             "book-open",
+            "sparkles",
             "shield",
             "coffee",
             "monitor-smartphone",

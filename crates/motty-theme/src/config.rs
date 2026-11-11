@@ -64,6 +64,10 @@ pub struct Config {
     /// `confirm-close-ignore-idle-agents`: an agent waiting at its prompt
     /// doesn't count as running when closing.
     pub close_ignores_idle_agents: bool,
+    /// `git-ai-command`: what writes commit messages and pull request text
+    /// (`claude -p`); the prompt is its last argument. Empty: the first of
+    /// Claude Code, Codex and OpenCode that's installed.
+    pub git_ai_command: Option<String>,
     /// `agent-screen-detection`: without a hook or a status report, an
     /// agent's state is read from its screen.
     pub agent_screen_detection: bool,
@@ -1286,6 +1290,9 @@ impl Config {
                 "session-restore-banner" => out.restore_banner = value.as_bool().unwrap_or(true),
                 "confirm-close-ignore-idle-agents" => {
                     out.close_ignores_idle_agents = value.as_bool().unwrap_or(false)
+                }
+                "git-ai-command" => {
+                    out.git_ai_command = str_of(value).filter(|c| !c.trim().is_empty())
                 }
                 "agent-screen-detection" => {
                     out.agent_screen_detection = value.as_bool().unwrap_or(true)

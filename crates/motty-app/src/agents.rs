@@ -1,6 +1,7 @@
 //! The coding agents Motty knows (Otty's list), and what a pane's tab
 //! shows about the one running in it, or about its last command.
 
+pub mod ai;
 pub mod hooks;
 pub mod quota;
 pub mod screen;
