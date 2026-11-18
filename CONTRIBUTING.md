@@ -79,5 +79,5 @@ it to GitHub Pages.
 
 ## License
 
-By contributing, you agree that your contributions are dual-licensed under the
-[MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE) licenses, as the rest of the project is.
+By contributing, you agree that your contributions are licensed under the
+[Apache-2.0](LICENSE) license, as the rest of the project is.

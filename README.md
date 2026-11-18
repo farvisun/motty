@@ -20,7 +20,7 @@
 <p align="center">
   <a href="https://github.com/farvisun/motty/actions/workflows/ci.yml"><img src="https://github.com/farvisun/motty/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/farvisun/motty/releases/latest"><img src="https://img.shields.io/github/v/release/farvisun/motty?color=f4bf6a" alt="Latest release"></a>
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue" alt="License: MIT or Apache-2.0"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
 </p>
 
 ![Motty with a tabs sidebar and three split panes](site/assets/shots/hero.webp)
@@ -363,7 +363,7 @@ Drag a divider to resize. Themes set the divider with `[divider] color`, `width`
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
+Licensed under [Apache-2.0](LICENSE). Keep the [NOTICE](NOTICE) and credit Mohammad Askari in any redistribution or derivative work.
 Bundled JetBrains Mono is under the [SIL Open Font License](crates/motty-app/assets/fonts/jetbrains-mono/OFL.txt).
 
 ## Pixel parity
